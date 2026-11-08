@@ -211,7 +211,7 @@ final class OverlayContentSurfaceTests: XCTestCase {
     }
   }
 
-  func testRealFoldControlKeepsItsScreenPointAcrossAllFormsAndSurfaces() throws {
+  func testRealFoldControlFollowsModeInsetsAtTheSharedWindowPin() throws {
     try withDefaults { defaults in
       DictationOverlayWindow.persist(
         size: NSSize(width: 650, height: 560), surface: .agents, defaults: defaults)
@@ -242,11 +242,21 @@ final class OverlayContentSurfaceTests: XCTestCase {
         return NSPoint(x: panel.frame.minX + rect.midX, y: panel.frame.maxY - rect.midY)
       }
       let reference = try foldPoint()
+      let pin = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
       for mode in [OverlayPresentationMode.mini, .midi, .expanded] {
         state.setPresentationMode(mode)
         let point = try foldPoint()
-        XCTAssertEqual(point.x, reference.x, accuracy: 0.5, "\(mode)")
-        XCTAssertEqual(point.y, reference.y, accuracy: 0.5, "\(mode)")
+        let density = OverlayHeaderDensity(mode)
+        XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5, "shared window pin: \(mode)")
+        XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5, "shared window pin: \(mode)")
+        XCTAssertEqual(
+          point.x,
+          reference.x + OverlayHeaderDensity.expanded.horizontalInset
+            - density.horizontalInset, accuracy: 0.5, "\(mode)")
+        XCTAssertEqual(
+          point.y,
+          reference.y + OverlayHeaderDensity.expanded.verticalInset
+            - density.verticalInset, accuracy: 0.5, "\(mode)")
       }
       state.showAgentMonitor()
       panel.setContentSurface(state.windowContentSurface)

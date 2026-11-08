@@ -198,7 +198,8 @@ struct OverlayAgentsHoverList: View {
     .padding(.horizontal, Self.horizontalPadding)
     .padding(.vertical, Self.verticalPadding)
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    .background(palette.desktopBackground.color.opacity(0.9))
+    // OverlayHintPanel owns the native tooltip material. An additional 90%
+    // sheet made this list look like a different appearance beside glass.
     .environment(\.colorScheme, palette.appearance == .dark ? .dark : .light)
     .background { OverlayMenuCursorRegion { reportHover($0) } }
     .onAppear { installEscape() }
@@ -337,7 +338,6 @@ private struct OverlayAgentsHoverListRow: View {
     if row.unread > 0 { parts.append(String(localized: "\(row.unread) unread replies")) }
     return parts.joined(separator: " · ")
   }
-
 
   /// Held while any surface's change for this agent is in flight; the next
   /// paint comes from the read-back receipt, not a local flag.

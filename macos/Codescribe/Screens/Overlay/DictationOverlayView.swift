@@ -374,7 +374,7 @@ struct OverlayAgentRailFramePreferenceKey: PreferenceKey {
 enum OverlayHeaderDensity: Equatable {
   case mini, midi, expanded
 
-  /// One row height keeps the fold control at the same offset in every form.
+  /// Controls share one row height. Mini has its own tighter outer insets.
   static let rowHeight: CGFloat = 26
 
   /// Room around the row that the clip must not cut: the close dot's hover
@@ -390,6 +390,10 @@ enum OverlayHeaderDensity: Equatable {
   }
 
   var brandSize: CGFloat { self == .expanded ? 15 : 13 }
+  @MainActor var horizontalInset: CGFloat { self == .mini ? DictationOverlayWindow.miniInset : 16 }
+  @MainActor var verticalInset: CGFloat {
+    self == .mini ? DictationOverlayWindow.miniVerticalPadding : 10
+  }
   var waveformBars: Int {
     switch self {
     case .mini, .midi: return 24
@@ -1277,31 +1281,31 @@ struct DictationOverlayView: View {
     ) { translation in
       commitAgentDrawerWidth((width - translation) / textScale, windowWidth: windowWidth)
     }
-      .accessibilityElement()
-      .accessibilityLabel(String(localized: "Resize agents sidebar"))
-      .accessibilityValue(Text(verbatim: "\(Int(width))"))
-      .accessibilityAdjustableAction { direction in
-        let step: CGFloat
-        switch direction {
-        case .increment: step = 20
-        case .decrement: step = -20
-        @unknown default: return
-        }
-        // Narrowing a roster that covers the window leaves the snap zone at
-        // once; a 20-point step would stay inside it.
-        let fills = state.agentsLayout == .agents
-        // At the rows' minimum one more step down folds the list to its rail.
-        let atMinimum =
-          width <= OverlayAgentDrawerLayout.contentMinimumWidth(textScale: textScale) + 0.5
-        let next =
-          fills && step < 0
-          ? OverlayAgentDrawerLayout.widestSplitWidth(
-            textScale: textScale, windowWidth: windowWidth)
-          : atMinimum && step < 0 ? 0 : width / textScale + step
-        commitAgentDrawerWidth(next, windowWidth: windowWidth)
+    .accessibilityElement()
+    .accessibilityLabel(String(localized: "Resize agents sidebar"))
+    .accessibilityValue(Text(verbatim: "\(Int(width))"))
+    .accessibilityAdjustableAction { direction in
+      let step: CGFloat
+      switch direction {
+      case .increment: step = 20
+      case .decrement: step = -20
+      @unknown default: return
       }
-      .accessibilityIdentifier("overlay-agent-sidebar-resize")
-      .padding(.top, headerHeight)
+      // Narrowing a roster that covers the window leaves the snap zone at
+      // once; a 20-point step would stay inside it.
+      let fills = state.agentsLayout == .agents
+      // At the rows' minimum one more step down folds the list to its rail.
+      let atMinimum =
+        width <= OverlayAgentDrawerLayout.contentMinimumWidth(textScale: textScale) + 0.5
+      let next =
+        fills && step < 0
+        ? OverlayAgentDrawerLayout.widestSplitWidth(
+          textScale: textScale, windowWidth: windowWidth)
+        : atMinimum && step < 0 ? 0 : width / textScale + step
+      commitAgentDrawerWidth(next, windowWidth: windowWidth)
+    }
+    .accessibilityIdentifier("overlay-agent-sidebar-resize")
+    .padding(.top, headerHeight)
   }
 
   // MARK: Header
@@ -1336,12 +1340,12 @@ struct DictationOverlayView: View {
       // edge on every side (`DictationOverlayWindow.miniInset`).
       .padding(
         .horizontal,
-        (state.isMini ? DictationOverlayWindow.miniInset : 16) - OverlayHeaderDensity.clipInset
+        OverlayHeaderDensity(state.presentationMode).horizontalInset
+          - OverlayHeaderDensity.clipInset
       )
       .padding(
         .vertical,
-        (state.isMini ? DictationOverlayWindow.miniVerticalPadding : 10)
-          - OverlayHeaderDensity.clipInset
+        OverlayHeaderDensity(state.presentationMode).verticalInset - OverlayHeaderDensity.clipInset
       )
       .coordinateSpace(name: "overlay-header")
       // Keep the explicit drag region above the passive glass background.

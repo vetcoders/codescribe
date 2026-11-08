@@ -29,6 +29,11 @@ The Bus window's minimum width follows the panes you chose and the text scale.
 With conversation and agents side by side, it reserves each pane's readable
 minimum. Shrinking the window does not fold a pane; use the divider to fold it.
 
+The window keeps its upper-right placement pin when changing form. Mini uses
+tighter header insets than the expanded window, so a control's position inside
+that pin follows its form's spacing. The Agents hover list uses the parent
+palette and the native tooltip material, without an additional sheet-colour wash.
+
 The header gives access to transcription, agents and pinning. Pinning controls **Always on Top**. Unpinning removes that window level; it
 should leave the overlay visible in place, without hiding or sending it behind
 other windows. Presentation visibility and auto-fold preferences are separate
