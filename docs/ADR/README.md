@@ -71,6 +71,10 @@ rules that keep agents from re-proposing rejected designs. Every record states
 
 ## Index of ADRs
 
+- [Window glass ownership and titlebar geometry](2026-11-08-WINDOW_GLASS_OWNERSHIP.md):
+  accepted single development direction; system sidebar, AppKit header,
+  hierarchy assumptions, diagnostics and optical acceptance limits.
+
 | ADR                                                                                                    | Status                                      | Summary                                                                                                                             | Revisit if                                                                             |
 | ------------------------------------------------------------------------------------------------------ | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | [`2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md`](./2026-05-26-LAYERED_INCREMENTAL_TRANSCRIPTION.md) | Superseded by `docs/THE_ENGINE_CONTRACT.md` | Historical 5-layer proposal replaced by the 4-layer ledger engine (Apple, Whisper, Lexicon + Light+, Responses formatter).          | A new on-device acoustic model replaces the dual Apple + Whisper observation split.    |

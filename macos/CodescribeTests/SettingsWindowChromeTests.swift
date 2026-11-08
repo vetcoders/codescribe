@@ -59,6 +59,7 @@ final class SettingsWindowChromeTests: XCTestCase {
         XCTAssertEqual(rect.maxX, window.frame.width, accuracy: 1)
         XCTAssertEqual(rect.maxY, window.frame.height, accuracy: 1)
         XCTAssertEqual(rect.height, 52, accuracy: 1)
+        XCTAssertEqual(window.titlebarSeparatorStyle, .none)
         XCTAssertEqual(rect.minY, window.contentLayoutRect.maxY, accuracy: 1)
         if expanded {
           let sidebar = try XCTUnwrap(

@@ -1,0 +1,66 @@
+# Window glass ownership and titlebar geometry
+
+## Decision
+
+Continue the AppKit header implementation on `codex/window-chrome-e2e` as the
+single development direction (Founder, 2026-11-08). The parallel SwiftUI header
+experiment remains a reference, not a second runtime path.
+
+`NavigationSplitView` owns sidebar glass. `CSWindowTopHeader` owns one 52 pt
+top titlebar accessory containing one rectangular `NSGlassEffectView`; the
+actual header is its `contentView`. AppKit owns window controls and the native
+sidebar toggle. Agent and Settings set `titlebarSeparatorStyle = .none` to avoid
+an additional system separator; this does not remove the glass optical edge.
+The Agent context column has its own real-content glass below the titlebar.
+The conversation alone owns the opaque reading canvas.
+
+## Why
+
+One owner per surface avoids overlapping sidebar materials and runtime alpha
+workarounds. Visible letters and colours through glass may be the intended
+effect; the foreground controls must remain readable. Do not solve an optical
+integration defect by removing glass or adding an opaque wash.
+
+The header locates the native `NSSplitViewController` through the public
+`NSSplitView.delegate` and its two items, with the first marked `.sidebar`.
+It converts that sidebar's boundary into the accessory's coordinate system.
+When collapsed, native window buttons and toolbar item views establish the
+leading exclusion. These APIs are public, but SwiftUI's hierarchy and accessory
+allocation are implementation assumptions, not an Apple layout guarantee.
+
+An early attachment without `.fullSizeContentView` is deferred, with a debug
+diagnostic; Settings establishes its window on the same run-loop turn and the
+marker retries. An occupied top accessory slot is logged as an error and is
+never replaced. Resize observation is scoped to that split view and removed
+on detach. No assertion is raised for an expected scene-adoption transition.
+
+## Validation and limits
+
+Agent/Settings window tests cover the accessory count, native control exclusion,
+52 pt allocation, sidebar boundary, minimum/normal widths and collapsed/expanded
+states. Attachment lifecycle tests cover deferral, a competing owner, retry,
+idempotence and detach. These tests do not prove visual integration, refraction,
+foreground contrast or frame pacing. Review active/inactive windows, Light/Dark,
+contrasting desktop backgrounds and scrolling content separately.
+
+The 2026-11-08 screenshots exposed an activation-sensitive horizontal seam and
+different adaptation of the context column. Disabling the additional separator
+addresses a known extra drawing owner; visual comparison must still establish
+whether any remaining line belongs to glass itself. Do not claim this issue
+resolved from a property assertion alone.
+
+Developer-only **Glass tint** remains an explicitly requested team tool for
+onboarding, mini/MIDI and the bus header. It controls native tint, not blur or
+refraction, and does not tune Agent/Settings. Production ignores its values.
+
+## Revisit if
+
+- A macOS update changes split hierarchy, sidebar behaviour or accessory sizing.
+- A window gains another top accessory or its header cannot attach.
+- Sidebar collapse, resizing or fullscreen changes move controls under glass.
+- Optical review still shows seams or unreadable controls after removing the
+  separate separator; inspect actual sampling/backing and material boundaries.
+
+Public API references:
+[NSGlassEffectView.contentView](https://developer.apple.com/documentation/appkit/nsglasseffectview/contentview),
+[NSTitlebarSeparatorStyle](https://developer.apple.com/documentation/appkit/nstitlebarseparatorstyle).

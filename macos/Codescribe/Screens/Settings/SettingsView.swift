@@ -114,6 +114,7 @@ struct SettingsView: View {
     window.title = String(localized: "Settings")
     window.titleVisibility = .hidden
     window.titlebarAppearsTransparent = true
+    window.titlebarSeparatorStyle = .none
     window.styleMask.insert(.fullSizeContentView)
     window.isOpaque = false
     window.backgroundColor = .clear

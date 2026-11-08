@@ -324,10 +324,21 @@ Founder chose the Settings column as the reference, so the Agent rail adopts
 it rather than the other way round.
 
 `CSSidebarColumn` owns the system sidebar list style (with it the section
-headers, selection, hover and focus), the sidebar search field, the shared
-glass behind the column (`CSSidebarMaterial`, a `.sidebar` `NSVisualEffectView`
-blending `behindWindow`, with an opaque canvas under Reduce Transparency or
-Increase Contrast), the column bounds and the two slots a window may fill.
+headers, selection, hover and focus), the sidebar search field, the column
+bounds and the two slots a window may fill. `NavigationSplitView` owns the
+native full-height sidebar material; `CSSidebarColumn` does not add another
+glass or visual-effect view behind it. Its accessibility canvas is opaque
+under Reduce Transparency or Increase Contrast. The detail reading background
+must respect the leading safe area: an opaque canvas extending under the
+floating sidebar blocks its view of the scene behind the window.
+
+Agent and Settings share `CSWindowTopHeader`: one top titlebar accessory,
+52 pt high, whose rectangular `NSGlassEffectView.contentView` hosts the actual
+branding and controls. Native window controls and the sidebar toggle remain
+owned by AppKit. Both window owners disable the additional titlebar separator;
+the material retains its native optical edge. See
+[the window glass ADR](ADR/2026-11-08-WINDOW_GLASS_OWNERSHIP.md) for the geometry
+assumptions, attachment diagnostics and revalidation triggers.
 
 - **Width** is a named parameter, not a number per window:
   `CSSidebarWidth.navigation` is 196 / 216 / 300 and both windows use it;

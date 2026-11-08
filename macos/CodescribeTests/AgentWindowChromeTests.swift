@@ -13,6 +13,39 @@ final class AgentWindowChromeTests: XCTestCase {
   private let sidebarKey = "AgentChat.sidebarExpanded.v1"
   private let panelKey = AgentContextPanelPreference.defaultsKey
 
+  func testHeaderAttachmentRetriesWithoutReplacingAnotherOwner() throws {
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+      styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    let coordinator = CSWindowTopHeader<Text>.Coordinator(header: Text(verbatim: "Header probe"))
+    defer {
+      coordinator.detach()
+      window.close()
+    }
+
+    coordinator.attach(to: window)
+    XCTAssertTrue(window.titlebarAccessoryViewControllers.isEmpty)
+    window.styleMask.insert(.fullSizeContentView)
+    let otherOwner = NSTitlebarAccessoryViewController()
+    otherOwner.layoutAttribute = .top
+    otherOwner.view = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 52))
+    window.addTitlebarAccessoryViewController(otherOwner)
+    coordinator.attach(to: window)
+    XCTAssertEqual(window.titlebarAccessoryViewControllers.count, 1)
+    XCTAssertTrue(window.titlebarAccessoryViewControllers.first === otherOwner)
+
+    window.removeTitlebarAccessoryViewController(at: 0)
+    coordinator.attach(to: window)
+    coordinator.attach(to: window)
+    XCTAssertEqual(window.titlebarAccessoryViewControllers.count, 1)
+    XCTAssertTrue(window.titlebarAccessoryViewControllers.first === coordinator.accessory)
+    coordinator.detach()
+    XCTAssertTrue(window.titlebarAccessoryViewControllers.isEmpty)
+    coordinator.attach(to: window)
+    XCTAssertEqual(window.titlebarAccessoryViewControllers.count, 1)
+  }
+
   /// The approved shape is one rectangular real-content glass view across
   /// the entire upper detail region, with the native window controls intact.
   func testTopTitlebarOwnerKeepsOneBandAndNativeWindowButtons() throws {
@@ -57,6 +90,7 @@ final class AgentWindowChromeTests: XCTestCase {
     XCTAssertEqual(window.contentLayoutRect.maxY, window.frame.height - 52, accuracy: 1)
     XCTAssertEqual(glass.cornerRadius, 0)
     XCTAssertEqual(glass.style, .regular)
+    XCTAssertEqual(window.titlebarSeparatorStyle, .none)
     XCTAssertNotNil(glass.contentView, "the real information and actions belong inside glass")
     XCTAssertEqual(lights.count, 3)
     XCTAssertTrue(lights.allSatisfy { !$0.isHiddenOrHasHiddenAncestor })
@@ -151,6 +185,7 @@ final class AgentWindowChromeTests: XCTestCase {
         XCTAssertEqual(window.titleVisibility, .hidden, "width \(width) expanded \(expanded)")
         XCTAssertTrue(window.titlebarAppearsTransparent, "width \(width) expanded \(expanded)")
         XCTAssertEqual(window.toolbarStyle, .unified, "width \(width) expanded \(expanded)")
+        XCTAssertEqual(window.titlebarSeparatorStyle, .none)
 
         let split = splitView(in: window)
         let controller = split?.delegate as? NSSplitViewController

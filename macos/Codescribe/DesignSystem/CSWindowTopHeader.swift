@@ -1,5 +1,9 @@
 import AppKit
+import OSLog
 import SwiftUI
+
+private let windowHeaderLog = Logger(
+  subsystem: "com.vetcoders.codescribe", category: "window-header")
 
 /// One real-content glass surface in the existing titlebar band. AppKit owns
 /// the accessory slot and native window controls; the split owns its boundary.
@@ -85,6 +89,7 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
     let host: HeaderHost
     private weak var window: NSWindow?
     private weak var split: NSSplitViewController?
+    private var attachmentIssue: String?
 
     init(header: Header) {
       host = HeaderHost(header: header)
@@ -99,24 +104,50 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
         detach()
         return
       }
-      guard target.styleMask.contains(.fullSizeContentView) else { return }
+      guard target.styleMask.contains(.fullSizeContentView) else {
+        reportAttachmentIssue(
+          "Waiting for the window owner to enable full-size content", error: false)
+        return
+      }
       if window !== target {
         detach()
         guard
           !target.titlebarAccessoryViewControllers.contains(where: { $0.layoutAttribute == .top })
-        else { return }
+        else {
+          reportAttachmentIssue("Another top titlebar accessory owns the header slot", error: true)
+          return
+        }
         host.frame = NSRect(x: 0, y: 0, width: target.frame.width, height: 52)
         target.toolbar?.isVisible = true
         target.addTitlebarAccessoryViewController(accessory)
         window = target
       }
+      attachmentIssue = nil
       updateGeometry()
+    }
+
+    private func reportAttachmentIssue(_ message: String, error: Bool) {
+      guard attachmentIssue != message else { return }
+      attachmentIssue = message
+      if error {
+        windowHeaderLog.error("Header not attached: \(message, privacy: .public)")
+      } else {
+        windowHeaderLog.debug("Header deferred: \(message, privacy: .public)")
+      }
+    }
+
+    private func stopObservingSplit() {
+      if let split {
+        NotificationCenter.default.removeObserver(
+          self, name: NSSplitView.didResizeSubviewsNotification, object: split.splitView)
+      }
+      split = nil
     }
 
     private func updateGeometry() {
       guard let window else { return }
       if split?.view.window !== window {
-        NotificationCenter.default.removeObserver(self)
+        stopObservingSplit()
         split = window.contentView.flatMap { Self.navigationSplit(in: $0) }
         if let split {
           NotificationCenter.default.addObserver(
@@ -148,8 +179,7 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
     }
 
     func detach() {
-      NotificationCenter.default.removeObserver(self)
-      split = nil
+      stopObservingSplit()
       window?.titlebarAccessoryViewControllers.removeAll { $0 === accessory }
       window = nil
     }
