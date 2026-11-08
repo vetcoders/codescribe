@@ -149,10 +149,8 @@ final class AgentWindowChromeTests: XCTestCase {
         && self.rectangularHeaderGlass(in: window) != nil
     }
     let toolbar = try XCTUnwrap(window.toolbar)
-    let separator = try XCTUnwrap(
-      toolbar.items.first { $0 is NSTrackingSeparatorToolbarItem })
-    let originalHidden = separator.isHidden
-    defer { separator.isHidden = originalHidden }
+    let separatorIndex = try XCTUnwrap(
+      toolbar.items.firstIndex { $0 is NSTrackingSeparatorToolbarItem })
     let sidebar = try XCTUnwrap(
       (splitView(in: window)?.delegate as? NSSplitViewController)?.splitViewItems.first)
     let boundary = frame(sidebar.viewController.view).maxX
@@ -163,15 +161,16 @@ final class AgentWindowChromeTests: XCTestCase {
     before.lifetime = .keepAlways
     add(before)
 
-    separator.isHidden = true
+    // isHidden retained a visible tracking item in the first diagnostic.
+    // Remove it only from this disposable window to isolate the boundary.
+    toolbar.removeItem(at: separatorIndex)
     let settle = Date().addingTimeInterval(0.2)
-    pump(window) { Date() >= settle && !separator.isVisible }
-    XCTAssertTrue(separator.isHidden)
-    XCTAssertFalse(separator.isVisible)
+    pump(window) { Date() >= settle }
+    XCTAssertFalse(toolbar.items.contains { $0 is NSTrackingSeparatorToolbarItem })
     XCTAssertEqual(visibleHeaderFrame(glass).minX, beforeFrame.minX, accuracy: 1)
     XCTAssertEqual(visibleHeaderFrame(glass).width, beforeFrame.width, accuracy: 1)
     let after = XCTAttachment(string: try headerJoinLayers(in: window, boundary: boundary))
-    after.name = "Join with tracking separator hidden"
+    after.name = "Join with tracking separator removed"
     after.lifetime = .keepAlways
     add(after)
   }
