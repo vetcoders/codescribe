@@ -3753,9 +3753,19 @@ class OverlayRailCallsiteLimitTests(unittest.TestCase):
         cls.live.context()
 
     def test_rail_callsite_attribution_limit_is_declared(self):
-        bodies = VERIFIER.corridor_body_rows(
+        wrappers = VERIFIER.corridor_body_rows(
             self.live.body("body", self.VIEW),
             symbol="body",
+            file=self.VIEW,
+            signature_contains=None,
+        )
+        mounted = [row for row in wrappers
+                   if "overlayBody.environment(" in
+                   VERIFIER.code_without_comments_or_strings(row["source"])]
+        self.assertEqual(len(mounted), 1, "the root must mount the checked overlay body")
+        bodies = VERIFIER.corridor_body_rows(
+            self.live.body("overlayBody", self.VIEW),
+            symbol="overlayBody",
             file=self.VIEW,
             signature_contains=None,
         )
@@ -3777,11 +3787,11 @@ class OverlayRailCallsiteLimitTests(unittest.TestCase):
                     and row.get("match_role") == "reference"
                     and row.get("line") in span
                 ]
-                self.assertTrue(inside, f"{callee}: the call left DictationOverlayView.body")
+                self.assertTrue(inside, f"{callee}: the call left DictationOverlayView.overlayBody")
                 attributed = [
                     row for row in inside
                     if isinstance(row.get("enclosing_symbol"), dict)
-                    and row["enclosing_symbol"].get("name") == "body"
+                    and row["enclosing_symbol"].get("name") == "overlayBody"
                 ]
                 self.assertEqual(
                     attributed, [],
@@ -3794,7 +3804,7 @@ class OverlayRailCallsiteLimitTests(unittest.TestCase):
         )
         for invocation in corridor["required_invocations"]:
             self.assertFalse(
-                invocation["caller"] == "body" and invocation["caller_file"] == self.VIEW,
+                invocation["caller"] == "overlayBody" and invocation["caller_file"] == self.VIEW,
                 "an edge is declared on a caller the provider cannot attribute")
 
 
