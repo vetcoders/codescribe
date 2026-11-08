@@ -557,13 +557,13 @@ struct OverlayAgentAudioControls: View {
   private var glyphOpacity: Double { connected ? 1 : OverlayDisconnectedRowDim.opacity }
 
   /// An open microphone keeps the shared place: that take is still running.
-  static func sharedShowsSpeaker(speaking: Bool, muted: Bool?, open: Bool) -> Bool {
+  nonisolated static func sharedShowsSpeaker(speaking: Bool, muted: Bool?, open: Bool) -> Bool {
     speaking && muted == false && !open
   }
 
   /// Symbol activity follows the existing open input and this actual host.
   /// Reduced motion and hidden windows retain the colored open-state glyph.
-  static func microphoneActivityActive(open: Bool, renderVisible: Bool, reduceMotion: Bool) -> Bool
+  nonisolated static func microphoneActivityActive(open: Bool, renderVisible: Bool, reduceMotion: Bool) -> Bool
   {
     open && renderVisible && !reduceMotion
   }

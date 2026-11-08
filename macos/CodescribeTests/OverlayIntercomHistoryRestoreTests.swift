@@ -20,10 +20,12 @@ final class OverlayIntercomHistoryRestoreTests: XCTestCase {
       defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
       store = OverlayIntercomDesktopStore(defaults: defaults)
       let session = "history-restore-fixture"
+      let leaseID = try XCTUnwrap(
+        AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session))
       owner = try XCTUnwrap(
         OverlayConversationOwner(row: [
           "provider": "codex", "provider_session_id": session,
-          "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session),
+          "lease_id": leaseID,
           "channel": "2", "name": "Retained owner",
         ]))
       conversation = .init(id: owner.id, channel: "2", name: owner.name, owner: owner, messages: [])

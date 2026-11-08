@@ -97,6 +97,13 @@ reload = "restart"
 category = "audio"
 description = "Power-user override of settings.json agent_channel.send_pause_sec: seconds of silence after heard voice that send an agent-channel message. Unset = the setting rules (default 5.0, 1.0..=15.0 on a 0.5 grid). Read into the runtime snapshot at load, never clamped; Settings shows the pause as (env override). Under agent_channel.session_policy = continuous the session keeps listening after the send; under end_after_message the send also ends the session. 0 turns automatic sending and agent_channel.voiceless_close_sec off. Seeds send_pause_sec once when a .env is first migrated into settings.json; toggle_silence_sec (hands-free dictation) is never an input."
 
+[vars.CODESCRIBE_AGENT_CONTEXT_WINDOW]
+default = ""
+type = "u64"
+reload = "restart"
+category = "agent"
+description = "Positive context-window token override for agent compaction budgets. Takes precedence over the provider-reported context window; unset uses provider/model-family defaults. Trims surrounding whitespace and removes underscores before parsing. Invalid or zero values are ignored."
+
 [vars.CODESCRIBE_AGENT_SEND_HOLD_SEC]
 default = "10"
 type = "u32"

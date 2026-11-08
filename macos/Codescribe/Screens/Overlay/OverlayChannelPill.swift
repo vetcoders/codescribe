@@ -479,13 +479,13 @@ extension OverlayChannelPill {
   static let railBadgeReservedCount = 99
 
   /// The rail capsule's figure: the count, or `99+` above 99.
-  static func railBadgeLabel(count: Int) -> String {
+  nonisolated static func railBadgeLabel(count: Int) -> String {
     count > railBadgeReservedCount ? "\(railBadgeReservedCount)+" : String(count)
   }
 
   /// The rail capsule's width: a circle for one digit, wider with two, and
   /// the two digits' width for `99+`.
-  static func railBadgeWidth(count: Int, scale: CGFloat) -> CGFloat {
+  nonisolated static func railBadgeWidth(count: Int, scale: CGFloat) -> CGFloat {
     let digits = CGFloat(String(min(count, railBadgeReservedCount)).count)
     return ceil(max(railBadgeHeight, digits * railBadgeDigitAdvance + 2 * railBadgePadding) * scale)
   }
@@ -493,14 +493,14 @@ extension OverlayChannelPill {
   /// The rail capsule's frame in a rail pill's coordinates (origin at the
   /// pill's top-leading corner, y down): beside the pill's top-right
   /// shoulder, outside the pill's capsule.
-  static func railBadgeFrame(count: Int, pillSize: CGSize, scale: CGFloat) -> CGRect {
+  nonisolated static func railBadgeFrame(count: Int, pillSize: CGSize, scale: CGFloat) -> CGRect {
     CGRect(
       x: pillSize.width - railBadgeOverlap * scale, y: -railBadgeRise * scale,
       width: railBadgeWidth(count: count, scale: scale), height: railBadgeHeight * scale)
   }
 
   /// How far a reserved-width capsule reaches past a rail pill's trailing edge.
-  static func railBadgeReach(scale: CGFloat) -> CGFloat {
+  nonisolated static func railBadgeReach(scale: CGFloat) -> CGFloat {
     railBadgeFrame(count: railBadgeReservedCount, pillSize: .zero, scale: scale).maxX
   }
 
