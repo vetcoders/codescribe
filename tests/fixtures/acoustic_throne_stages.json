@@ -384,7 +384,7 @@
               "file": "core/config/loader.rs",
               "signature_contains": "fn load_runtime_snapshot_with_keychain_population(",
               "required_code": [
-                "let input = Self::capture_runtime_inputs(populate_keychain)",
+                "let input = Self::capture_runtime_inputs(populate_keychain, None)",
                 "let snapshot = Self::resolve_runtime_snapshot_with_capture(|| input)"
               ]
             },

@@ -95,7 +95,7 @@ struct AgentConversationHeader: View {
         AgentLiveStatusPill(activity: store.selectedHeaderActivity)
           .layoutPriority(2)
       }
-      Text(verbatim: Self.identityLine(model: store.currentThread?.model))
+      Text(verbatim: Self.identityLine(model: store.selectedModelIdentity))
         .font(CSFont.mono(10, .medium))
         .foregroundStyle(CSColor.secondaryInk)
         .lineLimit(1)
@@ -110,7 +110,8 @@ struct AgentConversationHeader: View {
   }
 
   /// "Agent · grok-4.5" when the thread carries a model, "Agent" otherwise.
-  /// Shows only what the thread already stores; there is no model switcher.
+  /// The store supplies the active turn's accepted model, then its historical
+  /// value after that execution ends; this line owns no model selection.
   static func identityLine(model: String?) -> String {
     if let model = model?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty {
       return String(
@@ -176,7 +177,8 @@ struct AgentWidthModeButton: View {
     .fixedSize()
     .help(mode.label)
     .accessibilityLabel(
-      String(localized: "Conversation width", comment: "Submenu of the Agent header menu"))
+      String(localized: "Conversation width", comment: "Submenu of the Agent header menu")
+    )
     .accessibilityValue(mode.label)
     .accessibilityIdentifier("agent-width-mode")
   }
@@ -392,6 +394,9 @@ struct AgentContextPanel: View {
     guard let model = thread.model?.trimmingCharacters(in: .whitespacesAndNewlines),
       !model.isEmpty
     else { return nil }
+    if let provider = thread.provider, !provider.isEmpty, !model.hasPrefix(provider + "/") {
+      return provider + "/" + model
+    }
     return model
   }
 }

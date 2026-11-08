@@ -20580,6 +20580,22 @@
         }
       }
     },
+    "The accepted turn has no model configuration. Send it again." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The accepted turn has no model configuration. Send it again."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zaakceptowana tura nie ma zapisanej konfiguracji modelu. Wyślij ją ponownie."
+          }
+        }
+      }
+    },
     "The app bundle does not contain the Codescribe agent bridge payload." : {
       "localizations" : {
         "pl" : {

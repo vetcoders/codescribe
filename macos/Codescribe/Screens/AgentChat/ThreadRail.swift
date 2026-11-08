@@ -73,6 +73,9 @@ struct ThreadRail: View {
             ThreadRow(
               thread: thread,
               isActive: thread.id == selectedThreadID,
+              activity: store.headerActivity(in: thread.id),
+              queuedCount: store.queuedTurns(in: thread.id).count,
+              model: store.modelIdentity(for: thread),
               isEditing: editingThreadID == thread.id,
               renameDraft: $renameDraft,
               onSelect: { select(thread.id) },
@@ -274,6 +277,9 @@ enum ThreadRowSecondaryInk: Equatable {
 private struct ThreadRow: View {
   let thread: ChatThread
   let isActive: Bool
+  let activity: AgentHeaderActivity
+  let queuedCount: Int
+  let model: String?
   let isEditing: Bool
   @Binding var renameDraft: String
   let onSelect: () -> Void
@@ -321,7 +327,7 @@ private struct ThreadRow: View {
       }
       .accessibilityElement(children: isEditing ? .contain : .combine)
       .accessibilityLabel(title)
-      .accessibilityValue(thread.meta)
+      .accessibilityValue(accessibilitySummary)
       .accessibilityAddTraits(.isButton)
       .accessibilityAddTraits(isActive ? .isSelected : [])
       .accessibilityHint(
@@ -340,6 +346,22 @@ private struct ThreadRow: View {
     thread.isFavorite
       ? String(localized: "Remove from favorites")
       : String(localized: "Add to favorites")
+  }
+
+  private var accessibilitySummary: String {
+    ([thread.meta, model, activity.statusLabel, queuedCount > 0 ? queuedSummary : nil]
+      .compactMap { $0 }).joined(separator: ". ")
+  }
+
+  private var queuedSummary: String {
+    "\(String(localized: "Queued")): \(queuedCount)"
+  }
+
+  private var showsProgress: Bool {
+    switch activity {
+    case .thinking, .answering, .usingTools, .stopping: true
+    case .idle, .awaitingApproval, .failed: false
+    }
   }
 
   private var favoriteHelp: String {
@@ -382,12 +404,36 @@ private struct ThreadRow: View {
       }
 
       HStack(spacing: 5) {
-        Text(ThreadRailMeta.timeOnly(from: thread.meta))
+        if let status = activity.statusLabel {
+          if showsProgress {
+            ProgressView()
+              .controlSize(.mini)
+              .accessibilityHidden(true)
+          }
+          Text(verbatim: status)
+            .lineLimit(1)
+            .font(.caption)
+            .foregroundStyle(secondaryStyle)
+        } else {
+          Text(ThreadRailMeta.timeOnly(from: thread.meta))
+            .lineLimit(1)
+            .font(.caption)
+            .foregroundStyle(secondaryStyle)
+        }
+
+        if queuedCount > 0 {
+          Label {
+            Text(verbatim: "\(queuedCount)")
+          } icon: {
+            Image(systemName: "clock")
+          }
           .lineLimit(1)
           .font(.caption)
           .foregroundStyle(secondaryStyle)
+          .accessibilityLabel(queuedSummary)
+        }
 
-        if let tag = ModelTag.display(for: thread.model) {
+        if let tag = ModelTag.display(for: model) {
           Text(verbatim: "·")
             .font(.caption)
             .foregroundStyle(secondaryStyle.opacity(0.6))

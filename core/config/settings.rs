@@ -133,6 +133,19 @@ pub struct AcpLaunchSettings {
     pub cwd: String,
 }
 
+/// Secret-free selection accepted with a composer turn. It survives queue
+/// persistence without copying credentials; the sole loader resolves the chosen
+/// account again while keeping provider topology, model and effort fixed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AgentTurnSelection {
+    pub provider: String,
+    pub model: String,
+    pub reasoning: Option<String>,
+    pub custom_provider: Option<CustomProvider>,
+    pub acp: Option<AcpLaunchSettings>,
+}
+
 /// Validated local launch facts sealed by the same pass as the Agent lane.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RuntimeAcpConfiguration {
@@ -1459,6 +1472,24 @@ impl RuntimeSettingsSnapshot {
     /// credentials, which only a redacting record may read.
     pub(crate) fn captured_inputs(&self) -> &super::loader::CapturedRuntimeInputs {
         &self.captured_inputs
+    }
+
+    /// Capture only the Agent selection, never credential or prompt bytes.
+    pub fn agent_turn_selection(&self) -> AgentTurnSelection {
+        let lane = self.llm_lanes.assistive();
+        AgentTurnSelection {
+            provider: lane.provider().as_str().to_string(),
+            model: lane.model().to_string(),
+            reasoning: lane.reasoning().map(|effort| effort.as_str().to_string()),
+            custom_provider: lane.provider().custom_id().and_then(|id| {
+                self.user_settings
+                    .llm_custom_providers
+                    .iter()
+                    .find(|p| p.id == id)
+                    .cloned()
+            }),
+            acp: self.user_settings.agent_acp.clone(),
+        }
     }
 
     /// Borrow the frozen runtime values.

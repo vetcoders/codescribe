@@ -291,7 +291,7 @@ impl Config {
     fn load_runtime_snapshot_with_keychain_population(
         populate_keychain: bool,
     ) -> RuntimeSettingsSnapshot {
-        let input = Self::capture_runtime_inputs(populate_keychain);
+        let input = Self::capture_runtime_inputs(populate_keychain, None);
         let prior_repairs = input.repair_receipt.clone();
         let snapshot = Self::resolve_runtime_snapshot_with_capture(|| input);
         // Recording/logging are host concerns, never part of resolution/sealing.
@@ -329,7 +329,41 @@ impl Config {
     }
 
     /// Production acquisition adapter. The shared resolver below sees values only.
-    fn capture_runtime_inputs(populate_keychain: bool) -> CapturedRuntimeInputs {
+    /// Restore a queued Agent selection through the canonical loader. No file
+    /// or process environment is changed, and credentials stay in their owner.
+    pub fn load_agent_turn_snapshot(
+        selection: &super::settings::AgentTurnSelection,
+    ) -> RuntimeSettingsSnapshot {
+        Self::runtime_snapshot_from_captured(Self::capture_runtime_inputs(false, Some(selection)))
+    }
+
+    fn apply_agent_turn_selection(
+        input: &mut CapturedRuntimeInputs,
+        selection: &super::settings::AgentTurnSelection,
+    ) {
+        // Explicit accepted intent wins over later settings/env changes.
+        input.overrides.remove("LLM_ASSISTIVE_PROVIDER");
+        input.overrides.remove("LLM_ASSISTIVE_MODEL");
+        input.user_settings.llm_assistive_provider = Some(selection.provider.clone());
+        input.user_settings.llm_assistive_model = Some(selection.model.clone());
+        input.user_settings.llm_assistive_reasoning = selection.reasoning.clone();
+        input.user_settings.agent_acp = selection.acp.clone();
+        if let Some(provider) = &selection.custom_provider {
+            input
+                .user_settings
+                .llm_custom_providers
+                .retain(|p| p.id != provider.id);
+            input
+                .user_settings
+                .llm_custom_providers
+                .push(provider.clone());
+        }
+    }
+
+    fn capture_runtime_inputs(
+        populate_keychain: bool,
+        selection: Option<&super::settings::AgentTurnSelection>,
+    ) -> CapturedRuntimeInputs {
         note_startup_acquisition("settings capture");
         let (values, user_settings) = Self::capture_config_and_settings(populate_keychain);
         let settings_path = UserSettings::settings_path();
@@ -394,6 +428,9 @@ impl Config {
             prompts: super::prompts::CapturedRuntimePrompts::default(),
             repair_receipt: super::repair::launch_receipt(),
         };
+        if let Some(selection) = selection {
+            Self::apply_agent_turn_selection(&mut input, selection);
+        }
         Self::warn_legacy_llm_endpoint_env();
         let registry = ProviderRegistry::from_settings(&input.user_settings);
         for lane in [
@@ -2455,6 +2492,35 @@ pub fn shared_channel_name_line(name: &str) -> String {
 /// the returned `Config`.
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn accepted_agent_selection_survives_settings_env_changes_and_json_restart() {
+        let root = std::path::PathBuf::from("/tmp/accepted-agent-selection");
+        let mut first = super::CapturedRuntimeInputs::defaults_at(root.clone(), 1);
+        first.user_settings.llm_assistive_provider = Some("openai-responses".into());
+        first.user_settings.llm_assistive_model = Some("accepted-model".into());
+        first.user_settings.llm_assistive_reasoning = Some("high".into());
+        let snapshot = super::Config::runtime_snapshot_from_captured(first);
+        let receipt = serde_json::to_string(&snapshot.agent_turn_selection()).unwrap();
+        assert!(!receipt.contains("api_key"));
+        let accepted = serde_json::from_str(&receipt).unwrap();
+        let mut later = super::CapturedRuntimeInputs::defaults_at(root, 2);
+        later.user_settings.llm_assistive_provider = Some("anthropic-messages".into());
+        later.user_settings.llm_assistive_model = Some("different-model".into());
+        later.user_settings.llm_assistive_reasoning = Some("low".into());
+        later
+            .overrides
+            .insert("LLM_ASSISTIVE_MODEL".into(), Ok("env-model".into()));
+        later
+            .overrides
+            .insert("LLM_ASSISTIVE_PROVIDER".into(), Ok("google".into()));
+        super::Config::apply_agent_turn_selection(&mut later, &accepted);
+        let restored = super::Config::runtime_snapshot_from_captured(later);
+        let lane = restored.llm_lanes().assistive();
+        assert_eq!(lane.provider().as_str(), "openai-responses");
+        assert_eq!(lane.model(), "accepted-model");
+        assert_eq!(lane.reasoning().unwrap().as_str(), "high");
+    }
+
     use super::*;
     use crate::config::UserSettings;
     use serial_test::serial;

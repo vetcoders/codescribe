@@ -29,12 +29,23 @@ private let queueLog = Logger(
 
 // MARK: - Engine seam (W2-01 injects the real adapter)
 
+/// Immutable provider settings accepted with a composer turn. The receipt is
+/// owned by the engine; the queue persists it without inspecting its payload.
+struct AgentTurnConfiguration: Codable, Hashable, Sendable {
+  let provider: String
+  let model: String
+  let reasoningEffort: String
+  let receipt: String
+}
+
 /// Thin, UI-only seam over the agent primitives the screen actually uses.
 /// W2-01 supplies an adapter that forwards to the real `VistaEngine`
 /// (mapping `assistive` → `VistaAiMode.assistive`). Kept free of bridge types
 /// so the view-model + #Preview compile and render standalone.
 @MainActor
 protocol AgentChatEngine: AnyObject {
+  func captureTurnConfiguration() -> AgentTurnConfiguration?
+  func releaseTurnConfiguration(_ configuration: AgentTurnConfiguration)
   /// True when the assistive provider can be built (keys present).
   func isAvailable() -> Bool
   /// Actionable reason the assistive lane cannot reach a model right now,
@@ -58,6 +69,19 @@ protocol AgentChatEngine: AnyObject {
     _ text: String,
     threadId: String,
     attachmentPaths: [String],
+    onDelta: @escaping @MainActor (String) -> Void,
+    onReasoning: @escaping @MainActor (String) -> Void,
+    onToolExecuting: @escaping @MainActor (_ name: String, _ id: String) -> Void,
+    onToolResult:
+      @escaping @MainActor (_ name: String, _ id: String, _ isError: Bool, _ reason: String) -> Void
+  ) async throws -> String
+  /// Dispatch with the configuration captured when this turn was accepted,
+  /// even if the user changed providers or models while it waited in FIFO.
+  func streamReply(
+    _ text: String,
+    threadId: String,
+    attachmentPaths: [String],
+    configuration: AgentTurnConfiguration?,
     onDelta: @escaping @MainActor (String) -> Void,
     onReasoning: @escaping @MainActor (String) -> Void,
     onToolExecuting: @escaping @MainActor (_ name: String, _ id: String) -> Void,
@@ -105,6 +129,26 @@ protocol AgentChatEngine: AnyObject {
 }
 
 extension AgentChatEngine {
+  func captureTurnConfiguration() -> AgentTurnConfiguration? { nil }
+  func releaseTurnConfiguration(_ configuration: AgentTurnConfiguration) {}
+
+  func streamReply(
+    _ text: String,
+    threadId: String,
+    attachmentPaths: [String],
+    configuration: AgentTurnConfiguration?,
+    onDelta: @escaping @MainActor (String) -> Void,
+    onReasoning: @escaping @MainActor (String) -> Void,
+    onToolExecuting: @escaping @MainActor (_ name: String, _ id: String) -> Void,
+    onToolResult:
+      @escaping @MainActor (_ name: String, _ id: String, _ isError: Bool, _ reason: String) -> Void
+  ) async throws -> String {
+    try await streamReply(
+      text, threadId: threadId, attachmentPaths: attachmentPaths,
+      onDelta: onDelta, onReasoning: onReasoning,
+      onToolExecuting: onToolExecuting, onToolResult: onToolResult)
+  }
+
   func consultationReply(
     _ text: String,
     threadId: String,
@@ -213,7 +257,7 @@ private struct AgentHeaderSlot {
   var runningCallIDs: [String] = []
 }
 
-/// The single composer-originated turn owned by the Swift UI. The local thread
+/// One composer-originated turn owned by the Swift UI. The local thread
 /// id targets the bubble/task; the backend id is the exact Rust cancellation
 /// key. `id` prevents a draining cancelled task from clearing a newer send.
 struct ActiveComposerTurn: Equatable {
@@ -222,6 +266,8 @@ struct ActiveComposerTurn: Equatable {
   let backendThreadID: String
   let assistantMessageID: UUID
   var phase: ComposerTurnPhase
+  var configuration: AgentTurnConfiguration? = nil
+  var isMaxConsultation: Bool = false
 }
 
 struct PendingToolApproval: Identifiable, Equatable {
@@ -523,6 +569,7 @@ struct ChatThread: Identifiable {
   var messages: [ChatMessage] = []
   var updatedAt: Date? = nil  // nil (local-only draft) groups under Today
   var model: String? = nil
+  var provider: String? = nil
   var totalTokens: UInt64? = nil
   var mode: String = "agent"
   var tags: [String] = []
@@ -1325,8 +1372,20 @@ final class AgentChatStore: ObservableObject {
   private var revealTask: Task<Void, Never>?
   private var didStartDemo = false
 
-  /// Exactly one composer send may own the composer-side cancellation path.
-  @Published private(set) var activeComposerTurn: ActiveComposerTurn?
+  /// One composer owner per durable backend thread. Different conversations
+  /// execute independently; every callback, Stop and terminal names its owner.
+  @Published private(set) var activeComposerTurns: [String: ActiveComposerTurn] = [:]
+
+  /// Established selected-thread projection for composer/UI consumers. It is
+  /// never the owner registry and changing the selection cannot affect a run.
+  var activeComposerTurn: ActiveComposerTurn? {
+    guard let selectedThreadID else { return nil }
+    return composerTurn(in: selectedThreadID)
+  }
+
+  private func composerTurn(in threadID: UUID) -> ActiveComposerTurn? {
+    activeComposerTurns.values.first { $0.threadID == threadID }
+  }
 
   /// Per-thread header projection. Latest lifecycle event wins; running tool
   /// call ids keep a concurrent count. Message text is never consulted.
@@ -1352,10 +1411,12 @@ final class AgentChatStore: ObservableObject {
     let task: Task<Void, Never>
   }
 
-  private var inFlightSends: [UUID: InFlightSend] = [:]
+  private var inFlightSends: [String: InFlightSend] = [:]
 
   func waitForComposerTurns(in threadID: UUID) async {
-    while let send = inFlightSends[threadID] {
+    while let turn = composerTurn(in: threadID),
+      let send = inFlightSends[turn.backendThreadID]
+    {
       await send.task.value
     }
   }
@@ -1488,7 +1549,7 @@ final class AgentChatStore: ObservableObject {
       }
       AgentPerf.log("thread index load", since: start, detail: "\(loaded.count) threads")
       var idleWaits = 0
-      while self.activeComposerTurn != nil || self.voiceTurnPhase != nil, idleWaits < 240,
+      while !self.activeComposerTurns.isEmpty || self.voiceTurnPhase != nil, idleWaits < 240,
         !Task.isCancelled
       {
         idleWaits += 1
@@ -1496,7 +1557,7 @@ final class AgentChatStore: ObservableObject {
       }
       guard !Task.isCancelled else { return }
       if !loaded.isEmpty, self.threadListRevision == revision,
-        self.activeComposerTurn == nil, self.voiceTurnPhase == nil, self.dictationThreadID == nil
+        self.activeComposerTurns.isEmpty, self.voiceTurnPhase == nil, self.dictationThreadID == nil
       {
         let mergeStart = Date()
         self.replaceThreads(
@@ -1577,11 +1638,18 @@ final class AgentChatStore: ObservableObject {
   /// Another thread's stream, tool, or approval does not leak into this value.
   var selectedHeaderActivity: AgentHeaderActivity {
     guard let threadID = selectedThreadID else { return .idle }
-    if isCancelling { return .stopping }
+    return headerActivity(in: threadID)
+  }
+
+  /// The same lifecycle projection feeds every rail row, including background
+  /// conversations. Nothing here depends on the selected thread.
+  func headerActivity(in threadID: UUID) -> AgentHeaderActivity {
+    if composerTurn(in: threadID)?.phase == .cancelling { return .stopping }
     if voiceTurnThreadID == threadID, voiceTurnPhase == .cancelling {
       return .stopping
     }
-    let approvals = currentToolApprovals.count
+    let backendID = restoredSearchRows().first { $0.id == threadID }?.backendId
+    let approvals = pendingToolApprovals.filter { $0.threadID == backendID }.count
     if approvals > 0 { return .awaitingApproval(count: approvals) }
     guard let slot = headerSlots[threadID] else { return .idle }
     if !slot.runningCallIDs.isEmpty {
@@ -1592,6 +1660,21 @@ final class AgentChatStore: ObservableObject {
     case .answering: return .answering
     case .failed: return .failed
     }
+  }
+
+  /// Active configuration wins over historical disk metadata. The idle row
+  /// keeps the last dispatched model until the persisted index catches up.
+  func modelIdentity(for thread: ChatThread) -> String? {
+    let configuration = composerTurn(in: thread.id)?.configuration
+    let model = configuration?.model ?? thread.model
+    let provider = configuration?.provider ?? thread.provider
+    guard let model, !model.isEmpty else { return nil }
+    guard let provider, !provider.isEmpty, !model.hasPrefix(provider + "/") else { return model }
+    return provider + "/" + model
+  }
+
+  var selectedModelIdentity: String? {
+    currentThread.flatMap { modelIdentity(for: $0) }
   }
 
   /// A Max turn belongs to its retained owner, not the cancellable composer
@@ -1720,7 +1803,9 @@ final class AgentChatStore: ObservableObject {
   /// until its first stream completes.
   func refreshThreadsFromExternalChange() {
     guard threadsProvider != nil else { return }
-    guard activeComposerTurn == nil, voiceTurnPhase == nil, dictationThreadID == nil else { return }
+    guard activeComposerTurns.isEmpty, voiceTurnPhase == nil, dictationThreadID == nil else {
+      return
+    }
     refreshThreads()
   }
 
@@ -1730,7 +1815,7 @@ final class AgentChatStore: ObservableObject {
     if trimmed == threadSearchQuery, threadSearchError == nil { return }
     threadListRevision &+= 1
     let hasActiveTurn =
-      activeComposerTurn != nil || voiceTurnPhase != nil || dictationThreadID != nil
+      !activeComposerTurns.isEmpty || voiceTurnPhase != nil || dictationThreadID != nil
     guard trimmed.isEmpty || !hasActiveTurn else {
       threadSearchError = String(
         localized: "Finish the current turn before changing the conversation search.")
@@ -1881,7 +1966,14 @@ final class AgentChatStore: ObservableObject {
     firstTurnTitleStates[thread.id] = nil
     customTitleThreadIDs.remove(thread.id)
     // Deleting a thread deletes its queue — in memory and on disk.
-    queuedTurns.removeAll { $0.threadID == thread.id }
+    let discarded = queuedTurns.filter {
+      $0.threadID == thread.id
+        || (thread.backendId != nil && $0.backendThreadID == thread.backendId)
+    }
+    for turn in discarded {
+      if let configuration = turn.configuration { engine?.releaseTurnConfiguration(configuration) }
+    }
+    queuedTurns.removeAll { turn in discarded.contains { $0.id == turn.id } }
     if let backendId = thread.backendId {
       removeDurableAcceptedTurns(backendThreadID: backendId)
     }
@@ -1890,15 +1982,14 @@ final class AgentChatStore: ObservableObject {
     // Swift-task cancel first (so the awaiting send sees isCancelled and
     // stays silent), then the engine-side cancel, which actually aborts the
     // Rust turn — stopping tool side effects, not just the UI updates.
-    inFlightSends[thread.id]?.task.cancel()
-    inFlightSends[thread.id] = nil
     if let backendId = thread.backendId {
-      _ = engine?.cancelReply(threadId: backendId)
+      inFlightSends[backendId]?.task.cancel()
+      inFlightSends[backendId] = nil
+      if !thread.isMaxConsultation { _ = engine?.cancelReply(threadId: backendId) }
       pendingToolApprovals.removeAll { $0.threadID == backendId }
+      activeComposerTurns[backendId] = nil
     }
-    if activeComposerTurn?.threadID == thread.id {
-      activeComposerTurn = nil
-    }
+    endHeaderActivity(in: thread.id, failed: false)
     // The composition of a thread being deleted has nowhere left to land. Its
     // words — typed, delivered, or both — become explicit recovery instead of
     // being lost with the thread, and taking it here, before the selection can
@@ -1917,6 +2008,7 @@ final class AgentChatStore: ObservableObject {
     if threads.isEmpty {
       newThread()
     }
+    dispatchNextQueuedTurnIfIdle()
   }
 
   /// Lazily pull a persisted thread's messages the first time it is selected.
@@ -2011,6 +2103,23 @@ final class AgentChatStore: ObservableObject {
     var text: String
     let attachments: [PendingAttachment]
     let enqueuedAt: Date
+    let configuration: AgentTurnConfiguration?
+    let isMaxConsultation: Bool
+
+    init(
+      id: UUID, threadID: UUID, backendThreadID: String, text: String,
+      attachments: [PendingAttachment], enqueuedAt: Date,
+      configuration: AgentTurnConfiguration? = nil, isMaxConsultation: Bool = false
+    ) {
+      self.id = id
+      self.threadID = threadID
+      self.backendThreadID = backendThreadID
+      self.text = text
+      self.attachments = attachments
+      self.enqueuedAt = enqueuedAt
+      self.configuration = configuration
+      self.isMaxConsultation = isMaxConsultation
+    }
   }
 
   /// FIFO of accepted-but-not-yet-running messages, ordered by acceptance
@@ -2018,7 +2127,12 @@ final class AgentChatStore: ObservableObject {
   @Published private(set) var queuedTurns: [QueuedTurn] = []
 
   func queuedTurns(in threadID: UUID) -> [QueuedTurn] {
-    queuedTurns.filter { $0.threadID == threadID }
+    let row = restoredSearchRows().first { $0.id == threadID }
+    return queuedTurns.filter {
+      $0.threadID == threadID
+        || ($0.backendThreadID == row?.backendId
+          && $0.isMaxConsultation == row?.isMaxConsultation)
+    }
   }
 
   /// Terminal-style composer history, oldest → newest. It includes already
@@ -2039,9 +2153,10 @@ final class AgentChatStore: ObservableObject {
 
   /// Cancel one still-queued (never dispatched) message.
   func cancelQueuedTurn(_ id: UUID) {
-    guard queuedTurns.contains(where: { $0.id == id }) else { return }
+    guard let turn = queuedTurns.first(where: { $0.id == id }) else { return }
     queuedTurns.removeAll { $0.id == id }
     removeDurableAcceptedTurn(id: id)
+    if let configuration = turn.configuration { engine?.releaseTurnConfiguration(configuration) }
   }
 
   /// Edit an accepted turn while it is still queued. The same durable sidecar
@@ -2077,7 +2192,7 @@ final class AgentChatStore: ObservableObject {
   }
 
   /// Accept a message: persist it durably, enqueue it FIFO on its thread, and
-  /// let the single dispatch owner start it if the composer slot is idle.
+  /// let its durable thread's owner start it when that conversation is idle.
   private func accept(
     text: String, staged: [PendingAttachment], threadID: UUID, origin: AgentSendOrigin
   ) {
@@ -2086,6 +2201,8 @@ final class AgentChatStore: ObservableObject {
     // mutates messages, including a selected row hidden by a no-match query.
     if threadsBeforeSearch != nil { searchThreads("") }
     let backendId = ensureBackendId(threadID)
+    let isMaxConsultation =
+      restoredSearchRows().first { $0.id == threadID }?.isMaxConsultation == true
     engine?.recordSendOrigin(
       origin, chars: text.count, threadId: backendId,
       recordingActive: dictationPhase == .recording)
@@ -2095,7 +2212,9 @@ final class AgentChatStore: ObservableObject {
       backendThreadID: backendId,
       text: text,
       attachments: staged,
-      enqueuedAt: Date()
+      enqueuedAt: Date(),
+      configuration: isMaxConsultation ? nil : engine?.captureTurnConfiguration(),
+      isMaxConsultation: isMaxConsultation
     )
     persistDurableAcceptedTurn(turn)
     queuedTurns.append(turn)
@@ -2106,49 +2225,60 @@ final class AgentChatStore: ObservableObject {
   }
 
   /// The ONLY `queued → running` transition. MainActor-serialized, guarded by
-  /// the single composer slot, and `startTurn` claims that slot synchronously —
-  /// so exactly one owner can ever promote a queued message. Threads with an
-  /// active voice turn are skipped (the core owns that thread's stream); their
-  /// queued messages wait for the voice terminal.
+  /// durable thread's slot, which `startTurn` claims synchronously. Promote
+  /// all independent conversations while retaining FIFO inside each one.
+  /// The single physical voice owner still blocks its own backend thread.
   private func dispatchNextQueuedTurnIfIdle() {
-    guard activeComposerTurn == nil else { return }
-    guard
-      let index = queuedTurns.firstIndex(where: { turn in
-        !(voiceTurnThreadID == turn.threadID && voiceTurnPhase != nil)
-      })
-    else { return }
-    var turn = queuedTurns.remove(at: index)
-    // The local UUID can go stale while queued (a rail refresh re-mints
-    // rows); the DURABLE binding is the backend thread id. Re-bind instead
-    // of dropping — an explicitly deleted thread already purged its queue
-    // in `delete`, so anything still here must run.
-    if !threads.contains(where: { $0.id == turn.threadID }) {
-      let resolvedID: UUID
-      if let match = threads.first(where: { $0.backendId == turn.backendThreadID }) {
-        resolvedID = match.id
-      } else {
-        var thread = ChatThread(
-          title: String(localized: "Restored draft", comment: "Title of a rebuilt thread shell"),
-          meta: Self.nowTimestamp
-        )
-        thread.backendId = turn.backendThreadID
-        thread.messagesLoaded = true
-        threads.insert(thread, at: 0)
-        resolvedID = thread.id
+    while let index = queuedTurns.firstIndex(where: { turn in
+      guard activeComposerTurns[turn.backendThreadID] == nil else { return false }
+      if turn.isMaxConsultation,
+        activeComposerTurns.values.contains(where: { $0.isMaxConsultation })
+      {
+        return false
       }
-      turn = QueuedTurn(
-        id: turn.id,
-        threadID: resolvedID,
-        backendThreadID: turn.backendThreadID,
-        text: turn.text,
-        attachments: turn.attachments,
-        enqueuedAt: turn.enqueuedAt
+      let voiceBackendID = voiceTurnThreadID.flatMap { id in
+        restoredSearchRows().first { $0.id == id }?.backendId
+      }
+      return voiceTurnPhase == nil || voiceBackendID != turn.backendThreadID
+    }) {
+      var turn = queuedTurns.remove(at: index)
+      // The local UUID can go stale while queued (a rail refresh re-mints
+      // rows); the DURABLE binding is the backend thread id. Re-bind instead
+      // of dropping — an explicitly deleted thread already purged its queue
+      // in `delete`, so anything still here must run.
+      if !threads.contains(where: { $0.id == turn.threadID }) {
+        let resolvedID: UUID
+        if let match = threads.first(where: {
+          $0.backendId == turn.backendThreadID && $0.isMaxConsultation == turn.isMaxConsultation
+        }) {
+          resolvedID = match.id
+        } else {
+          var thread = ChatThread(
+            title: String(localized: "Restored draft", comment: "Title of a rebuilt thread shell"),
+            meta: Self.nowTimestamp
+          )
+          thread.backendId = turn.backendThreadID
+          if turn.isMaxConsultation { thread.mode = "max" }
+          thread.messagesLoaded = true
+          threads.insert(thread, at: 0)
+          resolvedID = thread.id
+        }
+        turn = QueuedTurn(
+          id: turn.id,
+          threadID: resolvedID,
+          backendThreadID: turn.backendThreadID,
+          text: turn.text,
+          attachments: turn.attachments,
+          enqueuedAt: turn.enqueuedAt,
+          configuration: turn.configuration,
+          isMaxConsultation: turn.isMaxConsultation
+        )
+      }
+      queueLog.info(
+        "promoting turn \(turn.id, privacy: .public) thread=\(turn.backendThreadID, privacy: .public) queued=\(self.queuedTurns.count, privacy: .public)"
       )
+      startTurn(turn)
     }
-    queueLog.info(
-      "promoting turn \(turn.id, privacy: .public) thread=\(turn.backendThreadID, privacy: .public) queued=\(self.queuedTurns.count, privacy: .public)"
-    )
-    startTurn(turn)
   }
 
   /// Run one accepted message as the active composer turn. The acceptance id
@@ -2163,8 +2293,7 @@ final class AgentChatStore: ObservableObject {
     // The turn's own row decides the lane. A backend id can name both an agent
     // row and its Max consultation, so matching by backend id could pick the
     // wrong lane and have the engine refuse the turn.
-    let isMaxConsultation =
-      restoredSearchRows().first { $0.id == threadID }?.isMaxConsultation == true
+    let isMaxConsultation = queued.isMaxConsultation
     let userTurnIndex = currentUserTurnCount(in: threadID)
 
     // Carry the staged attachments onto the You bubble so the sender sees a
@@ -2177,13 +2306,21 @@ final class AgentChatStore: ObservableObject {
     let assistantID = assistant.id
     append(assistant, to: threadID)
     let turnID = queued.id
-    activeComposerTurn = ActiveComposerTurn(
+    activeComposerTurns[backendId] = ActiveComposerTurn(
       id: turnID,
       threadID: threadID,
       backendThreadID: backendId,
       assistantMessageID: assistantID,
-      phase: .thinking
+      phase: .thinking,
+      configuration: queued.configuration,
+      isMaxConsultation: isMaxConsultation
     )
+    if let configuration = queued.configuration,
+      let index = threads.firstIndex(where: { $0.id == threadID })
+    {
+      threads[index].model = configuration.model
+      threads[index].provider = configuration.provider
+    }
     beginHeaderActivity(in: threadID)
     if userTurnIndex == 0, !text.isEmpty, engine != nil {
       prepareFirstTurnTitle(for: threadID, backendThreadID: backendId)
@@ -2199,8 +2336,16 @@ final class AgentChatStore: ObservableObject {
         // the durable acceptance record is consumed. Only an app death
         // BEFORE this point leaves the record behind for restart replay.
         removeDurableAcceptedTurn(id: turnID)
-        releaseComposerTurn(turnID, in: threadID)
+        if let configuration = queued.configuration {
+          engine?.releaseTurnConfiguration(configuration)
+        }
+        releaseComposerTurn(turnID, backendThreadID: backendId)
       }
+      guard !Task.isCancelled,
+        acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID)
+      else { return }
+      // Stop can arrive after acceptance, before this task's first actor turn.
+      guard !Task.isCancelled else { return }
       guard let engine else {
         finish(
           assistantID, in: threadID,
@@ -2209,7 +2354,9 @@ final class AgentChatStore: ObservableObject {
       }
       // Graceful unavailable path — the engine reports WHAT is missing
       // (lane, endpoint or key) so the reply is actionable, not generic.
-      if !isMaxConsultation, let unavailableDetail = engine.availabilityDetail() {
+      if !isMaxConsultation, queued.configuration == nil,
+        let unavailableDetail = engine.availabilityDetail()
+      {
         finishTitleGenerationWithoutRequest(for: threadID)
         finish(assistantID, in: threadID, text: unavailableDetail)
         return
@@ -2231,7 +2378,7 @@ final class AgentChatStore: ObservableObject {
           guard acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) else {
             return
           }
-          setComposerPhase(.streaming, for: turnID)
+          setComposerPhase(.streaming, for: turnID, backendThreadID: backendId)
           noteHeaderLexical(.answering, in: threadID)
           update(assistantID, in: threadID) {
             $0.isThinking = false
@@ -2260,11 +2407,11 @@ final class AgentChatStore: ObservableObject {
         let onToolResult:
           @MainActor (_ name: String, _ id: String, _ isError: Bool, _ reason: String) -> Void = {
             [self] name, id, isError, reason in
-            pendingToolApprovals.removeAll {
-              $0.threadID == backendId && $0.callID == id
-            }
             guard acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID) else {
               return
+            }
+            pendingToolApprovals.removeAll {
+              $0.threadID == backendId && $0.callID == id
             }
             noteHeaderToolSettled(callID: id, in: threadID)
             recordToolResult(
@@ -2288,17 +2435,20 @@ final class AgentChatStore: ObservableObject {
             text,
             threadId: backendId,
             attachmentPaths: attachmentPaths,
+            configuration: queued.configuration,
             onDelta: onDelta,
             onReasoning: onReasoning,
             onToolExecuting: onToolExecuting,
             onToolResult: onToolResult
           )
         }
-        settleFirstTurnTitleAfterStream(for: threadID, backendThreadID: backendId)
-        titleStreamSettled = true
         // The thread may have been deleted mid-stream; drop the late
         // finalize + refresh so a cancelled send can't bring it back.
-        if Task.isCancelled { return }
+        guard !Task.isCancelled,
+          acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID)
+        else { return }
+        settleFirstTurnTitleAfterStream(for: threadID, backendThreadID: backendId)
+        titleStreamSettled = true
         finishPendingTools(before: assistantID, in: threadID)
         update(assistantID, in: threadID) {
           $0.isThinking = false
@@ -2312,14 +2462,16 @@ final class AgentChatStore: ObservableObject {
         endHeaderActivity(in: threadID, failed: false)
         refreshThreads(selectingBackendId: backendId)
       } catch {
-        if Task.isCancelled { return }
+        guard !Task.isCancelled,
+          acceptsComposerEvent(turnID, assistantID: assistantID, in: threadID)
+        else { return }
         finish(
           assistantID, in: threadID,
           text: String(localized: "Something went wrong: \(error.userFacingMessage)"),
           failed: true)
       }
     }
-    inFlightSends[threadID] = InFlightSend(id: turnID, task: sendTask)
+    inFlightSends[backendId] = InFlightSend(id: turnID, task: sendTask)
   }
 
   /// Launch the title lane as an independent, unstructured MainActor task.
@@ -2522,30 +2674,30 @@ final class AgentChatStore: ObservableObject {
     else { return }
 
     turn.phase = .cancelling
-    activeComposerTurn = turn
-    inFlightSends[turn.threadID]?.task.cancel()
+    activeComposerTurns[turn.backendThreadID] = turn
+    inFlightSends[turn.backendThreadID]?.task.cancel()
     let firstAcknowledgement = engine?.cancelReply(threadId: turn.backendThreadID) ?? false
     pendingToolApprovals.removeAll { $0.threadID == turn.backendThreadID }
 
     // A very fast Stop can beat Rust's registry setup while the provider and
     // persisted history are still loading. Retry only that unacknowledged
     // race; the UI click remains idempotent and every probe uses the same
-    // exact backend id. Settle after acknowledgement (or a bounded idle race).
+    // exact backend id. ACK only signals cancellation: the owner stays claimed
+    // until its stream task returns, so A2 cannot race draining A1.
     Task { @MainActor [weak self] in
       var acknowledged = firstAcknowledgement
-      var attempts = 0
-      while !acknowledged, attempts < 80 {
+      while !acknowledged {
         guard let self,
-          self.activeComposerTurn?.id == turn.id,
-          self.activeComposerTurn?.phase == .cancelling,
+          self.activeComposerTurns[turn.backendThreadID]?.id == turn.id,
+          self.activeComposerTurns[turn.backendThreadID]?.phase == .cancelling,
           let engine = self.engine
         else { break }
-        attempts += 1
         try? await Task.sleep(for: .milliseconds(25))
+        guard self.activeComposerTurns[turn.backendThreadID]?.id == turn.id,
+          self.activeComposerTurns[turn.backendThreadID]?.phase == .cancelling
+        else { break }
         acknowledged = engine.cancelReply(threadId: turn.backendThreadID)
       }
-      await Task.yield()
-      self?.settleStoppedComposerTurn(turn)
     }
   }
 
@@ -2848,38 +3000,44 @@ final class AgentChatStore: ObservableObject {
   }
 
   private func acceptsComposerEvent(_ turnID: UUID, assistantID: UUID, in threadID: UUID) -> Bool {
-    guard let turn = activeComposerTurn else { return false }
+    guard let turn = composerTurn(in: threadID) else { return false }
     return turn.id == turnID
       && turn.threadID == threadID
       && turn.assistantMessageID == assistantID
       && turn.phase != .cancelling
   }
 
-  private func setComposerPhase(_ phase: ComposerTurnPhase, for turnID: UUID) {
-    guard var turn = activeComposerTurn, turn.id == turnID, turn.phase != .cancelling else {
+  private func setComposerPhase(
+    _ phase: ComposerTurnPhase, for turnID: UUID, backendThreadID: String
+  ) {
+    guard var turn = activeComposerTurns[backendThreadID],
+      turn.id == turnID, turn.phase != .cancelling
+    else {
       return
     }
     turn.phase = phase
-    activeComposerTurn = turn
+    activeComposerTurns[backendThreadID] = turn
   }
 
-  private func releaseComposerTurn(_ turnID: UUID, in threadID: UUID) {
-    if inFlightSends[threadID]?.id == turnID {
-      inFlightSends[threadID] = nil
+  private func releaseComposerTurn(_ turnID: UUID, backendThreadID: String) {
+    if inFlightSends[backendThreadID]?.id == turnID {
+      inFlightSends[backendThreadID] = nil
     }
-    if activeComposerTurn?.id == turnID,
-      activeComposerTurn?.phase != .cancelling
-    {
-      activeComposerTurn = nil
+    if let turn = activeComposerTurns[backendThreadID], turn.id == turnID {
+      if turn.phase == .cancelling {
+        settleStoppedComposerTurn(turn)
+        return
+      }
+      activeComposerTurns[backendThreadID] = nil
     }
-    // Terminal of any kind frees the composer slot; the queue continues.
-    // A provider error or cancel must never silently strand queued items.
+    // This terminal frees only its durable thread. Another thread's owner,
+    // callbacks and queue are independent of the selected row.
     dispatchNextQueuedTurnIfIdle()
   }
 
   private func settleStoppedComposerTurn(_ turn: ActiveComposerTurn) {
-    guard activeComposerTurn?.id == turn.id,
-      activeComposerTurn?.phase == .cancelling
+    guard activeComposerTurns[turn.backendThreadID]?.id == turn.id,
+      activeComposerTurns[turn.backendThreadID]?.phase == .cancelling
     else { return }
     cancelPendingTools(before: turn.assistantMessageID, in: turn.threadID)
     update(turn.assistantMessageID, in: turn.threadID) {
@@ -2889,10 +3047,10 @@ final class AgentChatStore: ObservableObject {
       if $0.text.isEmpty { $0.text = "Stopped" }
       $0.timestamp = self.now()
     }
-    if inFlightSends[turn.threadID]?.id == turn.id {
-      inFlightSends[turn.threadID] = nil
+    if inFlightSends[turn.backendThreadID]?.id == turn.id {
+      inFlightSends[turn.backendThreadID] = nil
     }
-    activeComposerTurn = nil
+    activeComposerTurns[turn.backendThreadID] = nil
     endHeaderActivity(in: turn.threadID, failed: false)
     // A user Stop consumed its own turn but not the queue: FIFO continues.
     dispatchNextQueuedTurnIfIdle()
@@ -2951,21 +3109,29 @@ final class AgentChatStore: ObservableObject {
     let text: String
     let attachmentPaths: [String]
     let enqueuedAtEpoch: TimeInterval
+    let configuration: AgentTurnConfiguration?
+    let isMaxConsultation: Bool?
   }
 
   static let acceptedTurnsDefaultsKey = "AgentChatStore.acceptedTurns.v1"
 
   private func persistDurableAcceptedTurn(_ turn: QueuedTurn) {
     var stored = readDurableAcceptedTurns()
-    stored.removeAll { $0.id == turn.id }
-    stored.append(
-      DurableAcceptedTurn(
-        id: turn.id,
-        backendThreadID: turn.backendThreadID,
-        text: turn.text,
-        attachmentPaths: turn.attachments.map { $0.url.path },
-        enqueuedAtEpoch: turn.enqueuedAt.timeIntervalSince1970
-      ))
+    let record = DurableAcceptedTurn(
+      id: turn.id,
+      backendThreadID: turn.backendThreadID,
+      text: turn.text,
+      attachmentPaths: turn.attachments.map { $0.url.path },
+      enqueuedAtEpoch: turn.enqueuedAt.timeIntervalSince1970,
+      configuration: turn.configuration,
+      isMaxConsultation: turn.isMaxConsultation
+    )
+    // Editing queued text keeps its acceptance position across a restart.
+    if let index = stored.firstIndex(where: { $0.id == turn.id }) {
+      stored[index] = record
+    } else {
+      stored.append(record)
+    }
     writeDurableAcceptedTurns(stored)
   }
 
@@ -3024,9 +3190,14 @@ final class AgentChatStore: ObservableObject {
     guard !persisted.isEmpty else { return }
     if threadsBeforeSearch != nil { searchThreads("") }
     for item in persisted {
-      guard !queuedTurns.contains(where: { $0.id == item.id }) else { continue }
+      guard !queuedTurns.contains(where: { $0.id == item.id }),
+        !activeComposerTurns.values.contains(where: { $0.id == item.id })
+      else { continue }
       let threadID: UUID
-      if let existing = threads.first(where: { $0.backendId == item.backendThreadID }) {
+      if let existing = threads.first(where: {
+        $0.backendId == item.backendThreadID
+          && (item.isMaxConsultation == nil || $0.isMaxConsultation == item.isMaxConsultation)
+      }) {
         threadID = existing.id
       } else {
         // Accepted for a thread that never reached disk (the app died
@@ -3036,6 +3207,7 @@ final class AgentChatStore: ObservableObject {
           meta: Self.nowTimestamp
         )
         thread.backendId = item.backendThreadID
+        if item.isMaxConsultation == true { thread.mode = "max" }
         thread.messagesLoaded = true
         threads.insert(thread, at: 0)
         threadID = thread.id
@@ -3049,7 +3221,10 @@ final class AgentChatStore: ObservableObject {
           attachments: item.attachmentPaths.map {
             PendingAttachment(url: URL(fileURLWithPath: $0))
           },
-          enqueuedAt: Date(timeIntervalSince1970: item.enqueuedAtEpoch)
+          enqueuedAt: Date(timeIntervalSince1970: item.enqueuedAtEpoch),
+          configuration: item.configuration,
+          isMaxConsultation: item.isMaxConsultation
+            ?? (threads.first { $0.id == threadID }?.isMaxConsultation == true)
         ))
     }
     dispatchNextQueuedTurnIfIdle()
@@ -3344,6 +3519,7 @@ final class AgentChatStore: ObservableObject {
         && l.meta == r.meta && l.isFavorite == r.isFavorite
         && l.isRestored == r.isRestored
         && l.mode == r.mode && l.tags == r.tags
+        && l.model == r.model && l.provider == r.provider && l.totalTokens == r.totalTokens
     }
   }
 
@@ -3356,15 +3532,20 @@ final class AgentChatStore: ObservableObject {
   ) {
     let previousSelectedID = selectedThreadID
     let existingRows = restoredSearchRows()
-    let existingByBackend = Dictionary(
-      uniqueKeysWithValues: existingRows.compactMap { thread -> (String, ChatThread)? in
-        guard let backendId = thread.backendId else { return nil }
-        return (backendId, thread)
+    // Agent and Max can expose the same backend id as distinct rows. Preserve
+    // the lane's existing local identity, not whichever alias happened first.
+    let existingByBackend = existingRows.reduce(into: [String: [ChatThread]]()) { result, thread in
+      if let backendId = thread.backendId {
+        result[backendId, default: []].append(thread)
       }
-    )
+    }
 
     var next = incoming.map { remote -> ChatThread in
-      guard let backendId = remote.backendId, var existing = existingByBackend[backendId] else {
+      guard let backendId = remote.backendId,
+        var existing = existingByBackend[backendId]?.first(where: {
+          $0.isMaxConsultation == remote.isMaxConsultation
+        })
+      else {
         return remote
       }
       existing.title = remote.title
@@ -3374,6 +3555,11 @@ final class AgentChatStore: ObservableObject {
       existing.mode = remote.mode
       existing.tags = remote.tags
       existing.updatedAt = remote.updatedAt
+      if composerTurn(in: existing.id) == nil, let model = remote.model {
+        if existing.model != model { existing.provider = remote.provider }
+        existing.model = model
+      }
+      existing.totalTokens = remote.totalTokens
       return existing
     }
 
@@ -3381,9 +3567,17 @@ final class AgentChatStore: ObservableObject {
       let retained = existingRows.filter { thread in
         let isSelected = thread.id == previousSelectedID
         let isPopulatedDraft = thread.backendId == nil && !thread.messages.isEmpty
-        guard isSelected || isPopulatedDraft else { return false }
+        let ownsExecution = composerTurn(in: thread.id) != nil || voiceTurnThreadID == thread.id
+        let ownsQueue = queuedTurns.contains {
+          $0.threadID == thread.id
+            || ($0.backendThreadID == thread.backendId
+              && $0.isMaxConsultation == thread.isMaxConsultation)
+        }
+        guard isSelected || isPopulatedDraft || ownsExecution || ownsQueue else { return false }
         if let backendId = thread.backendId {
-          return !next.contains(where: { $0.backendId == backendId })
+          return !next.contains(where: {
+            $0.backendId == backendId && $0.isMaxConsultation == thread.isMaxConsultation
+          })
         }
         return !next.contains(where: { $0.id == thread.id })
       }
