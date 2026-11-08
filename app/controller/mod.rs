@@ -7790,7 +7790,7 @@ impl RecordingController {
             take_id,
             runtime_settings,
             raw,
-            crate::presentation::emitter::ProjectionAssembly::AllOrWholeRaw,
+            crate::presentation::emitter::ProjectionAssembly::TerminalDocument,
         )
         .await
     }
@@ -7805,7 +7805,7 @@ impl RecordingController {
         use crate::presentation::emitter::ProjectionAssembly;
         let policy = runtime_settings.formatting_policy();
         let policy_supported = match assembly {
-            ProjectionAssembly::AllOrWholeRaw => matches!(
+            ProjectionAssembly::TerminalDocument => matches!(
                 policy,
                 FormattingPolicy::Correction | FormattingPolicy::Smart | FormattingPolicy::Max
             ),
@@ -7838,7 +7838,7 @@ impl RecordingController {
             FormattingPolicy::Correction | FormattingPolicy::Smart
         ) {
             match assembly {
-                ProjectionAssembly::AllOrWholeRaw => {
+                ProjectionAssembly::TerminalDocument => {
                     presentation
                         .wait_for_occurrence_projections(
                             policy,

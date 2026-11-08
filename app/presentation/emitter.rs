@@ -1247,6 +1247,16 @@ fn append_exact_fragment(rendered: &mut String, fragment: &str) {
     rendered.push_str(fragment);
 }
 
+/// The terminal presentation boundary never revisits an existing prefix.
+fn append_terminal_sentence_boundary(text: &mut String) {
+    if !matches!(
+        text.trim_end().chars().last(),
+        Some('.' | '!' | '?' | '…' | ':')
+    ) {
+        text.push('.');
+    }
+}
+
 impl TranscriptReducer {
     fn mint_derived_projection(
         &mut self,
@@ -3212,12 +3222,7 @@ impl TranscriptReducer {
         // whitespace shaping happens progressively on source-bound live spans.
         // Even a long last owner or an invalidated cache cannot reopen a prefix.
         let mut shaped = source.clone();
-        if !matches!(
-            source.trim_end().chars().last(),
-            Some('.' | '!' | '?' | '…' | ':')
-        ) {
-            shaped.push('.');
-        }
+        append_terminal_sentence_boundary(&mut shaped);
         if shaped == source {
             return None;
         }
@@ -4033,7 +4038,7 @@ pub struct PresentationEmitter {
 /// How stop-time formatter selection assembles occurrence projections.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProjectionAssembly {
-    AllOrWholeRaw,
+    TerminalDocument,
     RefusedPerOccurrence,
 }
 
@@ -5473,8 +5478,9 @@ impl PresentationEmitter {
         }
     }
 
-    /// Choose one whole-take version. An incomplete Smart set yields a single
-    /// Corrections floor over all Raw; late versions never trigger delivery.
+    /// Freeze one terminal version. Current accepted occurrence formats keep
+    /// their place; missing or failed fragments retain their committed text.
+    /// Late formatter answers never trigger another delivery.
     pub fn delivery_projection(
         &self,
         policy: FormattingPolicy,
@@ -5484,7 +5490,7 @@ impl PresentationEmitter {
             None,
             policy,
             raw_at_handoff,
-            ProjectionAssembly::AllOrWholeRaw,
+            ProjectionAssembly::TerminalDocument,
         )
     }
 
@@ -5495,8 +5501,21 @@ impl PresentationEmitter {
         raw_at_handoff: &str,
         assembly: ProjectionAssembly,
     ) -> Option<DerivedTranscriptProjection> {
+        if let Some(document) = take_id.map(|id| id.strip_suffix(":stopping").unwrap_or(id))
+            && !self.owns_document(document)
+        {
+            return None;
+        }
+        if matches!(
+            policy,
+            FormattingPolicy::Correction | FormattingPolicy::Smart
+        ) && let Some(projection) =
+            self.occurrence_delivery_projection(take_id, policy, raw_at_handoff)
+        {
+            return Some(projection);
+        }
         if assembly == ProjectionAssembly::RefusedPerOccurrence {
-            return self.refused_delivery_projection(take_id, policy, raw_at_handoff);
+            return None;
         }
         let mut reducer = self
             .session_state
@@ -5620,7 +5639,7 @@ impl PresentationEmitter {
         Some(projection)
     }
 
-    fn refused_delivery_projection(
+    fn occurrence_delivery_projection(
         &self,
         take_id: Option<&str>,
         policy: FormattingPolicy,
@@ -5646,8 +5665,9 @@ impl PresentationEmitter {
             .keys()
             .next()
             .map(|occurrence| occurrence.session.clone())?;
-        if let Some(expected) = take_id.map(|id| id.strip_suffix(":stopping").unwrap_or(id))
-            && session_id != expected
+        if let Some(document) = take_id.map(|id| id.strip_suffix(":stopping").unwrap_or(id))
+            && self.capture_session_for_document(document).ok().as_deref()
+                != Some(session_id.as_str())
         {
             return None;
         }
@@ -5655,7 +5675,6 @@ impl PresentationEmitter {
             || !reducer.direct_document.is_empty()
             || reducer.committed_rendered_text() != raw_at_handoff
             || reducer.raw_human_revision
-            || reducer.manual_rendered_text.is_some()
             || !reducer.context_markers.is_empty()
             || reducer.explicit_raw_step_selected()
             || reducer
@@ -5665,6 +5684,38 @@ impl PresentationEmitter {
         {
             return None;
         }
+        // A whole accepted version remains ahead of occurrence assembly.
+        if let Some(whole) = reducer
+            .derived_projections
+            .iter()
+            .rev()
+            .find(|projection| {
+                projection.source_observation.is_none()
+                    && projection.source_state == "raw_document"
+                    && projection.source_raw_revision == reducer.revision
+                    && projection.requested_mode == policy.as_str()
+                    && projection.source_raw_text == raw_at_handoff
+                    && projection.status == "applied"
+            })
+            .cloned()
+        {
+            reducer.delivery_selection = Some(whole.clone());
+            drop(reducer);
+            self.publish_derived_paint(&whole);
+            return Some(whole);
+        }
+        // Non-human manual presentation is Light+'s owned Stop boundary. It
+        // may append a period, but cannot replace the accepted live prefix.
+        let closes_sentence = if let Some(manual) = &reducer.manual_rendered_text {
+            let occurrences = reducer.rendered_occurrence_span(None);
+            match manual.strip_prefix(&occurrences) {
+                Some("") => false,
+                Some(".") => true,
+                _ => return None,
+            }
+        } else {
+            false
+        };
         let mut text = String::new();
         let mut any_formatted = false;
         for (occurrence, entry) in &reducer.document_by_occurrence {
@@ -5689,6 +5740,9 @@ impl PresentationEmitter {
         if !any_formatted || text.trim().is_empty() {
             return None;
         }
+        if closes_sentence {
+            append_terminal_sentence_boundary(&mut text);
+        }
         let source_revision = reducer.revision;
         let mut projection = reducer.mint_derived_projection(
             session_id.clone(),
@@ -5708,7 +5762,7 @@ impl PresentationEmitter {
             *reducer
                 .derived_projections
                 .last_mut()
-                .expect("minted refused selection") = projection.clone();
+                .expect("minted occurrence selection") = projection.clone();
         }
         if projection.rendered_text != raw_at_handoff {
             reducer.anchor_document_timeline(&session_id);

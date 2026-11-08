@@ -99,6 +99,20 @@ replaces it; restarting the process still clears process-local state.
 Vetoes that keep Orient off the paste gun: empty / no-speech, live-stream
 session, quality-commit pending, overlay canvas holds the caret.
 
+### Accepted live formatting at Stop
+
+Correction and Smart freeze one delivery from the current committed occurrences.
+Each occurrence keeps its latest accepted, source-bound formatted version; an
+unavailable, failed or stale fragment keeps only that occurrence's committed
+Raw/Light+ text. A missing fragment never discards the accepted rest of the take
+(Founder regression report, 2026-11-08: live “branchem” reverted to Raw “graczem”).
+
+The emitter validates the owning document and its physical capture separately.
+Human edits, an explicit Raw selection and current whole-document versions keep
+their existing authority. Provisional paint does not become committed text.
+Once selected, the handoff stays frozen: a later formatter answer adds history,
+not another delivery.
+
 ### Stop path (restored 2026-09-08)
 
 The W0 authority demolition (`ac6d399b3`, 2026-08-24) removed the stop-path
