@@ -14,6 +14,13 @@ an additional system separator; this does not remove the glass optical edge.
 The Agent context column has its own real-content glass below the titlebar.
 The conversation alone owns the opaque reading canvas.
 
+Reading backgrounds respect both leading and top safe areas. The November 8
+striped/text desktop captures showed that allowing `.top` behind titlebar
+glass preserved a neutral sheet above the conversation while the trailing
+header sampled desktop colours and letters. Remove that opaque top extension
+in Agent and Settings; keep the reading canvas below it and preserve bottom
+coverage. Desktop comparison remains the optical acceptance gate.
+
 The accessory has an explicit 52 pt clipping viewport. The native material
 extends 8 pt below it, placing its lower optical rim outside the visible band;
 the real controls retain the original 52 pt frame. No opaque masking stripe is

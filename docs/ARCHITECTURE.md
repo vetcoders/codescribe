@@ -329,8 +329,10 @@ bounds and the two slots a window may fill. `NavigationSplitView` owns the
 native full-height sidebar material; `CSSidebarColumn` does not add another
 glass or visual-effect view behind it. Its accessibility canvas is opaque
 under Reduce Transparency or Increase Contrast. The detail reading background
-must respect the leading safe area: an opaque canvas extending under the
-floating sidebar blocks its view of the scene behind the window.
+must respect the leading and top safe areas: an opaque canvas extending under
+the floating sidebar or titlebar blocks its view of the scene behind the window.
+In Agent it fills the conversation only; in Settings it fills the detail below
+the titlebar. Neither paints an opaque sheet underneath the header glass.
 
 Agent and Settings share `CSWindowTopHeader`: one top titlebar accessory,
 52 pt high, whose rectangular `NSGlassEffectView.contentView` hosts the actual

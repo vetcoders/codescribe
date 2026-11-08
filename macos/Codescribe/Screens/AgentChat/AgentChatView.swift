@@ -475,9 +475,10 @@ private struct ThreadDetail: View {
   var body: some View {
     HStack(spacing: 0) {
       conversationColumn
-        // Keep the reading canvas inside the conversation: neither the native
-        // sidebar's leading safe area nor the context glass gets an opaque backing.
-        .background(CSColor.sheet, ignoresSafeAreaEdges: [.top, .bottom])
+        // The reading canvas stops below the titlebar and beside the sidebar.
+        // Extending it into the top safe area backs header glass with an opaque
+        // sheet, blocking the desktop exactly over the conversation column.
+        .background(CSColor.sheet, ignoresSafeAreaEdges: [.bottom])
       if isContextOpen {
         HStack(spacing: 0) {
           Divider()

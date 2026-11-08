@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Agent and Settings: keep the opaque reading background below the titlebar, so it no longer extends behind the header glass while the conversation and settings retain their reading canvas.
+
 - Expanded overlay and Bus resizing retains a single frozen image of the content instead of an empty panel. Text is clipped without scaling during the gesture; Markdown still lays out only after release, and cancellation restores the original window.
 
 - Agent and Settings: use one continuous native glass header and the system-owned sidebar material. The Agent context column has its own glass surface, while the conversation retains its reading canvas. The additional titlebar separator is disabled; active/inactive optical integration remains under review.
