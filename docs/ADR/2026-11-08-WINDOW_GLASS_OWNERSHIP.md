@@ -22,11 +22,17 @@ in Agent and Settings; keep the reading canvas below it and preserve bottom
 coverage. Desktop comparison remains the optical acceptance gate.
 
 The accessory has an explicit 52 pt clipping viewport. The native material
-extends 8 pt below it, placing its lower optical rim outside the visible band;
+extends 8 pt below and to its leading side, placing the joined optical rims
+outside the visible band;
 the real controls retain the original 52 pt frame. No opaque masking stripe is
 added. This targets the activation-sensitive rim still seen after the separate
 AppKit separator was disabled. Its optical result remains subject to paired
 active/inactive Light/Dark captures; geometry assertions alone are insufficient.
+
+The leading extension also places the material's top-left bevel outside the
+sidebar/detail join. Text-backdrop captures exposed that small diagonal notch
+once the header could sample the scene. The viewport and controls keep the
+original sidebar boundary; no material or hit area is added over native controls.
 
 The trailing context material similarly extends above its clipped panel by
 8 pt, with compensating padding preserving its content geometry. The November

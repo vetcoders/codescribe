@@ -49,9 +49,9 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
   /// margin. Convert the split boundary into this coordinate system instead
   /// of counting that margin twice. The detail glass reaches the window edge.
   final class HeaderHost: NSView {
-    /// The native glass rim belongs outside the visible titlebar/content seam.
+    /// Native glass rims belong outside the joined sidebar and content seams.
     /// This is material bleed, not a painted line or an opaque cover.
-    static var bottomOpticalBleed: CGFloat { CSSpace.sm }
+    static var joinedEdgeBleed: CGFloat { CSSpace.sm }
     let viewport = NSView()
     let glass = NSGlassEffectView()
     let content: NSHostingView<Header>
@@ -88,11 +88,12 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
 
     func setVisibleFrame(_ rect: NSRect) {
       if viewport.frame != rect { viewport.frame = rect }
-      let bleed = Self.bottomOpticalBleed
-      let material = NSRect(x: 0, y: -bleed, width: rect.width, height: rect.height + bleed)
+      let bleed = Self.joinedEdgeBleed
+      let material = NSRect(
+        x: -bleed, y: -bleed, width: rect.width + bleed, height: rect.height + bleed)
       if glass.frame != material { glass.frame = material }
       if glassContent.frame != glass.bounds { glassContent.frame = glass.bounds }
-      let controls = NSRect(x: 0, y: bleed, width: rect.width, height: rect.height)
+      let controls = NSRect(x: bleed, y: bleed, width: rect.width, height: rect.height)
       if content.frame != controls { content.frame = controls }
     }
 
