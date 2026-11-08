@@ -2700,9 +2700,17 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn google_screenshot_continuation_survives_real_storage_and_fresh_providers_v2_and_v1() {
+    #[test]
+    #[serial_test::serial]
+    fn google_screenshot_continuation_survives_real_storage_and_fresh_providers_v2_and_v1() {
         use codescribe_core::agent::{AgentSession, ImageAttachment};
+        let _env_serial = crate::test_env::data_dir_env_serial();
+        let data_root = tempfile::tempdir().unwrap();
+        let _data =
+            codescribe_core::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", data_root.path());
+        // The synchronous fixture owns the process environment lease. Only the
+        // provider work enters the runtime; no mutex guard crosses an await.
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
         for legacy in [false, true] {
             let mut server = mockito::Server::new_async().await;
             let path = "/v1beta/models/gemini-test:streamGenerateContent?alt=sse";
@@ -2867,5 +2875,6 @@ mod tests {
                     .is_err()
             );
         }
+        });
     }
 }
