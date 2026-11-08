@@ -5518,6 +5518,18 @@ def run(args: argparse.Namespace) -> int:
     recipients: set[str] | None = None
     human_drafts: dict[tuple[Any, Any], dict[str, Any]] = {}
 
+    def discard_message_drafts(key: tuple[Any, Any]) -> None:
+        """A refused closing snapshot settles its previews without an ACK."""
+        human_drafts.pop(key, None)
+        if lease:
+            retired = lease._drafts_of(key)
+            for queued_id in retired:
+                del lease.pending[queued_id]
+            if retired:
+                # Persist before advancing the source cursor. Replaying the
+                # closing snapshot is safe; resurrecting its previews is not.
+                lease.persist(active=True)
+
     def flush_human_drafts(key: tuple[Any, Any] | None = None) -> None:
         keys = [key] if key is not None else list(human_drafts)
         for current in keys:
@@ -5600,6 +5612,13 @@ def run(args: argparse.Namespace) -> int:
                 continue
             if lease and not lease.admits_channel_event(event):
                 continue
+            if short_spoken_broadcast(event):
+                key = draft_key(event)
+                discard_message_drafts(key)
+                # Do not queue a preview from this same decoded batch after
+                # its refusal has already retired persisted previews.
+                payloads = [payload for payload in payloads
+                            if payload.get("kind") not in DRAFT_KINDS or draft_key(payload) != key]
             payload = consider(
                 event,
                 name=name,
@@ -5660,6 +5679,11 @@ def run(args: argparse.Namespace) -> int:
                         continue
                     if lease and not lease.admits_channel_event(event):
                         continue
+                    if short_spoken_broadcast(event):
+                        key = draft_key(event)
+                        discard_message_drafts(key)
+                        if last is not None and draft_key(last) == key:
+                            last = None
                     payload = consider(
                         event,
                         name=name,
