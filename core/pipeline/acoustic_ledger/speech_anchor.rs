@@ -641,9 +641,10 @@ impl AcousticLedger {
                         && record.slot.sample_end == candidate.sample_end
                 })
                 .and_then(|record| record.sequence_source.as_ref())
-                .and_then(|target| {
-                    (target.observation == source.observation).then_some(target == source)
-                })
+                // A resolved sequence position has one target even when a
+                // neighbouring word came from another decoder pass. Falling
+                // back to overlap would give this word a second target.
+                .map(|target| SlotTarget::from(target) == SlotTarget::from(source))
         };
         if let Some(matches) = correspondence(left, right).or_else(|| correspondence(right, left)) {
             return matches;

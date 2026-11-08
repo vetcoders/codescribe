@@ -64,7 +64,9 @@ use serde::{Deserialize, Serialize};
 /// unique full-range acoustic mapping; coarse utterance labels carry speech debt.
 /// v37: source-bound interior publication pins use the full decoder context
 /// when a shorter speech component crosses its window's later fence.
-pub const WORD_POLICY: &str = "word-adjudication/v37-owned-context-fences";
+/// v38: an explicit sequence correspondence names one physical target across
+/// decoder passes; another observation cannot regain that target by overlap.
+pub const WORD_POLICY: &str = "word-adjudication/v38-exclusive-sequence-targets";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
