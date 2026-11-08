@@ -178,6 +178,23 @@ class SteerGlobalTests(unittest.TestCase):
                 from_file=None, once=True, human=False, full=False)), 0)
         self.assertEqual(emitted.call_count, 0, "nothing rings while Steer is off")
 
+    def test_watch_reaches_a_message_after_a_large_occurrence_record(self):
+        lease = self.lease()
+        events = DEMUX.follower_paths(self.root, self.lease_id)[1]
+        events.parent.mkdir(parents=True, exist_ok=True)
+        historical = self.direct(lease, kind="revised", occurrences=[
+            {"evidence": "x" * (1536 * 1024)}])
+        fresh = self.direct(lease, 2, text="fresh message after the large row")
+        for row in (historical, fresh):
+            DEMUX.emit_follower(row, events, "2", human_output=False)
+        before = events.read_bytes()
+        with mock.patch.object(DEMUX, "emit") as emitted:
+            self.assertEqual(DEMUX.watch_command(self.args(
+                from_file=None, once=True, human=False, full=False)), 0)
+        self.assertIn(fresh["delivery_id"], [call.args[0].get("delivery_id")
+                                           for call in emitted.call_args_list])
+        self.assertEqual(events.read_bytes(), before)
+
     # --- off: leaving channel zero never touches directs -----------------
 
     def test_leaving_channel_zero_keeps_directs_and_peers_as_mail(self):
