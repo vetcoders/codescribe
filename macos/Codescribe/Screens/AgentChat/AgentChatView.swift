@@ -171,7 +171,9 @@ enum AgentWindowChrome {
     window.isOpaque = false
     window.backgroundColor = .clear
     window.toolbarStyle = .unified
-    window.titlebarSeparatorStyle = .automatic
+    // The full-width glass already supplies its optical edge. A second
+    // system separator becomes a bright seam when this window is key.
+    window.titlebarSeparatorStyle = .none
     // The window owns the floor. The columns alone would let a collapsed
     // window shrink to the detail column, and a minimum on the split view
     // makes an opening sidebar slide and jump.
@@ -473,9 +475,10 @@ private struct ThreadDetail: View {
   var body: some View {
     HStack(spacing: 0) {
       conversationColumn
-        // Keep the reading canvas inside the conversation: neither the native
-        // sidebar's leading safe area nor the context glass gets an opaque backing.
-        .background(CSColor.sheet, ignoresSafeAreaEdges: [.top, .bottom])
+        // The reading canvas stops below the titlebar and beside the sidebar.
+        // Extending it into the top safe area backs header glass with an opaque
+        // sheet, blocking the desktop exactly over the conversation column.
+        .background(CSColor.sheet, ignoresSafeAreaEdges: [.bottom])
       if isContextOpen {
         HStack(spacing: 0) {
           Divider()

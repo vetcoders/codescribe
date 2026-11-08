@@ -389,7 +389,7 @@ struct OverlayAgentRailFramePreferenceKey: PreferenceKey {
 enum OverlayHeaderDensity: Equatable {
   case mini, midi, expanded
 
-  /// One row height keeps the fold control at the same offset in every form.
+  /// Controls share one row height. Mini has its own tighter outer insets.
   static let rowHeight: CGFloat = 26
 
   /// Room around the row that the clip must not cut: the close dot's hover
@@ -405,6 +405,10 @@ enum OverlayHeaderDensity: Equatable {
   }
 
   var brandSize: CGFloat { self == .expanded ? 15 : 13 }
+  @MainActor var horizontalInset: CGFloat { self == .mini ? DictationOverlayWindow.miniInset : 16 }
+  @MainActor var verticalInset: CGFloat {
+    self == .mini ? DictationOverlayWindow.miniVerticalPadding : 10
+  }
   var waveformBars: Int {
     switch self {
     case .mini, .midi: return 24
@@ -1387,12 +1391,12 @@ struct DictationOverlayView: View {
       // edge on every side (`DictationOverlayWindow.miniInset`).
       .padding(
         .horizontal,
-        (state.isMini ? DictationOverlayWindow.miniInset : 16) - OverlayHeaderDensity.clipInset
+        OverlayHeaderDensity(state.presentationMode).horizontalInset
+          - OverlayHeaderDensity.clipInset
       )
       .padding(
         .vertical,
-        (state.isMini ? DictationOverlayWindow.miniVerticalPadding : 10)
-          - OverlayHeaderDensity.clipInset
+        OverlayHeaderDensity(state.presentationMode).verticalInset - OverlayHeaderDensity.clipInset
       )
       .coordinateSpace(name: "overlay-header")
       // Keep the explicit drag region above the passive glass background.

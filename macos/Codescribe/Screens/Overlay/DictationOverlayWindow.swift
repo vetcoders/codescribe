@@ -124,6 +124,9 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// or default expanded size: manual sizing, an open editor, or a dirty draft.
   /// The panel remains the only writer of the transition frame.
   var qualifiedExpandedHeight: ((CGFloat) -> CGFloat?)?
+  /// Reads pane/scale policy without resizing the source during a gesture.
+  /// The panel remains the only writer of the frame and minimum size.
+  var expandedContentMinimumSize: ((OverlayContentSurface) -> NSSize)?
   fileprivate var presence: OverlayPresence?
   fileprivate var appWindowYield: OverlayAppWindowYield?
   private var dragStart: (mouse: NSPoint, frame: NSRect, miniFrame: NSRect?)?
@@ -456,8 +459,9 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
         surface: contentSurface, defaults: contentSizeDefaults)
     // Both axes meet the floor: a size remembered before the floor was raised
     // would otherwise unfold narrower than the header's ideal width.
-    let restingWidth = max(expanded.width, DictationOverlayWindow.minSize.width)
-    let restingHeight = max(expanded.height, DictationOverlayWindow.minSize.height)
+    let floor = presentationMinimumSize
+    let restingWidth = max(expanded.width, floor.width)
+    let restingHeight = max(expanded.height, floor.height)
     let qualified = qualifiedExpandedHeight?(restingWidth) ?? restingHeight
     return NSSize(width: restingWidth, height: max(restingHeight, qualified))
   }
@@ -522,11 +526,14 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// with the height of the rows it holds, the expanded readability floor.
   var presentationMinimumSize: NSSize {
     switch presentationMode {
-    case .mini: miniSize
+    case .mini: return miniSize
     case .midi:
-      NSSize(
+      return NSSize(
         width: midiBar.minimumWidth, height: midiBar.height(forWidth: midiBar.minimumWidth))
-    case .expanded: DictationOverlayWindow.minimumSize(for: .expanded)
+    case .expanded:
+      let base = DictationOverlayWindow.minimumSize(for: .expanded)
+      let content = expandedContentMinimumSize?(contentSurface) ?? base
+      return NSSize(width: max(base.width, content.width), height: max(base.height, content.height))
     }
   }
 
@@ -1003,7 +1010,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
         palette: OverlayAppearancePalette.resolve(
           effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             ? ColorScheme.dark : ColorScheme.light),
-        cornerRadius: CSRadius.window)
+        cornerRadius: CSRadius.window, capturesContent: true)
       resizePreviewMonitor = NSEvent.addLocalMonitorForEvents(
         matching: [.leftMouseDragged, .leftMouseUp]
       ) { [weak self] event in
@@ -1859,6 +1866,13 @@ enum DictationOverlayWindow {
     )
     panel.contentSurface = state.windowContentSurface
     panel.contentSizeDefaults = sizeDefaults
+    panel.expandedContentMinimumSize = { [weak state] surface in
+      let base = DictationOverlayWindow.minSize
+      guard surface == .agents, let state else { return base }
+      let width = OverlayAgentDrawerLayout.minimumWindowWidth(
+        layout: state.agentsLayout, textScale: textScale.scale)
+      return NSSize(width: max(base.width, width), height: base.height)
+    }
     panel.delegate = panel
     state.onPresentationModeChanged = { [weak panel, weak state] mode in
       guard let panel else { return }

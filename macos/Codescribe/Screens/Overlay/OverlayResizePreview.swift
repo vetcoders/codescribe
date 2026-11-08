@@ -25,7 +25,9 @@ final class OverlayResizeAnchorView: NSView {
 /// Transient native feedback for a window resize gesture. The windows being
 /// resized keep their frames and hide while the gesture lasts; this panel
 /// alone follows the pointer, so a window full of Markdown never reflows at
-/// pointer frequency. Its owner commits the final frame on release. It has no
+/// pointer frequency. Main-overlay gestures retain one frozen content image;
+/// grouped fiszki keep their header-only feedback. The owner commits the final
+/// frame on release. It has no
 /// document, draft or delivery state and performs no SwiftUI layout work.
 ///
 /// Introduced for fiszki; the main overlay uses the same preview since
@@ -47,6 +49,7 @@ final class OverlayResizePreview {
   init(
     windows: [NSWindow], group: Bool, headerHeight: CGFloat,
     palette: OverlayAppearancePalette, cornerRadius: CGFloat = 10,
+    capturesContent: Bool = false,
     freezesMouse: Bool = true, restore: @escaping (NSWindow) -> Void = { _ in }
   ) {
     sources = windows.map { ($0, $0.alphaValue, $0.ignoresMouseEvents) }
@@ -68,9 +71,22 @@ final class OverlayResizePreview {
       // The one-point cut is in the existing gap after the name/spacer, so
       // only empty chrome stretches; labels and right controls stay 1:1.
       let splitX = anchor.map { $0.convert($0.bounds, to: view).maxX - rect.minX + 1 }
+      var frozenContent: NSImage?
+      if capturesContent {
+        let body = NSRect(
+          x: view.bounds.minX,
+          y: view.isFlipped ? rect.maxY : view.bounds.minY,
+          width: view.bounds.width, height: max(0, view.bounds.height - height))
+        if !body.isEmpty, let bitmap = view.bitmapImageRepForCachingDisplay(in: body) {
+          view.cacheDisplay(in: body, to: bitmap)
+          if let image = bitmap.cgImage {
+            frozenContent = NSImage(cgImage: image, size: body.size)
+          }
+        }
+      }
       return OverlayResizePreviewView.Header(
         image: NSImage(cgImage: image, size: rect.size),
-        splitX: min(rect.width, max(0, splitX ?? rect.width)))
+        splitX: min(rect.width, max(0, splitX ?? rect.width)), content: frozenContent)
     }
     drawing = OverlayResizePreviewView(
       headers: headers, group: group, headerHeight: headerHeight, palette: palette,
@@ -122,6 +138,7 @@ final class OverlayResizePreviewView: NSView {
   struct Header {
     let image: NSImage
     let splitX: CGFloat
+    var content: NSImage? = nil
   }
   let headers: [Header?]
   let group: Bool
@@ -164,6 +181,21 @@ final class OverlayResizePreviewView: NSView {
       if let header {
         NSGraphicsContext.saveGraphicsState()
         path.addClip()
+        if let content = header.content {
+          NSGraphicsContext.saveGraphicsState()
+          let body = NSRect(
+            x: rect.minX, y: rect.minY, width: rect.width,
+            height: max(0, rect.height - header.image.size.height))
+          NSBezierPath(rect: body).addClip()
+          // A gesture repaints this bitmap only. Anchor at the top-left and
+          // clip at the new edges: never rescale text or relayout Markdown.
+          content.draw(
+            in: NSRect(
+              x: body.minX, y: body.maxY - content.size.height,
+              width: content.size.width, height: content.size.height),
+            from: .zero, operation: .sourceOver, fraction: 1)
+          NSGraphicsContext.restoreGraphicsState()
+        }
         let image = header.image
         let rightWidth = image.size.width - header.splitX
         let rightX = rect.maxX - rightWidth

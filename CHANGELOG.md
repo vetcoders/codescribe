@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bus window: the folded agents rail is narrower (about 66 pt from the divider to the window's edge, was about 87), its show-list button (`sidebar.right`) stands in the top-right corner on the pills' trailing edge instead of centred over them, and the pills stand a little looser (a 34 pt pitch, was 30).
 - Overlay bar: an agent's hover card never cuts its text with an ellipsis. It grows to fit its longest line, up to 320 pt; a longer line, such as the time a gone agent was last heard, wraps to a second line, and a provider and project too long to stand beside the agent's name go under it, whole.
 - Bus window: one fold button (`sidebar.right`) in the top-right corner of the agents list, in the empty band between the window header and the first row, hides the list to the rail of pills, and the same button at the top of the rail, just above the pills, shows it again; in the list it takes no row and no room from the rows, so the list does not move. The divider still folds and unfolds it too.
+- Agent and Settings: keep the opaque reading background below the titlebar, so it no longer extends behind the header glass while the conversation and settings retain their reading canvas.
+
+- Expanded overlay and Bus resizing retains a single frozen image of the content instead of an empty panel. Text is clipped without scaling during the gesture; Markdown still lays out only after release, and cancellation restores the original window.
+
+- Agent and Settings: use one continuous native glass header and the system-owned sidebar material. The Agent context column has its own glass surface, while the conversation retains its reading canvas. The additional titlebar separator is disabled; active/inactive optical integration remains under review.
+- Developer builds: Lab offers independent native **Glass tint** controls for onboarding, mini/MIDI and the Bus header. These controls do not change Agent/Settings or add an opaque veil.
+
 - Overlay and Bus window: the card that previews an agent's last messages shows the agent's presence dot between its number and its name, as in the agents list under ✦ and the roster's rows; channel 0 and your inbox keep their plain title.
 - Overlay and Bus window: an agent that stops reading shows its "!" once its oldest unread message is 10 minutes old, without waiting for another change on the bus.
 - Overlay: the list under the Agents button (✦) is as wide as its widest row needs. Your inbox's row no longer keeps room for the antenna and moon it does not show, so a long inbox name above short agent names leaves no empty space on the right; the unread dots still stand in one column at the right edge.

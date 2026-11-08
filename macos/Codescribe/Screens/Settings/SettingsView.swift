@@ -42,10 +42,9 @@ struct SettingsView: View {
     } detail: {
       detail
         .frame(minWidth: Self.detailMinWidth)
-        // Native detail extends under the floating sidebar. Keep its opaque
-        // reading canvas out of that leading safe area so sidebar glass can sample
-        // the scene behind the window instead of a sheet-coloured backing.
-        .background(CSColor.sheet, ignoresSafeAreaEdges: [.top, .bottom, .trailing])
+        // Native detail extends beneath floating sidebar and titlebar glass.
+        // Keep the opaque reading canvas out of both leading and top safe areas.
+        .background(CSColor.sheet, ignoresSafeAreaEdges: [.bottom, .trailing])
     }
     .csSidebarToggle(expanded: $sidebarExpanded)
     .toolbarVisibility(.visible, for: .windowToolbar)
@@ -114,6 +113,7 @@ struct SettingsView: View {
     window.title = String(localized: "Settings")
     window.titleVisibility = .hidden
     window.titlebarAppearsTransparent = true
+    window.titlebarSeparatorStyle = .none
     window.styleMask.insert(.fullSizeContentView)
     window.isOpaque = false
     window.backgroundColor = .clear

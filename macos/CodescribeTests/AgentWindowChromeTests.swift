@@ -13,6 +13,42 @@ final class AgentWindowChromeTests: XCTestCase {
   private let sidebarKey = "AgentChat.sidebarExpanded.v1"
   private let panelKey = AgentContextPanelPreference.defaultsKey
 
+  func testHeaderAttachmentRetriesWithoutReplacingAnotherOwner() throws {
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+      styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    let coordinator = CSWindowTopHeader<Text>.Coordinator(header: Text(verbatim: "Header probe"))
+    defer {
+      coordinator.detach()
+      window.close()
+    }
+
+    coordinator.attach(to: window)
+    XCTAssertTrue(window.titlebarAccessoryViewControllers.isEmpty)
+    window.styleMask.insert(.fullSizeContentView)
+    let otherOwner = NSTitlebarAccessoryViewController()
+    otherOwner.layoutAttribute = .top
+    otherOwner.view = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 52))
+    window.addTitlebarAccessoryViewController(otherOwner)
+    coordinator.attach(to: window)
+    XCTAssertEqual(window.titlebarAccessoryViewControllers.count, 1)
+    XCTAssertTrue(window.titlebarAccessoryViewControllers.first === otherOwner)
+
+    window.removeTitlebarAccessoryViewController(at: 0)
+    coordinator.attach(to: window)
+    coordinator.attach(to: window)
+    XCTAssertEqual(window.titlebarAccessoryViewControllers.count, 1)
+    XCTAssertTrue(window.titlebarAccessoryViewControllers.first === coordinator.accessory)
+    window.titlebarSeparatorStyle = .automatic
+    NotificationCenter.default.post(name: NSWindow.didUpdateNotification, object: window)
+    XCTAssertEqual(window.titlebarSeparatorStyle, .none, "toolbar adoption cannot restore a seam")
+    coordinator.detach()
+    XCTAssertTrue(window.titlebarAccessoryViewControllers.isEmpty)
+    coordinator.attach(to: window)
+    XCTAssertEqual(window.titlebarAccessoryViewControllers.count, 1)
+  }
+
   /// The approved shape is one rectangular real-content glass view across
   /// the entire upper detail region, with the native window controls intact.
   func testTopTitlebarOwnerKeepsOneBandAndNativeWindowButtons() throws {
@@ -32,14 +68,18 @@ final class AgentWindowChromeTests: XCTestCase {
           .splitViewItems.first
       else { return false }
       return !sidebar.isCollapsed
-        && abs(self.frame(glass).minX - self.frame(sidebar.viewController.view).maxX) < 1
-        && abs(self.frame(glass).maxX - window.frame.width) < 1
+        && abs(self.visibleHeaderFrame(glass).minX - self.frame(sidebar.viewController.view).maxX)
+          < 1
+        && abs(self.visibleHeaderFrame(glass).maxX - window.frame.width) < 1
     }
     let owners = window.titlebarAccessoryViewControllers.filter { $0.layoutAttribute == .top }
     XCTAssertEqual(owners.count, 1)
     let owner = try XCTUnwrap(owners.first)
+    if #available(macOS 26.1, *) {
+      XCTAssertEqual(owner.preferredScrollEdgeEffectStyle, .soft)
+    }
     let glass = try XCTUnwrap(rectangularHeaderGlass(in: window))
-    let rect = frame(glass)
+    let rect = visibleHeaderFrame(glass)
     let sidebar = try XCTUnwrap(
       (splitView(in: window)?.delegate as? NSSplitViewController)?.splitViewItems.first)
     let lights = trafficLights(in: window)
@@ -49,6 +89,26 @@ final class AgentWindowChromeTests: XCTestCase {
     attachment.name = "Rectangular titlebar owner"
     attachment.lifetime = .keepAlways
     add(attachment)
+    let layerEvidence = XCTAttachment(
+      string: try headerJoinLayers(
+        in: window, boundary: frame(sidebar.viewController.view).maxX))
+    layerEvidence.name = "Header join compositing layers"
+    layerEvidence.lifetime = .keepAlways
+    add(layerEvidence)
+    let toolbarEvidence = XCTAttachment(
+      string: String(
+        decoding: try JSONSerialization.data(
+          withJSONObject: window.toolbar?.items.map {
+            [
+              "identifier": $0.itemIdentifier.rawValue,
+              "class": String(describing: type(of: $0)),
+              "trackingSeparator": $0 is NSTrackingSeparatorToolbarItem,
+            ] as [String: Any]
+          } ?? [], options: [.prettyPrinted, .sortedKeys]
+        ), as: UTF8.self))
+    toolbarEvidence.name = "Public toolbar ownership JSON"
+    toolbarEvidence.lifetime = .keepAlways
+    add(toolbarEvidence)
     XCTAssertEqual(frame(owner.view).height, 52, accuracy: 1)
     XCTAssertEqual(rect.height, 52, accuracy: 1)
     XCTAssertEqual(rect.maxY, window.frame.height, accuracy: 1)
@@ -57,6 +117,19 @@ final class AgentWindowChromeTests: XCTestCase {
     XCTAssertEqual(window.contentLayoutRect.maxY, window.frame.height - 52, accuracy: 1)
     XCTAssertEqual(glass.cornerRadius, 0)
     XCTAssertEqual(glass.style, .regular)
+    let viewport = try XCTUnwrap(glass.superview)
+    XCTAssertTrue(viewport.clipsToBounds)
+    XCTAssertLessThan(frame(glass).minY, frame(viewport).minY)
+    XCTAssertLessThan(frame(glass).minX, frame(viewport).minX)
+    XCTAssertEqual(frame(glass).maxX, frame(viewport).maxX, accuracy: 0.5)
+    XCTAssertEqual(frame(glass).maxY, frame(viewport).maxY, accuracy: 0.5)
+    let controls = try XCTUnwrap(
+      first(in: glass) { $0.identifier?.rawValue == "codescribe-header-content" })
+    XCTAssertEqual(frame(controls).minY, rect.minY, accuracy: 0.5)
+    XCTAssertEqual(frame(controls).maxY, rect.maxY, accuracy: 0.5)
+    XCTAssertEqual(frame(controls).minX, rect.minX, accuracy: 0.5)
+    XCTAssertEqual(frame(controls).maxX, rect.maxX, accuracy: 0.5)
+    XCTAssertEqual(window.titlebarSeparatorStyle, .none)
     XCTAssertNotNil(glass.contentView, "the real information and actions belong inside glass")
     XCTAssertEqual(lights.count, 3)
     XCTAssertTrue(lights.allSatisfy { !$0.isHiddenOrHasHiddenAncestor })
@@ -84,10 +157,11 @@ final class AgentWindowChromeTests: XCTestCase {
         defer { window.close() }
         pump(window) {
           guard let glass = self.rectangularHeaderGlass(in: window) else { return false }
-          return self.frame(glass).width > 200 && self.frame(glass).maxX >= width - 1
+          return self.visibleHeaderFrame(glass).width > 200
+            && self.visibleHeaderFrame(glass).maxX >= width - 1
         }
         let glass = try XCTUnwrap(rectangularHeaderGlass(in: window))
-        let rect = frame(glass)
+        let rect = visibleHeaderFrame(glass)
         let attachment = XCTAttachment(
           string: "requestedWidth=\(width) expanded=\(expanded) window=\(window.frame) "
             + "layout=\(window.contentLayoutRect) glass=\(rect)")
@@ -151,6 +225,7 @@ final class AgentWindowChromeTests: XCTestCase {
         XCTAssertEqual(window.titleVisibility, .hidden, "width \(width) expanded \(expanded)")
         XCTAssertTrue(window.titlebarAppearsTransparent, "width \(width) expanded \(expanded)")
         XCTAssertEqual(window.toolbarStyle, .unified, "width \(width) expanded \(expanded)")
+        XCTAssertEqual(window.titlebarSeparatorStyle, .none)
 
         let split = splitView(in: window)
         let controller = split?.delegate as? NSSplitViewController
@@ -184,7 +259,7 @@ final class AgentWindowChromeTests: XCTestCase {
 
         let glass = try XCTUnwrap(rectangularHeaderGlass(in: window))
         let content = try XCTUnwrap(glass.contentView)
-        let rect = frame(glass)
+        let rect = visibleHeaderFrame(glass)
         XCTAssertEqual(rect.maxX, window.frame.width, accuracy: 1)
         XCTAssertEqual(rect.midY, window.frame.height - 26, accuracy: 1)
         XCTAssertEqual(rect.height, 52, accuracy: 1)
@@ -582,6 +657,50 @@ final class AgentWindowChromeTests: XCTestCase {
     [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].compactMap {
       window.standardWindowButton($0)
     }
+  }
+
+  /// Visible geometry stays 52 pt; the native optical rim bleeds below it.
+  private func visibleHeaderFrame(_ glass: NSGlassEffectView) -> NSRect {
+    guard let viewport = glass.superview,
+      viewport.identifier?.rawValue == "codescribe-header-viewport"
+    else { return .zero }
+    return frame(glass).intersection(frame(viewport))
+  }
+
+  /// Public view/layer geometry only, around the join shown in the desktop
+  /// captures. Runtime class names are evidence, never behavior selectors.
+  private func headerJoinLayers(in window: NSWindow, boundary: CGFloat) throws -> String {
+    let root = try XCTUnwrap(window.contentView?.superview)
+    let join = NSRect(x: boundary - 16, y: window.frame.height - 64, width: 32, height: 64)
+    var rows: [[String: Any]] = []
+    func visit(_ view: NSView, depth: Int) {
+      guard depth < 32, rows.count < 100 else { return }
+      let rect = frame(view)
+      if rect.intersects(join), !view.isHiddenOrHasHiddenAncestor {
+        var row: [String: Any] = [
+          "depth": depth, "class": String(describing: type(of: view)),
+          "identifier": view.identifier?.rawValue ?? "",
+          "frame": NSStringFromRect(rect), "visibleRect": NSStringFromRect(view.visibleRect),
+          "clipsToBounds": view.clipsToBounds, "opaque": view.isOpaque,
+          "layerMasksToBounds": view.layer?.masksToBounds ?? false,
+          "layerCornerRadius": view.layer?.cornerRadius ?? 0,
+        ]
+        if let glass = view as? NSGlassEffectView {
+          row["glassCornerRadius"] = glass.cornerRadius
+          row["glassStyle"] = glass.style.rawValue
+        }
+        if let material = view as? NSVisualEffectView {
+          row["visualEffectMaterial"] = material.material.rawValue
+          row["blendingMode"] = material.blendingMode.rawValue
+        }
+        rows.append(row)
+      }
+      for child in view.subviews { visit(child, depth: depth + 1) }
+    }
+    visit(root, depth: 0)
+    let data = try JSONSerialization.data(
+      withJSONObject: rows, options: [.prettyPrinted, .sortedKeys])
+    return String(decoding: data, as: UTF8.self)
   }
 
   private func frame(_ view: NSView) -> NSRect {

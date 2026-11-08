@@ -7,6 +7,40 @@ alternative arrangements; this document does not select one as the final UI.
 
 ## Start with the visual owner
 
+### Resize feedback and performance boundary (2026-11-08)
+
+Expanded resize keeps the source window's frame fixed until release. The
+lightweight `OverlayResizePreview` captures header and content once, then paints
+only those images while the pointer moves. The content bitmap stays at its
+original pixel size, anchored top-left below the header, clipped when smaller;
+extra space shows the canvas until the final layout. Finish commits once;
+cancel restores the original frame, alpha and input policy. Grouped detached
+cards retain their header-only feedback. Divider gestures still move only a
+guide and commit width at release.
+
+This changes the feedback, not the performance contract. The header-only
+preview came from detached cards (`fbd6fb42e`, `e84d2772f`), was shared in
+`af0873976`, and was adopted for the expanded overlay by `4de332b18` after
+Maciej's November 3 report of Markdown reflow on every pointer move. Monika
+explicitly chose frozen full-content feedback on November 8 after reviewing
+resize recordings. Do not restore live Markdown reflow to improve the preview.
+Keep hidden/occluded animation gates, observation scoping, projection coalescing
+and covered-conversation rendering gates intact. The current Markdown view is
+native SwiftUI; the earlier Pensieve/WebKit donor lineage is not established
+by these commits.
+
+The expanded Bus floor reads the selected pane layout and text scale from
+`OverlayAgentDrawerLayout`. Both panes keep their readable minimum in split
+mode. Window resizing never implicitly folds either pane. Mini's tight header
+insets differ from the other forms; the stable placement pin is the window's
+upper-right corner, not an identical inset for every control.
+
+Acceptance includes capture reuse, source-frame invariance, unscaled body
+pixels, final/cancel restoration, split-width floors and visibility tests.
+Optical review and live transitions remain separate: passing these contracts
+does not establish foreground contrast on every wallpaper, or rule out clipped
+branding during a morph.
+
 | Change                                                                  | Existing owner                                                                          |
 | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | Agent name, clock, descriptor and message preview                       | `OverlayAgentRosterLabel.swift`                                                         |

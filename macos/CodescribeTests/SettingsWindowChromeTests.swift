@@ -41,24 +41,30 @@ final class SettingsWindowChromeTests: XCTestCase {
               in: root,
               where: {
                 $0.identifier?.rawValue == "codescribe-header-glass"
-              }),
+              }) as? NSGlassEffectView,
             let sidebar = (self.splitView(in: window)?.delegate as? NSSplitViewController)?
               .splitViewItems.first
           else { return false }
           return sidebar.isCollapsed == !expanded
-            && abs(self.frame(glass).maxX - window.frame.width) < 1
+            && abs(self.visibleHeaderFrame(glass).maxX - window.frame.width) < 1
         }
         let root = try XCTUnwrap(window.contentView?.superview)
         let glass = try XCTUnwrap(
           first(in: root) {
             $0.identifier?.rawValue == "codescribe-header-glass"
           } as? NSGlassEffectView)
-        let rect = frame(glass)
+        let rect = visibleHeaderFrame(glass)
         XCTAssertEqual(
           window.titlebarAccessoryViewControllers.filter { $0.layoutAttribute == .top }.count, 1)
         XCTAssertEqual(rect.maxX, window.frame.width, accuracy: 1)
         XCTAssertEqual(rect.maxY, window.frame.height, accuracy: 1)
         XCTAssertEqual(rect.height, 52, accuracy: 1)
+        XCTAssertEqual(window.titlebarSeparatorStyle, .none)
+        if #available(macOS 26.1, *) {
+          let owner = try XCTUnwrap(
+            window.titlebarAccessoryViewControllers.first { $0.layoutAttribute == .top })
+          XCTAssertEqual(owner.preferredScrollEdgeEffectStyle, .soft)
+        }
         XCTAssertEqual(rect.minY, window.contentLayoutRect.maxY, accuracy: 1)
         if expanded {
           let sidebar = try XCTUnwrap(
@@ -157,6 +163,14 @@ final class SettingsWindowChromeTests: XCTestCase {
   private func sidebarMaterial(in window: NSWindow) -> NSGlassEffectView? {
     guard let content = window.contentView else { return nil }
     return first(in: content) { $0 is NSGlassEffectView } as? NSGlassEffectView
+  }
+
+  /// Visible geometry stays 52 pt; the native optical rim bleeds below it.
+  private func visibleHeaderFrame(_ glass: NSGlassEffectView) -> NSRect {
+    guard let viewport = glass.superview,
+      viewport.identifier?.rawValue == "codescribe-header-viewport"
+    else { return .zero }
+    return frame(glass).intersection(frame(viewport))
   }
 
   private func frame(_ view: NSView) -> NSRect {
