@@ -21,6 +21,13 @@ added. This targets the activation-sensitive rim still seen after the separate
 AppKit separator was disabled. Its optical result remains subject to paired
 active/inactive Light/Dark captures; geometry assertions alone are insufficient.
 
+The trailing context material similarly extends above its clipped panel by
+8 pt, with compensating padding preserving its content geometry. The November
+8 19:14–19:15 captures showed the central header edge softened while the active
+context panel's top rim remained visible, especially in Light mode. This is a
+separate edge from the intentional divider below the context title. Its new
+clipping still requires optical acceptance.
+
 ## Why
 
 One owner per surface avoids overlapping sidebar materials and runtime alpha

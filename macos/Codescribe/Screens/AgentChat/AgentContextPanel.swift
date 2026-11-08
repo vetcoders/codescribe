@@ -176,7 +176,8 @@ struct AgentWidthModeButton: View {
     .fixedSize()
     .help(mode.label)
     .accessibilityLabel(
-      String(localized: "Conversation width", comment: "Submenu of the Agent header menu"))
+      String(localized: "Conversation width", comment: "Submenu of the Agent header menu")
+    )
     .accessibilityValue(mode.label)
     .accessibilityIdentifier("agent-width-mode")
   }
@@ -270,10 +271,15 @@ struct AgentContextPanel: View {
     .frame(maxHeight: .infinity, alignment: .top)
     // One real-content surface below the existing window header. The reading
     // canvas belongs to the conversation, so it never covers this glass.
+    // Extend only the material above the visible panel: the paired padding
+    // keeps the controls in place and clips its active top rim at the seam.
+    .padding(.top, CSSpace.sm)
     .background {
       if opaqueSurface { CSColor.sheet }
     }
     .glassEffect(opaqueSurface ? .identity : .regular, in: Rectangle())
+    .padding(.top, -CSSpace.sm)
+    .clipped()
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("agent-context-panel")
   }
