@@ -75,6 +75,9 @@ final class AgentWindowChromeTests: XCTestCase {
     let owners = window.titlebarAccessoryViewControllers.filter { $0.layoutAttribute == .top }
     XCTAssertEqual(owners.count, 1)
     let owner = try XCTUnwrap(owners.first)
+    if #available(macOS 26.1, *) {
+      XCTAssertEqual(owner.preferredScrollEdgeEffectStyle, .soft)
+    }
     let glass = try XCTUnwrap(rectangularHeaderGlass(in: window))
     let rect = visibleHeaderFrame(glass)
     let sidebar = try XCTUnwrap(
@@ -92,6 +95,20 @@ final class AgentWindowChromeTests: XCTestCase {
     layerEvidence.name = "Header join compositing layers"
     layerEvidence.lifetime = .keepAlways
     add(layerEvidence)
+    let toolbarEvidence = XCTAttachment(
+      string: String(
+        decoding: try JSONSerialization.data(
+          withJSONObject: window.toolbar?.items.map {
+            [
+              "identifier": $0.itemIdentifier.rawValue,
+              "class": String(describing: type(of: $0)),
+              "trackingSeparator": $0 is NSTrackingSeparatorToolbarItem,
+            ] as [String: Any]
+          } ?? [], options: [.prettyPrinted, .sortedKeys]
+        ), as: UTF8.self))
+    toolbarEvidence.name = "Public toolbar ownership JSON"
+    toolbarEvidence.lifetime = .keepAlways
+    add(toolbarEvidence)
     XCTAssertEqual(frame(owner.view).height, 52, accuracy: 1)
     XCTAssertEqual(rect.height, 52, accuracy: 1)
     XCTAssertEqual(rect.maxY, window.frame.height, accuracy: 1)

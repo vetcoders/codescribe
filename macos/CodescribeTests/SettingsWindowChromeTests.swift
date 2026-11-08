@@ -60,6 +60,11 @@ final class SettingsWindowChromeTests: XCTestCase {
         XCTAssertEqual(rect.maxY, window.frame.height, accuracy: 1)
         XCTAssertEqual(rect.height, 52, accuracy: 1)
         XCTAssertEqual(window.titlebarSeparatorStyle, .none)
+        if #available(macOS 26.1, *) {
+          let owner = try XCTUnwrap(
+            window.titlebarAccessoryViewControllers.first { $0.layoutAttribute == .top })
+          XCTAssertEqual(owner.preferredScrollEdgeEffectStyle, .soft)
+        }
         XCTAssertEqual(rect.minY, window.contentLayoutRect.maxY, accuracy: 1)
         if expanded {
           let sidebar = try XCTUnwrap(

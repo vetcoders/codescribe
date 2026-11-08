@@ -116,6 +116,12 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
       host = HeaderHost(header: header)
       super.init()
       accessory.layoutAttribute = .top
+      // Glass sampling and scroll-edge legibility are separate system effects.
+      // Keep scrolled document content on the native soft edge, without adding
+      // a custom opacity strip or changing the desktop-sampling material.
+      if #available(macOS 26.1, *) {
+        accessory.preferredScrollEdgeEffectStyle = .soft
+      }
       accessory.view = host
       host.refresh = { [weak self] in self?.updateGeometry() }
     }

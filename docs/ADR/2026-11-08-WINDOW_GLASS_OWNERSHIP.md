@@ -66,6 +66,21 @@ expected scene-adoption transition.
 
 ## Validation and limits
 
+On macOS 26.1 and later the titlebar accessory explicitly requests the system
+soft scroll-edge effect through `preferredScrollEdgeEffectStyle`. Glass
+sampling of the scene and treatment of scrolling document content are separate
+mechanisms; the regular material is unchanged. macOS 26.0 retains its system
+default because this AppKit preference is unavailable there. This does not
+request a fixed blur radius or remove letters behind glass. Foreground
+legibility and the moving-content result require optical review.
+
+The November 8 join-layer diagnostic records public view/layer geometry in the
+real window. Both native sidebar and header glass report zero corner radius;
+the custom header's physical leading rim is outside its clipped viewport.
+AppKit also creates a titlebar boundary region at the join. Its presence is
+evidence of another compositing boundary, not proof of the photographed notch's
+cause. Do not select, hide or modify private system views to suppress it.
+
 Agent/Settings window tests cover the accessory count, native control exclusion,
 52 pt allocation, sidebar boundary, minimum/normal widths and collapsed/expanded
 states. Attachment lifecycle tests cover deferral, a competing owner, retry,
