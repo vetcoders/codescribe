@@ -1,9 +1,12 @@
-//! Integrator-owned regressions for word policies v38 and v39.
+//! Integrator-owned regressions for word policies v38, v39 and v40.
 //!
 //! Source under test: `dbd2b84b4` keeps an explicit sequence target exclusive
 //! across decoder passes, and `d545429fa` lets complete native DT evidence
 //! address one unmapped word between two mapped neighbours and keeps the
-//! latest accepted 1:1 word decision through the commit guard.
+//! latest accepted 1:1 word decision through the commit guard. `41900ec8a`
+//! expires sequence exclusions with their target, keeps the untouched full
+//! Whisper frame as context for words this owner already holds, and refuses a
+//! lone DT label against distinct complete Whisper windows.
 //!
 //! Recorded take S5 (`agent-channels-cf70e849`, app `f90d941d1`, 2026-11-08):
 //! the inputs below are copied from the decision trail, lines 351, 375, 394
@@ -20,6 +23,7 @@ use crate::audio::capture_receipt::{
 use crate::pipeline::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER;
 use crate::pipeline::word_confidence::{WordConfidence, WordConfidenceSource};
 use crate::stt::tail_provider::{TailRequestIdentity, TailSampleRange};
+use std::collections::BTreeSet;
 
 const RATE: u32 = 48_000;
 const S5_OWNER: (u64, u64) = (3_649_920, 3_976_800);
@@ -679,5 +683,410 @@ fn recorded_s5_commit_exemption_binds_the_latest_exact_word_decision() {
     assert!(
         !ledger.resolved_independent_word_operation(&operation),
         "no decision, no exemption"
+    );
+}
+
+fn latest_choice<'a>(
+    ledger: &'a AcousticLedger,
+    dt: &ObservationIdentity,
+    target: &SlotTarget,
+) -> &'a word_adjudication::WordChoiceReceipt {
+    ledger
+        .word_choices()
+        .iter()
+        .rev()
+        .find(|choice| &choice.observation == dt && choice.targets == [target.clone()])
+        .unwrap_or_else(|| panic!("DT left no decision for {target:?}"))
+}
+
+/// Distinct decode windows of complete Whisper hypotheses in a decision's
+/// recorded support that hear `label` for exactly `target`.
+fn whisper_windows(
+    choice: &word_adjudication::WordChoiceReceipt,
+    target: &SlotTarget,
+    label: &str,
+) -> BTreeSet<(u64, u64)> {
+    choice
+        .support
+        .iter()
+        .filter(|hypothesis| {
+            hypothesis.observation.producer == ObservationProducer::Whisper
+                && hypothesis.complete
+                && hypothesis.acoustic_boundaries_complete
+                && hypothesis.targets == [target.clone()]
+                && hypothesis.original_text.as_deref() == Some(label)
+        })
+        .filter_map(|hypothesis| hypothesis.decode)
+        .collect()
+}
+
+/// v40 acceptance on one ledger, as Lena asked: the same recorded batch
+/// corrects "nie" to "mnie" and keeps "Frontier". The refusal is the decision
+/// recorded in `word_choices`, not only a commit that did not happen, and it
+/// rests on Whisper windows the ledger actually holds for that word.
+///
+/// Request 25 heard "Frontier" too, but it published before request 26 put
+/// the word into this owner; context is kept only for words already held.
+/// The windows are therefore requests 26 (the word's own decode) and 27.
+#[test]
+fn recorded_s5_one_batch_corrects_nie_and_keeps_frontier_on_two_windows() {
+    let (ledger, owner, before, dt) = s5_after_dt("s5-v40-acceptance", S5_DT_WORDS);
+    let frontier = retained(&before, "Frontier");
+    let target = SlotTarget::from(&frontier);
+    let choice = latest_choice(&ledger, &dt, &target);
+    assert_eq!(
+        (
+            choice.candidate.surface.as_str(),
+            choice.accepted,
+            choice.lexical_resolved,
+            choice.reason.as_str(),
+        ),
+        ("front", false, false, "whisper_consensus_retained"),
+        "{choice:#?}"
+    );
+    assert!(
+        !ledger
+            .word_choices()
+            .iter()
+            .any(|choice| choice.observation == dt
+                && choice.targets == [target.clone()]
+                && choice.accepted),
+        "no DT decision for Frontier may be accepted"
+    );
+    let windows = whisper_windows(choice, &target, "Frontier");
+    assert_eq!(
+        windows,
+        BTreeSet::from([S5_WHISPER[1].decode, S5_WHISPER[2].decode]),
+        "support: {:#?}",
+        choice.support
+    );
+    let requests = choice
+        .support
+        .iter()
+        .filter(|hypothesis| {
+            hypothesis
+                .decode
+                .is_some_and(|decode| windows.contains(&decode))
+        })
+        .filter_map(|hypothesis| {
+            hypothesis
+                .producer_request
+                .as_ref()
+                .map(|request| request.request_id)
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        requests,
+        BTreeSet::from([S5_WHISPER[1].request, S5_WHISPER[2].request]),
+        "each window comes from its own decoder request"
+    );
+
+    let held = held_at(&ledger, &owner, &frontier);
+    assert_eq!(
+        (held.text.as_str(), held.producer),
+        ("Frontier", ObservationProducer::Whisper)
+    );
+    let nie = retained(&before, "nie");
+    let mnie = held_at(&ledger, &owner, &nie);
+    assert_eq!(
+        (mnie.text.as_str(), mnie.producer),
+        ("mnie", ObservationProducer::AppleDictation)
+    );
+    let label = committed_label(&ledger, &owner);
+    assert!(
+        label.contains("Frontier") && label.contains("bo mnie stać"),
+        "{label:?}"
+    );
+    assert_eq!(ledger.conservation().residue(), 0);
+}
+
+/// Lena's open question on v40: a refused lone label must close the dispute,
+/// not leave it open. A conflicted component keeps `word_trials_pending`
+/// true, so the seal is refused as `FrontierOpen` until an acoustic trial
+/// runs, keeps `word_labels_settled` false, so no settled formatter runs, and
+/// `word_finality`, which the seal carries, reports the word as unresolved.
+#[test]
+fn recorded_s5_retained_frontier_is_settled_not_left_in_dispute() {
+    let (ledger, owner, before, _) = s5_after_dt("s5-v40-finality", S5_DT_WORDS);
+    let target = SlotTarget::from(&retained(&before, "Frontier"));
+    let finality = ledger.word_finality(&owner);
+    let unresolved = finality
+        .iter()
+        .filter(|word| word.unresolved)
+        .map(|word| (word.selected.surface.clone(), word.targets.clone()))
+        .collect::<Vec<_>>();
+    let frontier = finality
+        .iter()
+        .find(|word| word.targets == [target.clone()])
+        .expect("the seal must carry a finality row for Frontier");
+    assert_eq!(
+        (
+            frontier.unresolved,
+            ledger.word_trials_pending(&owner),
+            ledger.word_labels_settled(&owner),
+        ),
+        (false, false, true),
+        "(Frontier unresolved, trials pending, labels settled); unresolved rows: {unresolved:#?}"
+    );
+}
+
+/// A later Whisper frame staged for the S5 owner after the recorded batches,
+/// before the recorded DT batch. Its words are request 27's publication words
+/// that fit the frame's decode window.
+struct ContextFrame {
+    case: &'static str,
+    decode: (u64, u64),
+    band: (u64, u64),
+    finality: &'static str,
+    exact_timing: bool,
+    /// This word carries request 27's decode window instead of the frame's.
+    foreign_decode_word: Option<&'static str>,
+    /// This word was rewritten by the live lexicon.
+    rewritten_word: Option<&'static str>,
+    second_window: bool,
+}
+
+/// One more Whisper frame, distinct from the recorded three.
+const DISTINCT_DECODE: (u64, u64) = (3_792_000, 4_224_000);
+const DISTINCT_BAND: (u64, u64) = (4_032_000, 4_224_000);
+
+fn record_context_frame(
+    ledger: &mut AcousticLedger,
+    owner: &OccurrenceIdentity,
+    frame: &ContextFrame,
+) {
+    capture_view(
+        ledger,
+        owner,
+        S5_DT_SPEECH_OBSERVED,
+        S5_DT_SPEECH,
+        S5_DT_ANCHOR_OBSERVED,
+    );
+    let observation = ObservationIdentity::new(
+        ObservationProducer::Whisper,
+        S5_WHISPER_REQUEST,
+        3,
+        owner.clone(),
+    );
+    let words = S5_WHISPER[2]
+        .publication
+        .iter()
+        .copied()
+        .filter(|word| frame.decode.0 <= word.1 && word.2 <= frame.decode.1)
+        .collect::<Vec<_>>();
+    let mut publication = pins_of(&words, frame.decode);
+    for pin in &mut publication {
+        if frame.foreign_decode_word == Some(pin.text.as_str()) {
+            *pin = pin
+                .clone()
+                .with_decode_window(S5_WHISPER[2].decode.0, S5_WHISPER[2].decode.1);
+        }
+        if frame.rewritten_word == Some(pin.text.as_str()) {
+            pin.surface_rewritten = true;
+        }
+    }
+    let selected = publication
+        .iter()
+        .filter(|pin| frame.band.0 <= pin.sample_start && pin.sample_end <= frame.band.1)
+        .cloned()
+        .collect::<Vec<_>>();
+    ledger.stage_word_evidence(
+        &observation,
+        &selected,
+        Some("inprocess:whisper"),
+        frame.finality,
+    );
+    ledger.stage_word_publication(&observation, frame.band, false, &publication);
+    let mut input = ledger
+        .word_evidence_input(&observation)
+        .expect("staged context frame")
+        .clone();
+    input.producer_request = Some(TailRequestIdentity {
+        request_id: 28,
+        range: sample_range(owner, frame.decode.0, frame.decode.1),
+    });
+    if frame.exact_timing {
+        input.timing = "exact_sample_range".into();
+    }
+    ledger.restore_word_evidence(input);
+    // The reducer's order: the frame's decode bounds, then its context.
+    ledger.record_word_decode_bounds(&observation, &selected);
+    ledger.record_whisper_publication_context(&observation);
+}
+
+/// Which later frame is a second Whisper window for the held "nie". Only a
+/// distinct, clean, final, exactly timed decode is; then the lone DT "mnie"
+/// is refused as consensus, which is the positive control that makes every
+/// other row mean something. A replay of request 27's own decode window
+/// under a later band, a frame with one word from another decode, a volatile
+/// frame, a frame without exact timing, a rewritten "nie" and a band that
+/// leaves its decode cast no vote, and "mnie" still corrects "nie".
+#[test]
+fn recorded_s5_only_a_distinct_clean_final_window_is_a_second_witness() {
+    let clean = ContextFrame {
+        case: "distinct clean window",
+        decode: DISTINCT_DECODE,
+        band: DISTINCT_BAND,
+        finality: "final",
+        exact_timing: true,
+        foreign_decode_word: None,
+        rewritten_word: None,
+        second_window: true,
+    };
+    let frames = [
+        ContextFrame {
+            case: "replay of request 27's window",
+            decode: S5_WHISPER[2].decode,
+            band: (4_032_000, S5_WHISPER[2].decode.1),
+            second_window: false,
+            ..clean
+        },
+        ContextFrame {
+            case: "one word from another decode",
+            foreign_decode_word: Some("stronie"),
+            second_window: false,
+            ..clean
+        },
+        ContextFrame {
+            case: "volatile frame",
+            finality: "volatile",
+            second_window: false,
+            ..clean
+        },
+        ContextFrame {
+            case: "no exact timing",
+            exact_timing: false,
+            second_window: false,
+            ..clean
+        },
+        ContextFrame {
+            case: "rewritten nie",
+            rewritten_word: Some("nie"),
+            second_window: false,
+            ..clean
+        },
+        ContextFrame {
+            case: "band leaves the decode",
+            band: (DISTINCT_BAND.0, DISTINCT_DECODE.1 + 48_000),
+            second_window: false,
+            ..clean
+        },
+        clean,
+    ];
+    let mut outcomes = Vec::new();
+    let mut support = Vec::new();
+    let mut retained_by_control = None;
+    for frame in &frames {
+        let (mut ledger, owner) =
+            s5_fixture(&format!("s5-context-{}", frame.case.replace(' ', "-")));
+        let before = ledger
+            .slots_of(&owner)
+            .expect("the S5 owner keeps its slots")
+            .to_vec();
+        record_context_frame(&mut ledger, &owner, frame);
+        let (dt, pins) = stage_dt(&mut ledger, &owner, S5_DT_WORDS);
+        ledger.admit_word_slots(&dt, &pins);
+        let nie = retained(&before, "nie");
+        let target = SlotTarget::from(&nie);
+        let choice = latest_choice(&ledger, &dt, &target);
+        let windows = whisper_windows(choice, &target, "nie").len();
+        let held = held_at(&ledger, &owner, &nie);
+        outcomes.push((
+            frame.case,
+            windows,
+            choice.accepted,
+            choice.reason == "whisper_consensus_retained",
+            held.text.clone(),
+        ));
+        for hypothesis in &choice.support {
+            support.push((
+                frame.case,
+                hypothesis.observation.producer,
+                hypothesis.decode,
+                hypothesis.original_text.clone(),
+                hypothesis.complete,
+                hypothesis.acoustic_boundaries_complete,
+                hypothesis.targets == [target.clone()],
+            ));
+        }
+        if frame.second_window {
+            retained_by_control = Some((ledger, owner, nie));
+        }
+    }
+    let expected = frames
+        .iter()
+        .map(|frame| {
+            if frame.second_window {
+                (frame.case, 2_usize, false, true, "nie".to_string())
+            } else {
+                (frame.case, 1_usize, true, false, "mnie".to_string())
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        outcomes, expected,
+        "(case, windows, accepted, consensus, held); support per case: {support:#?}"
+    );
+    let (ledger, owner, nie) = retained_by_control.expect("the positive control ran");
+    assert_nie_retained(&ledger, &owner, &nie, "distinct clean window");
+}
+
+/// v40 takes a true from either side of `same_anchored_word` before a false.
+/// Under v39 a live false recorded for the first argument hid a live true
+/// recorded for the second, so the answer depended on argument order. Over
+/// every word the recorded take held, retired or proposed, the relation must
+/// not depend on order.
+#[test]
+fn recorded_s5_same_anchored_word_does_not_depend_on_argument_order() {
+    let (ledger, owner, before, _) = s5_after_dt("s5-v40-symmetry", S5_DT_WORDS);
+    let mut words: Vec<WordSlot> = Vec::new();
+    let mut add = |slot: &WordSlot| {
+        if !words.contains(slot) {
+            words.push(slot.clone());
+        }
+    };
+    before.iter().for_each(&mut add);
+    ledger
+        .slots_of(&owner)
+        .expect("the S5 owner keeps its slots")
+        .iter()
+        .for_each(&mut add);
+    for operation in ledger.slot_operations() {
+        operation.sources.iter().for_each(&mut add);
+        operation.outputs.iter().for_each(&mut add);
+    }
+    for alternative in &ledger.slot_alternatives {
+        alternative.sources.iter().for_each(&mut add);
+    }
+    let mut asymmetric = Vec::new();
+    let mut same = 0;
+    for (index, left) in words.iter().enumerate() {
+        for right in &words[index + 1..] {
+            let forward = ledger.same_anchored_word(left, right);
+            let reverse = ledger.same_anchored_word(right, left);
+            same += usize::from(forward && reverse);
+            if forward != reverse {
+                asymmetric.push((
+                    (
+                        left.text.clone(),
+                        left.observation.generation,
+                        left.sample_start,
+                    ),
+                    (
+                        right.text.clone(),
+                        right.observation.generation,
+                        right.sample_start,
+                    ),
+                    forward,
+                ));
+            }
+        }
+    }
+    assert!(words.len() > S5_SOURCE_SLOTS.len(), "{} words", words.len());
+    assert!(same > 0, "the take holds words that are the same speech");
+    assert!(
+        asymmetric.is_empty(),
+        "{} words; order-dependent pairs: {asymmetric:#?}",
+        words.len()
     );
 }
