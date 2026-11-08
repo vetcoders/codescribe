@@ -9030,17 +9030,6 @@
         }
       }
     },
-    "Fixed position" : {
-      "comment" : "Overlay placement menu: the overlay stays on its remembered place",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Stałe miejsce"
-          }
-        }
-      }
-    },
     "Fixed windows" : {
       "shouldTranslate" : false
     },
@@ -14807,17 +14796,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Znaczniki w tym nagraniu: %lld"
-          }
-        }
-      }
-    },
-    "Place" : {
-      "comment" : "Overlay placement menu: submenu of the six places the overlay snaps to",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Miejsce"
           }
         }
       }

@@ -862,19 +862,18 @@ geometry evidence; do not add a second anchor store.
 The header's secondary-click menu (`OverlayHeaderMenu`, every header form)
 offers placement as native menu toggles, so the menu draws the checkmark (L9,
 2026-11-06; a checkmark drawn as a `Label` image is not the item's state and
-macOS 26 menus showed none). Under **Anchor** the mode comes first and the
-place under it (L17, 2026-11-06): the first level holds **Free motion** and
-**Fixed position**, exactly one of them checked (`OverlayState.freeMotion`),
-then the **Place** submenu with the six places, the remembered one checked
-also while Free motion is on (`OverlayState.placementRemembered`). Choosing
-a place, the remembered one included, switches to Fixed position and moves
-the panel there (`selectPlacementAnchor`). Choosing **Fixed position**
-returns the panel to the remembered place, and so does turning Free motion
-off (`OverlayState.setFreeMotion(false)` →
-`selectPlacementAnchor(placementAnchor)`, which fires `onPlacementChanged`);
-turning it on keeps the panel where it is dragged (`selectFreeMotion`). A
-native menu item that opens a submenu carries neither a checkmark nor an
-action, so Fixed position and Place are two items, not one.
+macOS 26 menus showed none). Under **Anchor** placement is one list with
+one checkmark (Monika, 2026-11-07): **Free motion** and the six places, seven
+items of one choice. Free motion is checked while it is on
+(`OverlayState.freeMotion`), otherwise the chosen place is
+(`OverlayState.placementChecked`). Choosing a place, the checked one included,
+pins the panel there, turns Free motion off and moves the panel
+(`selectPlacementAnchor`, which fires `onPlacementChanged`). Choosing Free
+motion unchecks the place and keeps the panel where it is dragged
+(`selectFreeMotion`); the chosen anchor stays remembered, so choosing the
+checked Free motion again returns the panel to the last chosen place
+(`OverlayState.setFreeMotion(false)` → `selectPlacementAnchor(placementAnchor)`).
+There is no separate Fixed position item and no Place submenu.
 Dragging and the saved origin (`OverlayPlacement`) are unchanged. The auto-fold
 submenu uses the same native toggles.
 
