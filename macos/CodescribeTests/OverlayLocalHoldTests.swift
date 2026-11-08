@@ -165,8 +165,11 @@ final class OverlayLocalHoldTests: XCTestCase {
     let state = state(agents: [lena]) { _, _, _, _ in
       calls += 1
       // A second publication is reported by `calls`, not by an XCTest
-      // over-fulfilment exception.
-      if calls == 1 { entered.fulfill() }
+      // over-fulfilment exception, and it never waits for `release`: the
+      // test must fail on the count, not hang on a publication it never
+      // expected.
+      guard calls == 1 else { return Self.published }
+      entered.fulfill()
       for await _ in release { break }
       return Self.published
     }
