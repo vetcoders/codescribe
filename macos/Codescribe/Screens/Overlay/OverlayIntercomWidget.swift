@@ -2864,6 +2864,9 @@ private struct OverlayIntercomConversationBody: View {
       onStopDraftSync: {
         guard current else { return }
         state.stopDraftSync(for: conversation.id)
+      },
+      onDeliveryControl: { control, message, owner, text in
+        try await state.controlDelivery(control, message: message, owner: owner, text: text)
       }
     )
   }

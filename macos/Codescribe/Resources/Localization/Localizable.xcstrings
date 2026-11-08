@@ -5799,6 +5799,17 @@
         }
       }
     },
+    "Codescribe quit while this message was being sent. It may already have reached the agent; check before sending it again." : {
+      "comment" : "A held message returned to the composer after a crash during its handoff",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codescribe zamknął się w trakcie wysyłania tej wiadomości. Mogła już dotrzeć do agenta; sprawdź, zanim wyślesz ją ponownie."
+          }
+        }
+      }
+    },
     "Codescribe records on whichever microphone macOS currently uses." : {
       "localizations" : {
         "pl" : {
@@ -20980,6 +20991,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "To powiązanie nie pasuje już do agenta na tym kanale. Wiadomość do niego nie pójdzie."
+          }
+        }
+      }
+    },
+    "This message is already being sent." : {
+      "comment" : "Cancel/Edit came after the send hold ended",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ta wiadomość jest już wysyłana."
           }
         }
       }

@@ -1532,6 +1532,13 @@ final class OverlayState {
       }
     }
     autoCollapse.onDeadline = { [weak self] in self?.autoCollapseDeadlineReached() }
+    // Enter during the send hold publishes nothing: the app keeps the message
+    // until its deadline or Send now (Maciej, 2026-11-08 09:13Z).
+    publishConversationText = { [weak self] owner, text, reply, alsoSentTo in
+      guard let self else { throw CancellationError() }
+      return try await self.holdConversationText(
+        owner: owner, text: text, reply: reply, alsoSentTo: alsoSentTo)
+    }
   }
 
   func attach() {
@@ -1871,6 +1878,44 @@ final class OverlayState {
   @ObservationIgnored private var composerDraftPersistTask: Task<Void, Never>?
   /// Typing is coalesced; a crash loses at most this much of it.
   static let composerDraftPersistDelay: Duration = .milliseconds(250)
+  /// Typed messages on the send hold. The app owns them until dispatch.
+  private(set) var heldSends: [OverlayHeldSend] = []
+  @ObservationIgnored private var heldSendClockTask: Task<Void, Never>?
+  /// The reader's last inventory, so the hold clock can repaint local rows
+  /// without waiting for the bus.
+  @ObservationIgnored private var busConversationSource: [OverlayConversation] = []
+  /// Seams: hold length, clock, sleep and the real publication (zero hold).
+  @ObservationIgnored var heldSendSeconds: () -> UInt32 = {
+    CodescribeConfig().loadSettings().agentSendHoldSec
+  }
+  @ObservationIgnored var heldSendNow: () -> Date = { Date() }
+  @ObservationIgnored var heldSendSleep: @MainActor (Duration) async -> Void = { duration in
+    try? await Task.sleep(for: duration)
+  }
+  @ObservationIgnored var dispatchConversationText:
+    @MainActor (
+      OverlayConversationOwner?, String, OverlayUserReplyReference?, [OverlayConversationOwner]
+    ) async throws -> AgentBusTextPublication =
+      {
+        owner, text, reply, alsoSentTo in
+        try await OverlayState.dispatchHeldText(owner, text, reply, alsoSentTo) {
+          try await RealAgentBridgeInstaller.sendBusText(
+            owner: $0, text: $1, holdSeconds: $2, userReplyTo: $3, alsoSentTo: $4)
+        }
+      }
+  /// The app already held the message; the helper must not hold it again.
+  static func dispatchHeldText(
+    _ owner: OverlayConversationOwner?, _ text: String, _ reply: OverlayUserReplyReference?,
+    _ alsoSentTo: [OverlayConversationOwner],
+    publisher: (
+      OverlayConversationOwner?, String, UInt32, OverlayUserReplyReference?,
+      [OverlayConversationOwner]
+    ) async throws -> AgentBusTextPublication
+  ) async throws -> AgentBusTextPublication {
+    try await publisher(owner, text, 0, reply, alsoSentTo)
+  }
+  /// Settled rows wait this long for the reader before they retire anyway.
+  static let heldSendSettleWindow: TimeInterval = 5
   /// No marks were ever stored at `readStateRoot`. The first inventory is
   /// adopted as read once, so an update does not resurface the whole history.
   @ObservationIgnored private var readStateNeedsAdoption = false
@@ -3144,7 +3189,41 @@ final class OverlayState {
     let stored = OverlayComposerDraftStore.load(cacheRoot: cacheRoot, now: now) ?? [:]
     storedComposerDrafts = stored
     unadoptedComposerDrafts = stored
+    // A message still on the hold when the app died comes back to its
+    // composer for review. A relaunch never publishes on its own; one that was
+    // being handed to the helper may already have reached the agent.
+    let interrupted = OverlayHeldSendStore.load(cacheRoot: cacheRoot).filter {
+      $0.phase != .dispatched
+    }
+    for send in interrupted {
+      // The warning does not depend on where the words end up: they may be
+      // in the draft file already and still have reached the agent.
+      if send.phase == .dispatching {
+        textMessageErrors[send.conversationID] = String(
+          localized:
+            "Codescribe quit while this message was being sent. It may already have reached the agent; check before sending it again."
+        )
+      }
+      if let existing = unadoptedComposerDrafts[send.conversationID] {
+        guard !existing.text.contains(send.text) else { continue }
+        unadoptedComposerDrafts[send.conversationID] = .init(
+          text: existing.text + "\n\n" + send.text, reply: existing.reply ?? send.reply,
+          savedAt: now)
+      } else {
+        unadoptedComposerDrafts[send.conversationID] = .init(
+          text: send.text, reply: send.reply, savedAt: now)
+      }
+    }
     adoptRestoredComposerDrafts(in: conversations)
+    guard !interrupted.isEmpty else { return }
+    persistComposerDrafts(now: now)
+    // Drop the held file only once every message is safe in the draft file.
+    if interrupted.allSatisfy({
+      storedComposerDrafts[$0.conversationID]?.text.contains($0.text) == true
+        || conversationDraft(for: $0.conversationID).contains($0.text)
+    }) {
+      try? OverlayHeldSendStore.save(cacheRoot: cacheRoot, sends: [])
+    }
   }
 
   private func adoptRestoredComposerDrafts(in available: [OverlayConversation]) {
@@ -3206,6 +3285,216 @@ final class OverlayState {
     }
   }
 
+  // MARK: Held sends: the hold belongs to the UI
+
+  /// Enter while a hold is set: freeze the message in the app and return at
+  /// once, so the composer frees and the send path clears the draft as before.
+  /// Nothing reaches the helper until the deadline or Send now.
+  func holdConversationText(
+    owner: OverlayConversationOwner?, text: String, reply: OverlayUserReplyReference?,
+    alsoSentTo: [OverlayConversationOwner]
+  ) async throws -> AgentBusTextPublication {
+    let seconds = heldSendSeconds()
+    guard seconds > 0 else {
+      return try await dispatchConversationText(owner, text, reply, alsoSentTo)
+    }
+    let now = heldSendNow()
+    let send = OverlayHeldSend(
+      id: OverlayHeldSend.newID(), conversationID: owner?.id ?? "0", owner: owner, text: text,
+      reply: reply, alsoSentTo: alsoSentTo, acceptedAt: now,
+      deadline: now.addingTimeInterval(TimeInterval(seconds)), phase: .holding)
+    heldSends.append(send)
+    // The caller clears the only other copy (the draft) when this returns.
+    do {
+      try persistHeldSends()
+    } catch {
+      heldSends.removeAll { $0.id == send.id }
+      throw error
+    }
+    refreshHeldSendRows(now: now)
+    runHeldSendClock()
+    return AgentBusTextPublication(
+      messageID: send.id, holdUntil: ISO8601DateFormatter().string(from: send.deadline),
+      recipients: [owner].compactMap { $0 } + alsoSentTo)
+  }
+
+  /// Held-message controls from both conversation surfaces. A local hold is
+  /// the app's own; a bus message (a dictated take) stays the helper's.
+  func controlDelivery(
+    _ control: OverlayDeliveryControl, message: OverlayConversationMessage,
+    owner: OverlayConversationOwner?, text: String?
+  ) async throws {
+    if OverlayHeldSend.isLocal(message.controlIdentity) {
+      try await controlHeldSend(control, id: message.controlIdentity ?? message.id)
+      return
+    }
+    guard let identity = message.controlIdentity else { throw CocoaError(.fileReadCorruptFile) }
+    try await RealAgentBridgeInstaller.controlBusMessage(
+      control, identity: message.captureSessionID ?? identity, owner: owner,
+      busPath: message.busPath, text: text)
+  }
+
+  /// Cancel/Edit succeeds only while the message is on the clock: removing it
+  /// then means zero publications. After that it already belongs to the bus.
+  func controlHeldSend(_ control: OverlayDeliveryControl, id: String) async throws {
+    switch control {
+    case .withdraw:
+      guard let index = heldSends.firstIndex(where: { $0.id == id }),
+        heldSends[index].phase == .holding
+      else { throw OverlayHeldSendError.alreadySending }
+      heldSends.remove(at: index)
+      do {
+        try persistHeldSends()
+      } catch {
+        NSLog("codescribe: held sends not saved: \(error)")
+      }
+      refreshHeldSendRows(now: heldSendNow())
+    case .release:
+      guard let send = beginHeldDispatch(id) else { return }
+      await completeHeldDispatch(send)
+    case .revise:
+      throw OverlayHeldSendError.alreadySending
+    }
+  }
+
+  /// The deadline and Send now meet here. The phase moves before any await,
+  /// so whichever comes first publishes and the other finds nothing to do.
+  private func beginHeldDispatch(_ id: String) -> OverlayHeldSend? {
+    guard let index = heldSends.firstIndex(where: { $0.id == id }),
+      heldSends[index].phase == .holding
+    else { return nil }
+    heldSends[index].phase = .dispatching
+    do {
+      try persistHeldSends()
+    } catch {
+      NSLog("codescribe: held sends not saved: \(error)")
+    }
+    refreshHeldSendRows(now: heldSendNow())
+    return heldSends[index]
+  }
+
+  private func completeHeldDispatch(_ send: OverlayHeldSend) async {
+    do {
+      let publication = try await dispatchConversationText(
+        send.owner, send.text, send.reply, send.alsoSentTo)
+      if !publication.skipped.isEmpty {
+        if !publication.messageID.isEmpty {
+          publishedMessageSkips[publication.messageID] = publication.skipped
+        }
+        textMessageErrors[send.conversationID] = Self.formatSkippedRecipientsNotice(
+          publication.skipped)
+      }
+      if let index = heldSends.firstIndex(where: { $0.id == send.id }) {
+        heldSends[index].phase = .dispatched
+        heldSends[index].messageID = publication.messageID.isEmpty ? nil : publication.messageID
+        heldSends[index].dispatchedAt = heldSendNow()
+      }
+    } catch {
+      // Refused: the words go back to the composer they came from, newer
+      // typing kept in front of them, with the helper's reason beside it.
+      heldSends.removeAll { $0.id == send.id }
+      returnHeldSendToComposer(send)
+      textMessageErrors[send.conversationID] = error.userFacingMessage
+    }
+    do {
+      try persistHeldSends()
+    } catch {
+      NSLog("codescribe: held sends not saved: \(error)")
+    }
+    refreshHeldSendRows(now: heldSendNow())
+    runHeldSendClock()
+  }
+
+  private func returnHeldSendToComposer(_ send: OverlayHeldSend) {
+    let current = conversationDraft(for: send.conversationID)
+    setConversationDraft(
+      current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        ? send.text : current + "\n\n" + send.text,
+      for: send.conversationID)
+    if conversationReplies[send.conversationID] == nil, let reply = send.reply {
+      conversationReplies[send.conversationID] = reply
+    }
+  }
+
+  /// Only messages the helper has not taken yet are restored after a crash.
+  private func persistHeldSends() throws {
+    guard let composerDraftRoot else { return }
+    try OverlayHeldSendStore.save(
+      cacheRoot: composerDraftRoot, sends: heldSends.filter { $0.phase != .dispatched })
+  }
+
+  /// One pass of the hold clock: due messages dispatch, settled rows retire,
+  /// the countdown repaints. Returns the wait until the next visible change,
+  /// or nil once nothing is held.
+  @discardableResult
+  func tickHeldSends() -> Duration? {
+    let now = heldSendNow()
+    for send in heldSends where send.phase == .holding && send.deadline <= now {
+      if let started = beginHeldDispatch(send.id) {
+        Task { @MainActor [weak self] in await self?.completeHeldDispatch(started) }
+      }
+    }
+    retireSettledHeldSends(seenIn: busConversationSource, now: now)
+    refreshHeldSendRows(now: now)
+    guard !heldSends.isEmpty else { return nil }
+    // Wake when a painted second changes or a deadline passes.
+    let waits = heldSends.filter { $0.phase == .holding }.map { send -> TimeInterval in
+      let remaining = send.deadline.timeIntervalSince(now)
+      let fraction = remaining - remaining.rounded(.down)
+      return fraction > 0.02 ? fraction : 1
+    }
+    let wait = min(waits.min() ?? 1, 1)
+    return .milliseconds(max(20, Int((wait * 1000).rounded(.up))))
+  }
+
+  private func runHeldSendClock() {
+    guard heldSendClockTask == nil, !heldSends.isEmpty else { return }
+    heldSendClockTask = Task { @MainActor [weak self] in
+      while !Task.isCancelled {
+        guard let wait = self?.tickHeldSends(), let sleep = self?.heldSendSleep else { break }
+        await sleep(wait)
+      }
+      self?.heldSendClockTask = nil
+    }
+  }
+
+  /// A published row gives way to the reader's copy, or after a short window.
+  private func retireSettledHeldSends(seenIn conversations: [OverlayConversation], now: Date) {
+    guard heldSends.contains(where: { $0.phase == .dispatched }) else { return }
+    let published = Set(
+      conversations.flatMap(\.messages).compactMap(\.controlIdentity))
+    heldSends.removeAll { send in
+      guard send.phase == .dispatched else { return false }
+      guard let messageID = send.messageID else { return true }
+      return published.contains(messageID)
+        || now.timeIntervalSince(send.dispatchedAt ?? now) >= Self.heldSendSettleWindow
+    }
+  }
+
+  private func mergingHeldSends(into conversations: [OverlayConversation], now: Date)
+    -> [OverlayConversation]
+  {
+    guard !heldSends.isEmpty else { return conversations }
+    var merged = conversations
+    for send in heldSends {
+      // Only a conversation in the snapshot can be a composer target
+      // (`availableComposerRecipients`), so the held row always has a home.
+      guard let index = merged.firstIndex(where: { $0.id == send.conversationID }) else {
+        continue
+      }
+      var messages = merged[index].messages
+      messages.append(send.row(order: merged[index].maxMessageOrder + 1, now: now))
+      merged[index].messages = messages
+    }
+    return merged
+  }
+
+  private func refreshHeldSendRows(now: Date) {
+    let next = mergingHeldSends(
+      into: busConversationSource.map { $0.projectingDelivery(at: now) }, now: now)
+    if conversations != next { conversations = next }
+  }
+
   func applyConversationSnapshot(_ snapshot: OverlayChannelDeliverySnapshot, now: Date = Date()) {
     defer { reconcileDraftSyncOwners() }
     let playbackWasActive = selectedReplyPlaybackActive
@@ -3216,7 +3505,10 @@ final class OverlayState {
     }
     applyChannelDelivery(snapshot.deliveries)
     reconcileAgentPanelFocusResults(snapshot.panelFocusResults)
-    let projected = snapshot.conversations.map { $0.projectingDelivery(at: now) }
+    busConversationSource = snapshot.conversations
+    retireSettledHeldSends(seenIn: snapshot.conversations, now: now)
+    let projected = mergingHeldSends(
+      into: snapshot.conversations.map { $0.projectingDelivery(at: now) }, now: now)
     if activeCaptureAttachmentSessions != snapshot.activeCaptureAttachmentSessions {
       activeCaptureAttachmentSessions = snapshot.activeCaptureAttachmentSessions
     }
@@ -3308,6 +3600,9 @@ final class OverlayState {
       || conversationDrafts.values.contains {
         !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       }
+      // A held message is the Founder's until it is handed to the helper; a
+      // restart would turn an intended send into a draft.
+      || heldSends.contains { $0.phase != .dispatched }
   }
 
   /// Bring the owner of one newly admitted message to the Founder into the

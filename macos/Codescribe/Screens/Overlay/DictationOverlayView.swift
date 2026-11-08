@@ -967,7 +967,11 @@ struct DictationOverlayView: View {
                 draftSyncEnabled: state.canActivateDraftSync(for: conversation.id),
                 onProseEdit: { state.applyConversationProseEdit($0, for: conversation.id) },
                 onToggleDraftSync: { state.toggleDraftSync(from: conversation.id, with: $0) },
-                onStopDraftSync: { state.stopDraftSync(for: conversation.id) }
+                onStopDraftSync: { state.stopDraftSync(for: conversation.id) },
+                onDeliveryControl: { control, message, owner, text in
+                  try await state.controlDelivery(
+                    control, message: message, owner: owner, text: text)
+                }
               )
               .opacity(state.isCollapsed ? 0 : 1)
               .allowsHitTesting(!state.isCollapsed)
