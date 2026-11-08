@@ -1547,6 +1547,7 @@ async fn f12_agent_channel_transcript_bus_rows_stay_constant_for_one_and_two_sea
             });
             demux.on_event(&EngineEvent::LedgerSeal { receipt: seal });
             for document in &documents {
+                assert_ne!(document.source.label, capture);
                 let revision = document
                     .parts
                     .emitter
@@ -1557,7 +1558,7 @@ async fn f12_agent_channel_transcript_bus_rows_stay_constant_for_one_and_two_sea
                     .parts
                     .emitter
                     .apply_user_revision(UserRevisionIntent {
-                        session_id: capture.clone(),
+                        session_id: document.source.label.clone(),
                         source_revision: revision,
                         rendered_text: "Edited.".into(),
                         provenance: DocumentRevisionProvenance::UserEdit,

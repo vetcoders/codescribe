@@ -4305,9 +4305,10 @@ mod c15d_settings_one_path_falsifiers {
         ));
     }
 
-    /// C15D-A source falsifier: each start body selects exactly one Arc under
-    /// `serial_lock`, then derives config, UserSettings and recorder binding
-    /// from that named Arc. This is structural evidence, not a scheduler proof.
+    /// Each start selects one settings Arc under the lifecycle lock, then
+    /// adopts the shared capture's frozen Arc when joining it. Hold also
+    /// projects its pre-admission config; both binding branches use the final
+    /// selected Arc. This is structural evidence, not a scheduler proof.
     #[test]
     fn hold_and_toggle_each_derive_take_facts_from_one_selected_arc() {
         let source = include_str!("mod.rs");
@@ -4329,11 +4330,22 @@ mod c15d_settings_one_path_falsifiers {
         let user_projection = ["runtime_settings", ".user_settings()"].concat();
         let recorder_binding = ["Arc::clone(&runtime_", "settings)"].concat();
 
-        for body in [hold_body, toggle_body] {
+        for (body, config_reads) in [(hold_body, 2), (toggle_body, 1)] {
             assert_eq!(body.matches(&select_arc).count(), 1);
-            assert_eq!(body.matches(&config_projection).count(), 1);
+            assert_eq!(body.matches(&config_projection).count(), config_reads);
             assert_eq!(body.matches(&user_projection).count(), 1);
-            assert_eq!(body.matches(&recorder_binding).count(), 1);
+            assert_eq!(body.matches(&recorder_binding).count(), 2);
+            let shared_arc = body
+                .find(".map(|view| Arc::clone(&view.runtime_settings))")
+                .expect("shared capture owns its frozen runtime settings");
+            let retain_selected = body
+                .find(".unwrap_or(runtime_settings)")
+                .expect("unshared start retains the selected Arc");
+            assert!(shared_arc < retain_selected);
+            assert!(retain_selected < body.rfind(&config_projection).unwrap());
+            for binding in ["bind_dictation_authority", "bind_session_authority"] {
+                assert!(body[retain_selected..].contains(binding));
+            }
             assert!(
                 body.find(&serial_lock).expect("lifecycle lock")
                     < body.find(&select_arc).expect("settings Arc selection")
