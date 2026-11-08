@@ -313,6 +313,14 @@ assertions. Real Audio button activation, stop/final-pass presentation, calibrat
 blocking and accessibility still require a separate signed native acceptance;
 these unit witnesses do not claim that acceptance.
 
+## Joined glass geometry
+
+The titlebar material bleeds outside its clipping viewport to keep its optical
+rim away from the joined content edges. Measure the visible viewport and real
+header controls for the 52 pt band contract; measuring the physical glass alone
+incorrectly treats intentional bleed as extra titlebar height. Sidebar geometry
+tests retain their native-material checks and the same coordinate tolerances.
+
 ## Invisible fixtures and isolated native acceptance
 
 `BackgroundTestWindow.present` is the only presentation owner for native

@@ -218,7 +218,21 @@ final class CSSidebarMaterialTests: XCTestCase {
     XCTAssertEqual(owners.count, 1, "one header band shared with Agent")
     let owner = try XCTUnwrap(owners.first)
     let glass = try XCTUnwrap(findView(of: NSGlassEffectView.self, in: owner.view))
-    let rect = glass.convert(glass.bounds, to: nil)
+    // Joined glass extends below its clipped band; the material's physical
+    // bounds are deliberately taller than the visible header and its controls.
+    let viewport = try XCTUnwrap(glass.superview)
+    XCTAssertEqual(viewport.identifier?.rawValue, "codescribe-header-viewport")
+    XCTAssertTrue(viewport.clipsToBounds)
+    let rect = viewport.convert(viewport.bounds, to: nil)
+    let physical = glass.convert(glass.bounds, to: nil)
+    XCTAssertTrue(physical.contains(rect))
+    let controls = try XCTUnwrap(
+      glass.contentView?.subviews.first {
+        $0.identifier?.rawValue == "codescribe-header-content"
+      })
+    let controlsRect = controls.convert(controls.bounds, to: nil)
+    XCTAssertEqual(controlsRect.height, rect.height, accuracy: 1)
+    XCTAssertEqual(controlsRect.minY, rect.minY, accuracy: 1)
     XCTAssertEqual(rect.height, 52, accuracy: 1)
     XCTAssertEqual(rect.maxX, window.frame.width, accuracy: 1)
     XCTAssertEqual(rect.minY, window.contentLayoutRect.maxY, accuracy: 1)
