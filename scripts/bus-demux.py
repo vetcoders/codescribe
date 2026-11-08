@@ -1811,6 +1811,11 @@ def emit(payload: dict[str, Any]) -> None:
 
 
 FOLLOWER_TEXT_LIMIT = 200
+# Follower journals store decoded envelopes, including occurrence evidence.
+# They are not the bus's bounded storage frames: one admitted mailbox envelope
+# may exceed a single frame. Include its terminating newline in the read bound.
+MAILBOX_BYTE_LIMIT = 8 * 1024 * 1024
+FOLLOWER_ROW_LIMIT = MAILBOX_BYTE_LIMIT + 1
 
 
 def follower_paths(root: Path, lease_id: str) -> tuple[Path, Path]:
@@ -1977,7 +1982,9 @@ def consider(
     return None
 
 
-def iter_new_lines(path: Path, offset: int) -> tuple[list[tuple[str, int]], int]:
+def iter_new_lines(
+    path: Path, offset: int, *, line_limit: int = 1024 * 1024 + 1,
+) -> tuple[list[tuple[str, int]], int]:
     """Return complete UTF-8 lines paired with their exclusive byte cursors."""
     try:
         size = generation_metadata(path).st_size
@@ -1992,7 +1999,7 @@ def iter_new_lines(path: Path, offset: int) -> tuple[list[tuple[str, int]], int]
     with GenerationFile(path) as handle:
         handle.seek(offset)
         while True:
-            raw = handle.readline()
+            raw = handle.readline(line_limit)
             if not raw:
                 break
             if not raw.endswith(b"\n"):
@@ -2076,11 +2083,11 @@ class BusEventTrigger:
         self.mode = "interval-fallback"
 
 
-def replay(path: Path) -> Iterator[str]:
+def replay(path: Path, *, line_limit: int = 1024 * 1024 + 1) -> Iterator[str]:
     try:
         with GenerationFile(path) as handle:
             while True:
-                raw = handle.readline()
+                raw = handle.readline(line_limit)
                 if not raw:
                     return
                 if not raw.endswith(b"\n"):
@@ -4033,7 +4040,7 @@ class SessionLease:
                          if self.terminal else None),
         }
 
-    def queue_delivery(self, payload: dict[str, Any]) -> bool:
+    def queue_delivery(self, payload: dict[str, Any], *, draining_journal: bool = False) -> bool:
         delivery_id = payload["delivery_id"]
         refusal = self.channel_publication_refusals.get(payload.get("session_id"))
         if (refusal is not None and self.admits_channel_event(refusal)
@@ -4057,8 +4064,12 @@ class SessionLease:
                 self.persist(active=True)
             return False
         deadline = hold_timestamp(payload.get("hold_until"))
+        # A resumed reader can encounter both an expired message and its timely
+        # withdrawal in the unread tail. Stage the message until that tail is
+        # drained; ready_held owns deadline promotion after all controls apply.
         waiting = (payload.get("kind") in TERMINAL_KINDS and deadline is not None
-                   and deadline > time.time() and not payload.get("hold_released"))
+                   and (draining_journal or deadline > time.time())
+                   and not payload.get("hold_released"))
         if waiting and retained is not None:
             return False
         if self.coalesce and payload.get("kind") in DRAFT_KINDS:
@@ -4078,7 +4089,7 @@ class SessionLease:
             len(retained_rows) >= 256
             or pending_bytes
             + len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
-            > 8 * 1024 * 1024
+            > MAILBOX_BYTE_LIMIT
         ):
             raise BufferError(
                 "pending mailbox is full; acknowledge received deliveries and resume "
@@ -4117,7 +4128,7 @@ class SessionLease:
     def _record_hold_withdrawal(self, receipt: dict[str, Any]) -> None:
         events = follower_paths(self.root, self.lease_id)[1]
         events.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        for raw in replay(events):
+        for raw in replay(events, line_limit=FOLLOWER_ROW_LIMIT):
             # Follower receipts carry the bridge event schema, which the bus
             # admission filter in parse_line never admits: decode them directly.
             try:
@@ -4158,7 +4169,7 @@ class SessionLease:
                 "hold_controls": [*payload.get("hold_controls", []), control_id]}
             size = sum(len(json.dumps(row, ensure_ascii=False).encode("utf-8"))
                        for row in [*self.pending.values(), *self.held.values()])
-            if size + len(json.dumps(replacement, ensure_ascii=False).encode("utf-8")) > 8 * 1024 * 1024:
+            if size + len(json.dumps(replacement, ensure_ascii=False).encode("utf-8")) > MAILBOX_BYTE_LIMIT:
                 raise BufferError("held revision history is full; release or withdraw a held message")
             self.held[payload["delivery_id"]] = replacement
             self.persist(active=True)
@@ -5488,7 +5499,7 @@ def run(args: argparse.Namespace) -> int:
                 if not lease and (hold_timestamp(payload.get("hold_until")) or 0) > time.time():
                     remaining.pop(0)
                     continue
-                if not lease or lease.queue_delivery(payload):
+                if not lease or lease.queue_delivery(payload, draining_journal=next_cursor is not None):
                     publish(payload)
                     wake = not lease or delivery_broadcast_policy(lease.root, payload) == "on"
                     if wake and native and effective_wakeup(args) == "codex-queue":
@@ -8668,7 +8679,7 @@ def backfill_receipts(root: Path, *, dry_run: bool = False) -> dict[str, Any]:
         if not re.fullmatch(r"[0-9a-f]{32}", lease_id):
             continue
         try:
-            for raw in replay(path):
+            for raw in replay(path, line_limit=FOLLOWER_ROW_LIMIT):
                 try:
                     row = json.loads(raw)
                 except ValueError:
@@ -9778,6 +9789,7 @@ def delivery_control_command(args: argparse.Namespace) -> int:
             raise ValueError("channel bindings unavailable")
         owners = []
         skipped = []
+        offline = set()
         for channel, binding in sorted(bindings.items()):
             bound, refusal = binding_identity(channel, binding)
             if bound is None:
@@ -9793,7 +9805,12 @@ def delivery_control_command(args: argparse.Namespace) -> int:
                     or args.channel is not None and args.channel != channel):
                 continue
             refusal = owner_refusal(root, owner)
-            if refusal is not None:
+            if broadcast and refusal == "not_listening":
+                # A reader stopping does not remove its original held copy.
+                # Inspect its same-owner checkpoint and tail before deciding
+                # whether it belongs to this control's frozen audience.
+                offline.add(owner["lease_id"])
+            elif refusal is not None:
                 if broadcast:
                     skipped.append(note_skipped_broadcast_channel(channel, bound, refusal))
                     continue
@@ -9845,7 +9862,8 @@ def delivery_control_command(args: argparse.Namespace) -> int:
             if not matched:
                 if broadcast:
                     skipped.append(note_skipped_broadcast_channel(
-                        owner["channel"], {**owner, "name": owner["audience"]}, "not_held"))
+                        owner["channel"], {**owner, "name": owner["audience"]},
+                        "not_listening" if owner["lease_id"] in offline else "not_held"))
                     continue
                 raise ValueError("message is no longer held by this conversation")
             # A release already handed the message over; nothing is held any more.
@@ -9888,8 +9906,8 @@ def delivery_control_command(args: argparse.Namespace) -> int:
                 time.sleep(0.1)
             if waiting:
                 raise ValueError(
-                    "message already delivered; it can no longer be changed" if len(waiting) == len(plans)
-                    else f"message already delivered to {len(waiting)} of {len(plans)} agents")
+                    f"held control recorded but not confirmed by {len(waiting)} of {len(plans)} "
+                    "agent readers; delivery state is uncertain, check receipts before retrying")
     emit({"kind": "delivery_control_published", "control_kind": kind, "identity": identity,
           "control_id": control_id, "recipients": receipts, "skipped": skipped})
     return 0
@@ -11577,7 +11595,7 @@ def watch_command(args: argparse.Namespace) -> int:
         if not source.is_file():
             sys.stderr.write(f"bus-demux: watch source missing: {source}\n")
             return 1
-        pump(iter_new_lines(source, 0)[0])
+        pump(iter_new_lines(source, 0, line_limit=FOLLOWER_ROW_LIMIT)[0])
         return 0
     offset = 0
     if not args.from_start:
@@ -11599,7 +11617,7 @@ def watch_command(args: argparse.Namespace) -> int:
     trigger = BusEventTrigger(source, args.interval)
     try:
         while True:
-            entries, offset = iter_new_lines(source, offset)
+            entries, offset = iter_new_lines(source, offset, line_limit=FOLLOWER_ROW_LIMIT)
             pump(entries)
             if relay:
                 for identity, causal in relay_ids.items():
