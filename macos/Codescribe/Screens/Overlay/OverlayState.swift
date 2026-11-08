@@ -2170,6 +2170,23 @@ final class OverlayState {
     }
   }
 
+  private func agentPanelOwnerStillBound(
+    _ owner: OverlayConversationOwner, channel: String, binding: AgentPlaybackBinding?
+  ) -> Bool {
+    canFocusAgentPanel(owner)
+      && channelPlaybackAgents[channel]?.frame == binding?.frame
+      && channelPlaybackAgents[channel]?.terminal == binding?.terminal
+  }
+
+  private func failAgentPanelFocus(
+    _ channel: String, request: OverlayAgentPanelFocusState, target: OverlayAgentPanelFocusTarget
+  ) {
+    agentPanelFocusStates[channel] = OverlayAgentPanelFocusState(
+      requestID: request.requestID, owner: request.owner, phase: .failed,
+      statusText: target.failureText, updatedAt: Date(), target: target)
+    onChannelPresentationChanged?()
+  }
+
   private func reconcileAgentPanelFocusResults(
     _ results: [String: OverlayPanelFocusResult]
   ) {
@@ -2216,14 +2233,12 @@ final class OverlayState {
             self.agentPanelFocusStates[channel]?.requestID == state.requestID,
             self.agentPanelFocusStates[channel]?.phase == .activating
           else { return }
-          guard self.canFocusAgentPanel(state.owner),
-            self.channelPlaybackAgents[channel]?.frame == binding?.frame,
-            self.channelPlaybackAgents[channel]?.terminal == binding?.terminal
+          // Owner and binding are read again after every suspension. The
+          // roster can replace either while the viewer or the activation is
+          // awaited, and the old binding's window must not be raised.
+          guard self.agentPanelOwnerStillBound(state.owner, channel: channel, binding: binding)
           else {
-            self.agentPanelFocusStates[channel] = OverlayAgentPanelFocusState(
-              requestID: state.requestID, owner: state.owner, phase: .failed,
-              statusText: target.failureText, updatedAt: Date(), target: target)
-            self.onChannelPresentationChanged?()
+            self.failAgentPanelFocus(channel, request: state, target: target)
             return
           }
           var activationPID = hostPID
@@ -2236,14 +2251,19 @@ final class OverlayState {
             guard self.agentPanelFocusStates[channel]?.requestID == state.requestID,
               self.agentPanelFocusStates[channel]?.phase == .activating
             else { return }
+            guard self.agentPanelOwnerStillBound(state.owner, channel: channel, binding: binding)
+            else {
+              FrameViewerHostResolver.logger.notice(
+                "owner or binding changed while Frame session \(viewerSession, privacy: .public) was read"
+              )
+              self.failAgentPanelFocus(channel, request: state, target: target)
+              return
+            }
             guard case .host(let viewerPID) = viewer else {
               FrameViewerHostResolver.logger.notice(
                 "no window to raise for Frame session \(viewerSession, privacy: .public): \(String(describing: viewer), privacy: .public)"
               )
-              self.agentPanelFocusStates[channel] = OverlayAgentPanelFocusState(
-                requestID: state.requestID, owner: state.owner, phase: .failed,
-                statusText: target.failureText, updatedAt: Date(), target: target)
-              self.onChannelPresentationChanged?()
+              self.failAgentPanelFocus(channel, request: state, target: target)
               return
             }
             if viewerPID != hostPID {
@@ -2261,11 +2281,9 @@ final class OverlayState {
           guard self.agentPanelFocusStates[channel]?.requestID == state.requestID,
             self.agentPanelFocusStates[channel]?.phase == .activating
           else { return }
-          let bindingMatches =
-            self.canFocusAgentPanel(state.owner)
-            && self.channelPlaybackAgents[channel]?.frame == binding?.frame
-            && self.channelPlaybackAgents[channel]?.terminal == binding?.terminal
-          let succeeded = activated && bindingMatches
+          let succeeded =
+            activated
+            && self.agentPanelOwnerStillBound(state.owner, channel: channel, binding: binding)
           self.agentPanelFocusStates[channel] = OverlayAgentPanelFocusState(
             requestID: state.requestID,
             owner: state.owner,

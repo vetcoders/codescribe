@@ -422,6 +422,67 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     XCTAssertEqual(state.presentationMode, .expanded)
   }
 
+  /// The viewer read takes a few hundred milliseconds. When the roster
+  /// replaces the binding or the channel's owner meanwhile, the window found
+  /// for the old binding is never raised.
+  func testAViewerFoundForAReplacedBindingCannotActivate() async throws {
+    try await assertNoActivationWhenReplacedDuringTheViewerRead { state, owner in
+      state.applyBoundAgents([
+        owner.channel: AgentPlaybackBinding(
+          identity: AgentPlaybackIdentity(
+            provider: owner.provider, session: owner.providerSessionID,
+            bus: "/tmp/replaced-binding-bus.jsonl"),
+          model: nil,
+          frame: AgentFrameBinding(
+            session: "vc-host-48720aa5", paneID: 7, hostBundleID: "io.vetcoders.vibecrafted",
+            hostPID: 65097))
+      ])
+    }
+  }
+
+  func testAViewerFoundForAReplacedOwnerCannotActivate() async throws {
+    try await assertNoActivationWhenReplacedDuringTheViewerRead { state, _ in
+      self.armRoster(on: state, owner: self.makeOwner(provider: "codex"))
+    }
+  }
+
+  private func assertNoActivationWhenReplacedDuringTheViewerRead(
+    file: StaticString = #filePath, line: UInt = #line,
+    _ replace: (OverlayState, OverlayConversationOwner) -> Void
+  ) async throws {
+    let state = OverlayState.previewFormatted()
+    let owner = makeOwner()
+    armRoster(on: state, owner: owner)
+    state.setPresentationMode(.expanded)
+    state.panelFocusTimeoutDuration = .seconds(30)
+    state.requestAgentPanelFocusCommand = { _ in }
+    var activations = 0
+    state.activateTerminalHost = { _, _ in
+      activations += 1
+      return true
+    }
+    var answer: CheckedContinuation<FrameViewerHost, Never>?
+    state.resolveFrameViewerHost = { _ in
+      await withCheckedContinuation { answer = $0 }
+    }
+    state.focusAgentPanel(owner)
+    let requestID = try XCTUnwrap(
+      state.agentPanelFocusStates[owner.channel]?.requestID, file: file, line: line)
+    state.applyConversationSnapshot(
+      focusSnapshot(owner: owner, requestID: requestID, frame: Self.recordedStaleFrame))
+    for _ in 0..<30 { await Task.yield() }
+    let pending = try XCTUnwrap(answer, file: file, line: line)
+    XCTAssertEqual(
+      state.agentPanelFocusStates[owner.channel]?.phase, .activating, file: file, line: line)
+    replace(state, owner)
+    pending.resume(returning: .host(pid: 65097))
+    for _ in 0..<30 { await Task.yield() }
+    XCTAssertEqual(activations, 0, file: file, line: line)
+    XCTAssertEqual(
+      state.agentPanelFocusStates[owner.channel]?.phase, .failed, file: file, line: line)
+    XCTAssertEqual(state.presentationMode, .expanded, file: file, line: line)
+  }
+
   func testReaderConsumesPanelFocusResultFromChannelBusAndReportsFailureReasons() async throws {
     let tempRoot = FileManager.default.temporaryDirectory
       .appendingPathComponent("codescribe-panel-focus-\(UUID().uuidString)", isDirectory: true)
