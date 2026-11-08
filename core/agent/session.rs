@@ -4327,4 +4327,45 @@ mod tests {
         );
         assert!(!is_signed(&messages[3]), "a kept turn replays unsigned");
     }
+
+    /// The Max startup probe prepares the provider chain for a reopened
+    /// thread; it must carry the stored view, not the whole history the
+    /// summary already replaced.
+    #[tokio::test]
+    async fn startup_preparation_carries_the_stored_view_and_its_summary() {
+        let provider = ConversationProvider::new(Some(60_000), 60_000);
+        let seen = Arc::clone(&provider.seen);
+        let (ui_tx, _ui_rx) = mpsc::channel(16);
+        let mut session =
+            AgentSession::new(Box::new(provider), Arc::new(ToolRegistry::new()), ui_tx);
+        let mut anchored = Message::new(Role::User, vec![ContentBlock::Text("turn two".into())]);
+        anchored.metadata = Some(crate::agent::compaction::with_summary_anchor(
+            None,
+            "## Objective\n- stored summary",
+        ));
+        session.restore_messages(vec![
+            Message::new(Role::User, vec![ContentBlock::Text("turn one".into())]),
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::Text("answer one".into())],
+            ),
+            anchored,
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::Text("answer two".into())],
+            ),
+        ]);
+
+        session
+            .prepare_provider_context(&StreamOptions::default())
+            .await
+            .expect("the probe completes");
+
+        let probe = seen.lock().expect("seen lock")[0].clone();
+        assert_eq!(
+            probe.first_text, "turn two",
+            "the probe starts at the anchor"
+        );
+        assert!(probe.system_prompt.contains("- stored summary"));
+    }
 }
