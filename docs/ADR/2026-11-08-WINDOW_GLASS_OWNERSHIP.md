@@ -32,7 +32,10 @@ An early attachment without `.fullSizeContentView` is deferred, with a debug
 diagnostic; Settings establishes its window on the same run-loop turn and the
 marker retries. An occupied top accessory slot is logged as an error and is
 never replaced. Resize observation is scoped to that split view and removed
-on detach. No assertion is raised for an expected scene-adoption transition.
+on detach. Window update notifications reapply the separator policy after
+SwiftUI toolbar adoption. Detach uses AppKit's indexed accessory removal,
+not mutation of the returned accessory array. No assertion is raised for an
+expected scene-adoption transition.
 
 ## Validation and limits
 

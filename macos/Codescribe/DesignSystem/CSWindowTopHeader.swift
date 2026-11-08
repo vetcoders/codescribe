@@ -121,6 +121,9 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
         target.toolbar?.isVisible = true
         target.addTitlebarAccessoryViewController(accessory)
         window = target
+        NotificationCenter.default.addObserver(
+          self, selector: #selector(windowUpdated), name: NSWindow.didUpdateNotification,
+          object: target)
       }
       attachmentIssue = nil
       updateGeometry()
@@ -146,6 +149,9 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
 
     private func updateGeometry() {
       guard let window else { return }
+      // SwiftUI can restore automatic separators while adopting its toolbar.
+      // The accessory owns this band, including the absence of a second edge.
+      if window.titlebarSeparatorStyle != .none { window.titlebarSeparatorStyle = .none }
       if split?.view.window !== window {
         stopObservingSplit()
         split = window.contentView.flatMap { Self.navigationSplit(in: $0) }
@@ -178,9 +184,23 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
       updateGeometry()
     }
 
+    @objc private func windowUpdated(_ notification: Notification) {
+      updateGeometry()
+    }
+
     func detach() {
       stopObservingSplit()
-      window?.titlebarAccessoryViewControllers.removeAll { $0 === accessory }
+      if let window {
+        NotificationCenter.default.removeObserver(
+          self, name: NSWindow.didUpdateNotification, object: window)
+        // AppKit exposes indexed removal. Mutating the returned array tries
+        // an unsupported setTitlebarAccessoryViewControllers: selector.
+        if let index = window.titlebarAccessoryViewControllers.firstIndex(
+          where: { $0 === accessory })
+        {
+          window.removeTitlebarAccessoryViewController(at: index)
+        }
+      }
       window = nil
     }
 

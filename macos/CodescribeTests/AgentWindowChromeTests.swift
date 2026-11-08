@@ -40,6 +40,9 @@ final class AgentWindowChromeTests: XCTestCase {
     coordinator.attach(to: window)
     XCTAssertEqual(window.titlebarAccessoryViewControllers.count, 1)
     XCTAssertTrue(window.titlebarAccessoryViewControllers.first === coordinator.accessory)
+    window.titlebarSeparatorStyle = .automatic
+    NotificationCenter.default.post(name: NSWindow.didUpdateNotification, object: window)
+    XCTAssertEqual(window.titlebarSeparatorStyle, .none, "toolbar adoption cannot restore a seam")
     coordinator.detach()
     XCTAssertTrue(window.titlebarAccessoryViewControllers.isEmpty)
     coordinator.attach(to: window)
