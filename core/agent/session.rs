@@ -3670,9 +3670,13 @@ mod tests {
             accepted.iter().all(|size| *size <= 60_000),
             "every request fits the window: {accepted:?}"
         );
+        // Each prune rewrites history and invalidates the prompt cache, so it
+        // must free room in one sweep and leave several rounds of headroom,
+        // not trim one result per round at the edge of the window.
+        let prunes = chain_resets.load(Ordering::SeqCst);
         assert!(
-            chain_resets.load(Ordering::SeqCst) > 0,
-            "a pruned history replays"
+            (1..=4).contains(&prunes),
+            "pruned in a few sweeps across twelve rounds, got {prunes}"
         );
 
         let results = session
