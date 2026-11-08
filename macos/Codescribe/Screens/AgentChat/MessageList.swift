@@ -1330,15 +1330,6 @@ struct AttachmentPreviewSheet: View {
       .truncationMode(.middle)
   }
 
-  private var pathDetails: some View {
-    Text(pathText)
-      .font(CSFont.mono(11))
-      .foregroundStyle(Color.primary)
-      .textSelection(.enabled)
-      .lineLimit(3)
-      .truncationMode(.middle)
-  }
-
   private var markupActions: some View {
     HStack(spacing: 10) {
       Button("Cancel") {

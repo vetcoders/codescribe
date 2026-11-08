@@ -306,35 +306,6 @@ struct OverlaySidebarToggleButton: View {
   }
 }
 
-/// The list's one fold button (Monika, 2026-11-05: "jeden po prawej stronie
-/// to był dokładnie taki układ, jaki chciałam"): a muted glyph blended into
-/// the background with the rows' hover wash (Maciej, 2026-10-19: "wtopione w
-/// tło"). The same button heads the list and the folded rail.
-struct OverlaySidebarToggleButton: View {
-  let symbol: String
-  let title: String
-  let identifier: String
-  let palette: OverlayAppearancePalette
-  let textScale: CGFloat
-  let action: () -> Void
-
-  var body: some View {
-    Button(action: action) {
-      Image(systemName: symbol)
-        .font(.system(size: 13 * textScale))
-        .frame(width: 22 * textScale, height: 22 * textScale)
-        .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-    .focusable(false)
-    .foregroundStyle(palette.mutedText.color)
-    .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: 6))
-    .accessibilityLabel(Text(verbatim: title))
-    .accessibilityHint(Text(verbatim: title))
-    .accessibilityIdentifier(identifier)
-  }
-}
-
 /// The drawer's clickable rows answer the pointer the way the tray's plain
 /// rows do: the whole row is the hover target, a raised wash appears on
 /// enter, and leave clears it. The wash does not hit-test, so the row's own
