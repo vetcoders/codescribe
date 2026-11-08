@@ -379,7 +379,7 @@ impl AgentSession {
                     let is_transient = is_transient_stream_start_error(&error);
                     if is_transient && attempt < AGENT_STREAM_START_RETRY_MAX_ATTEMPTS {
                         warn!(
-                            "Agent stream start failed (provider={}, attempt={}/{}): {}. Retrying in {:?} (next attempt will reset chain)",
+                            "Agent stream start failed (provider={}, attempt={}/{}): {:#}. Retrying in {:?} (next attempt will reset chain)",
                             self.provider.name(),
                             attempt,
                             AGENT_STREAM_START_RETRY_MAX_ATTEMPTS,
@@ -390,6 +390,16 @@ impl AgentSession {
                         attempt += 1;
                         continue;
                     }
+                    // The caller reports only that the start failed; the
+                    // provider's reason is recorded here once.
+                    warn!(
+                        "Agent stream start failed (provider={}, attempt={}/{}, transient={}): {:#}",
+                        self.provider.name(),
+                        attempt,
+                        AGENT_STREAM_START_RETRY_MAX_ATTEMPTS,
+                        is_transient,
+                        error
+                    );
                     return Err(error);
                 }
             }

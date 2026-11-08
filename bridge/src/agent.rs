@@ -994,9 +994,7 @@ async fn drive_turn(
 
     match send_handle.await {
         Ok(Ok(messages)) => Ok((final_text, messages)),
-        Ok(Err(error)) => Err(CsError::Agent {
-            msg: error.to_string(),
-        }),
+        Ok(Err(error)) => Err(CsError::from(error)),
         Err(join_error) if join_error.is_cancelled() => Err(CsError::Agent {
             msg: "Turn cancelled".to_string(),
         }),
@@ -1469,6 +1467,49 @@ mod tests {
         }
     }
 
+    /// Refuses before any stream exists, as a provider does when it rejects
+    /// the conversation it was handed.
+    struct RefusingProvider;
+
+    #[async_trait::async_trait]
+    impl AgentProvider for RefusingProvider {
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &StreamOptions,
+        ) -> anyhow::Result<tokio::sync::mpsc::Receiver<AgentEvent>> {
+            anyhow::bail!("Google history has no original signed parts; start a new conversation")
+        }
+
+        fn build_tool_result(
+            &self,
+            call_id: &str,
+            content: Vec<ContentBlock>,
+            is_error: bool,
+        ) -> Message {
+            Message::new(
+                Role::User,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: call_id.to_string(),
+                    content,
+                    is_error,
+                }],
+            )
+        }
+
+        fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
+            ContentBlock::Image {
+                data: data.to_vec(),
+                media_type: media_type.to_string(),
+            }
+        }
+
+        fn name(&self) -> &str {
+            "refusing-provider"
+        }
+    }
+
     /// Owner terminals end the render loop but are never forwarded: the reply
     /// receipt is the one terminal the Agent window sees, so a Max turn can
     /// not be signalled done or failed twice.
@@ -1883,6 +1924,54 @@ mod tests {
         assert!(
             !turns.cancel("thread-provider-error"),
             "errored turn should deregister itself"
+        );
+    }
+
+    /// 2026-11-08 08:16Z: a thread begun on OpenAI was switched to Gemini.
+    /// The provider refused it before sending and named the remedy, but the
+    /// chat showed only "Failed to start 'google-generate-content' streaming".
+    /// The reason a provider gives must reach the person who has to act on it.
+    #[tokio::test]
+    async fn stream_start_refusal_keeps_its_reason_across_the_bridge() {
+        let listener = Arc::new(RecordingListener::default());
+        let turns = Arc::new(TurnRegistry::default());
+        let (ui_tx, ui_rx) = tokio::sync::mpsc::channel(64);
+        let session = AgentSession::new(
+            Box::new(RefusingProvider),
+            Arc::new(ToolRegistry::new()),
+            ui_tx,
+        );
+        let turn = PreparedTurn {
+            active_document: None,
+            session,
+            text: "continue on Gemini".to_string(),
+            attachments: Vec::new(),
+            options: test_options(),
+            ui_rx,
+        };
+
+        let result = drive_turn(
+            turn,
+            Arc::clone(&listener) as Arc<dyn CsAgentListener>,
+            Arc::clone(&turns),
+            "thread-refused-start".to_string(),
+        )
+        .await;
+
+        let CsError::Agent { msg } = result.expect_err("a refused start must throw") else {
+            panic!("a refused start must surface as CsError::Agent");
+        };
+        assert!(
+            msg.starts_with("Failed to start 'refusing-provider' streaming: "),
+            "the stage stays first: {msg}"
+        );
+        assert!(
+            msg.ends_with("Google history has no original signed parts; start a new conversation"),
+            "the provider's reason and remedy must survive the bridge: {msg}"
+        );
+        assert!(
+            !turns.cancel("thread-refused-start"),
+            "a refused turn must deregister itself"
         );
     }
 
