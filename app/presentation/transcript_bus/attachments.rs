@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 
 use super::envelope::*;
 
-/// Parent `channel_session` identity of a channel message document.
+/// Parent bus `channel_session` identity of a channel message document.
+/// Shared capture IDs never enter this document lookup.
 /// Continuous voice sessions name each segment `<channel_session_id>-s<index>`,
 /// while the session's `open` and terminal `sealed` rows carry `<channel_session_id>`.
 pub(super) fn channel_session_id_of_document(session: &str) -> &str {
@@ -155,6 +156,7 @@ pub(super) fn append_capture_attachment(
     if path.canonicalize()?.as_path() != path {
         return Err(invalid());
     }
+    // Attachment CAS addresses a bus document, not its occurrence/capture ID.
     let session = request["session_id"]
         .as_str()
         .filter(|s| s.starts_with("agent-channel-"))

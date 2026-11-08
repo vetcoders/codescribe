@@ -829,6 +829,15 @@ pub struct RefusedPreviewEvidence {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EngineEvent {
+    /// FIFO decoder progress on the capture clock, including measured silence.
+    /// No pending decoder work or unresolved speech precedes this sample.
+    /// This settles channel intervals; it grants no document or seal authority.
+    #[serde(skip)]
+    DecoderCovered {
+        session_id: String,
+        capture_epoch: u64,
+        sample_end: u64,
+    },
     /// Live acoustic-versus-text integrity, never transcript mutation authority.
     SpeechIntegrity { evidence: SpeechIntegrity },
     /// Recognizer output when this capture explicitly opts out of ledger admission.
@@ -1420,6 +1429,12 @@ pub trait EventSink: Send + Sync {
     /// before the transcription worker starts. This is not a document event,
     /// ledger receipt, or public IPC message.
     fn on_capture_opened(&self, _session_id: &str, _capture_epoch: u64) {}
+
+    /// Close only a settled document participation in this capture. This is
+    /// not capture EOF or an acoustic seal. An unwired observer must refuse.
+    fn close_participation(&self, _session_id: &str, _capture_epoch: u64) -> anyhow::Result<()> {
+        anyhow::bail!("document participation completion owner unavailable")
+    }
 
     /// Report whether per-occurrence formatter jobs are currently queued or in
     /// flight for this take. Passive sinks ignore this signal.

@@ -20,6 +20,10 @@ struct ComposerPaletteEntry: Identifiable, Equatable {
   let subtitle: String?
   /// True for the entry matching the current setting, so the UI can mark it.
   var isCurrent: Bool = false
+  /// Optional provider reference when a model entry belongs to another provider.
+  var providerId: String? = nil
+  /// Wire model id when `id` is disambiguated across providers.
+  var modelId: String? = nil
 }
 
 /// The commands the palette exposes. Adding one means adding a case plus its
@@ -93,15 +97,17 @@ enum ComposerPaletteQuery: Equatable {
 /// Filtering + draft rewriting. Free functions on purpose: no state to get
 /// stale, and every one of them is directly testable.
 enum ComposerPalette {
-  /// Case-insensitive substring match over title and id, preserving the
-  /// caller's ordering (providers already rank their catalogs).
+  /// Case-insensitive substring match over title, id, and subtitle, preserving
+  /// the caller's ordering (providers already rank their catalogs).
   static func filter(_ entries: [ComposerPaletteEntry], by filter: String)
     -> [ComposerPaletteEntry]
   {
     let needle = filter.trimmingCharacters(in: .whitespaces).lowercased()
     guard !needle.isEmpty else { return entries }
     return entries.filter {
-      $0.title.lowercased().contains(needle) || $0.id.lowercased().contains(needle)
+      $0.title.lowercased().contains(needle)
+        || $0.id.lowercased().contains(needle)
+        || ($0.subtitle?.lowercased().contains(needle) ?? false)
     }
   }
 
@@ -163,8 +169,14 @@ final class RealComposerPaletteSource: ComposerPaletteSourcing {
     guard !entry.id.isEmpty else { return }
     switch command {
     case .model:
-      guard entry.id != runtimeLaneProvider().model else { return }
-      try settings.updateConfig(key: "LLM_ASSISTIVE_MODEL", value: entry.id)
+      let targetModel = entry.modelId ?? entry.id
+      let current = runtimeLaneProvider()
+      if let targetProvider = entry.providerId, targetProvider != current.providerId {
+        try settings.setLaneProvider(lane: .assistive, providerId: targetProvider)
+      } else if targetModel == current.model {
+        return
+      }
+      try settings.updateConfig(key: "LLM_ASSISTIVE_MODEL", value: targetModel)
       cachedModels = nil
     case .effort:
       try settings.updateConfig(key: "LLM_ASSISTIVE_REASONING", value: entry.id)
@@ -184,13 +196,16 @@ final class RealComposerPaletteSource: ComposerPaletteSourcing {
     }
     let snapshot = settings.loadSettings()
     let runtime = runtimeLaneProvider()
-    let provider = settings.availableProviders().first { $0.id == runtime.providerId }
+    let allProviders = settings.availableProviders()
+    let provider = allProviders.first { $0.id == runtime.providerId }
     let discovery = settings.discoverModels(providerId: runtime.providerId)
     let lane = LLMLaneModel(
       lane: .assistive, runtime: runtime, provider: provider,
       configuredModel: snapshot.llmAssistiveModel ?? "", discovery: discovery
     )
+    var seenIds: Set<String> = []
     var entries: [ComposerPaletteEntry] = lane.modelOptions.map { model in
+      seenIds.insert(model.id)
       let subtitle: String? = model.id == model.displayName ? nil : model.id
       return ComposerPaletteEntry(
         id: model.id,
@@ -198,6 +213,30 @@ final class RealComposerPaletteSource: ComposerPaletteSourcing {
         subtitle: subtitle,
         isCurrent: model.id == runtime.model
       )
+    }
+    let otherProviders = allProviders.filter {
+      $0.id != runtime.providerId && ($0.apiKeySet || $0.accountSignedIn || !$0.keyRequired)
+    }
+    for otherProvider in otherProviders {
+      let otherDiscovery = settings.discoverModels(providerId: otherProvider.id)
+      guard ["fresh", "cached"].contains(otherDiscovery.status) else { continue }
+      for model in LLMLaneModel.disambiguateModelOptions(otherDiscovery.models) {
+        let entryId =
+          seenIds.insert(model.id).inserted ? model.id : "\(otherProvider.id)::\(model.id)"
+        let subtitle =
+          model.id == model.displayName
+          ? otherProvider.displayName : "\(otherProvider.displayName) · \(model.id)"
+        entries.append(
+          ComposerPaletteEntry(
+            id: entryId,
+            title: model.displayName,
+            subtitle: subtitle,
+            isCurrent: false,
+            providerId: otherProvider.id,
+            modelId: model.id
+          )
+        )
+      }
     }
     if entries.isEmpty {
       // The configured model is still usable with an account even when the

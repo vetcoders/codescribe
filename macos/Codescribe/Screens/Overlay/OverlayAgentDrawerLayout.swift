@@ -62,6 +62,15 @@ enum OverlayAgentDrawerLayout {
   /// A rail's divider dragged this far toward the conversation unfolds the list.
   static let railUnfoldDrag: CGFloat = 40
 
+  /// While the divider is dragged both panes keep their old widths and only
+  /// the guide moves; they fade to this so the stale split and the reflow at
+  /// release read as one intended transition (Maciej, 2026-11-07). Set once
+  /// at the gesture's start, cleared once after the committed width lays out.
+  static let dragDimOpacity: Double = 0.55
+  /// The light blur under that fade. A compositor filter runs each frame the
+  /// guide moves, so it stays small; 0 turns it off.
+  static let dragBlurRadius: CGFloat = 1.5
+
   /// A folded conversation keeps a real edge column beside the divider.
   static func conversationEdgeWidth(textScale: CGFloat) -> CGFloat { 38 * textScale }
 

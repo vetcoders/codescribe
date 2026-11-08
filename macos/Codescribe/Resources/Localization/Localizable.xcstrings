@@ -3228,6 +3228,40 @@
         }
       }
     },
+    "Allow Codescribe to control Spotify in Privacy & Security > Automation." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allow Codescribe to control Spotify in Privacy & Security > Automation."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pozwól Codescribe sterować Spotify w ustawieniach Prywatność i ochrona > Automatyzacja."
+          }
+        }
+      }
+    },
+    "Allow Spotify control" : {
+      "comment" : "Explicit action that asks macOS for Spotify Automation access without changing volume",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allow Spotify control"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zezwól na sterowanie Spotify"
+          }
+        }
+      }
+    },
     "Allow access" : {
       "comment" : "In-app permission repair chip; the row title already names the permission",
       "localizations" : {
@@ -3836,6 +3870,40 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nagranie audio jest usuwane zaraz po zakończeniu przetwarzania. Historia tekstowa pozostaje."
+          }
+        }
+      }
+    },
+    "Audio output in use" : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Audio output in use"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aktywne wyjścia audio"
+          }
+        }
+      }
+    },
+    "Audio playback status is unavailable." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Audio playback status is unavailable."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stan odtwarzania dźwięku jest niedostępny."
           }
         }
       }
@@ -5768,6 +5836,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Menu Codescribe"
+          }
+        }
+      }
+    },
+    "Codescribe quit while this message was being sent. It may already have reached the agent; check before sending it again." : {
+      "comment" : "A held message returned to the composer after a crash during its handoff",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codescribe zamknął się w trakcie wysyłania tej wiadomości. Mogła już dotrzeć do agenta; sprawdź, zanim wyślesz ją ponownie."
           }
         }
       }
@@ -9784,6 +9863,17 @@
         }
       }
     },
+    "In channel 0" : {
+      "comment" : "Channel chip hover card: a receipt confirms broadcasts reach this agent",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "W kanale 0"
+          }
+        }
+      }
+    },
     "In reply to: %@" : {
       "comment" : "Excerpt of the explicitly associated addressed utterance",
       "localizations" : {
@@ -10667,6 +10757,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Mniej tonowania"
+          }
+        }
+      }
+    },
+    "Let Codescribe lower Spotify by 70 percent for the whole recording and restore it afterwards. Dictation works without this permission." : {
+      "comment" : "Optional Automation grant for Spotify volume control, without pausing playback",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Let Codescribe lower Spotify by 70 percent for the whole recording and restore it afterwards. Dictation works without this permission."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codescribe ścisza Spotify o 70% na cały czas nagrania, a potem przywraca głośność. Dyktowanie działa także bez tego uprawnienia."
           }
         }
       }
@@ -12558,7 +12665,7 @@
       }
     },
     "No conversation on this channel" : {
-      "comment" : "Disabled mini-rail channel pill",
+      "comment" : "Disabled compact channel button",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -12784,6 +12891,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Na tym Macu nie zapisano nowszej poprawki."
+          }
+        }
+      }
+    },
+    "No other application has an active audio output." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No other application has an active audio output."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Żadna inna aplikacja nie ma aktywnego wyjścia audio."
           }
         }
       }
@@ -13163,6 +13287,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie przyznano"
+          }
+        }
+      }
+    },
+    "Not in channel 0" : {
+      "comment" : "Channel chip hover card: a receipt confirms the agent left channel 0",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Poza kanałem 0"
           }
         }
       }
@@ -13787,6 +13922,23 @@
         }
       }
     },
+    "Open Automation settings" : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open Automation settings"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwórz ustawienia Automatyzacji"
+          }
+        }
+      }
+    },
     "Open Lab" : {
       "localizations" : {
         "pl" : {
@@ -13825,6 +13977,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Otwórz kreator…"
+          }
+        }
+      }
+    },
+    "Open Spotify, then allow Codescribe to lower its volume while recording. If access was denied, enable Spotify under Codescribe in Privacy & Security > Automation." : {
+      "comment" : "Optional Spotify control permission; Spotify must be running to ask macOS",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open Spotify, then allow Codescribe to lower its volume while recording. If access was denied, enable Spotify under Codescribe in Privacy & Security > Automation."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwórz Spotify, a następnie zezwól Codescribe na ściszanie muzyki podczas nagrywania. Jeśli odmówiono dostępu, włącz Spotify dla Codescribe w Ustawieniach systemowych → Prywatność i ochrona → Automatyzacja."
           }
         }
       }
@@ -14646,6 +14815,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Odtwórz oryginalne nagranie dla tej poprawki"
+          }
+        }
+      }
+    },
+    "Playback during recording" : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Playback during recording"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odtwarzanie podczas nagrywania"
           }
         }
       }
@@ -15563,6 +15749,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ostatnie nagrania"
+          }
+        }
+      }
+    },
+    "Reception policy unknown" : {
+      "comment" : "Agents list: no reception receipt has been read for this agent yet",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Polityka odbioru nieznana"
           }
         }
       }
@@ -19172,6 +19369,91 @@
         }
       }
     },
+    "Spotify control" : {
+      "comment" : "Optional target-specific Automation permission in General settings and setup",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify control"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sterowanie Spotify"
+          }
+        }
+      }
+    },
+    "Spotify is lowered by 70 percent for the whole recording and restored afterwards." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify is lowered by 70 percent for the whole recording and restored afterwards."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Głośność Spotify jest zmniejszana o 70 procent na cały czas nagrania, a potem przywracana."
+          }
+        }
+      }
+    },
+    "Spotify is quieter while the microphone is recording." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify is quieter while the microphone is recording."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify jest ściszone na czas nagrywania mikrofonu."
+          }
+        }
+      }
+    },
+    "Spotify keeps playing. Its volume changes only while recording." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify keeps playing. Its volume changes only while recording."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify odtwarza dalej. Jego głośność zmienia się tylko podczas nagrywania."
+          }
+        }
+      }
+    },
+    "Spotify volume could not be adjusted. Recording continues." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify volume could not be adjusted. Recording continues."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się zmienić głośności Spotify. Nagrywanie trwa dalej."
+          }
+        }
+      }
+    },
     "Stale configuration entries — do not affect operation" : {
       "comment" : "About panel: several .env entries Codescribe does not read",
       "localizations" : {
@@ -20984,6 +21266,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "To powiązanie nie pasuje już do agenta na tym kanale. Wiadomość do niego nie pójdzie."
+          }
+        }
+      }
+    },
+    "This message is already being sent." : {
+      "comment" : "Cancel/Edit came after the send hold ended",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ta wiadomość jest już wysyłana."
           }
         }
       }
@@ -23117,6 +23410,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Twoja licencja, wersja Codescribe, lokalne dane i prywatność."
+          }
+        }
+      }
+    },
+    "Your manual Spotify volume change takes priority." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Your manual Spotify volume change takes priority."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Twoja ręczna zmiana głośności Spotify ma pierwszeństwo."
           }
         }
       }

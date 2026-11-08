@@ -23,7 +23,7 @@ final class OverlayIntercomHistoryRestoreTests: XCTestCase {
       owner = try XCTUnwrap(
         OverlayConversationOwner(row: [
           "provider": "codex", "provider_session_id": session,
-          "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session)!,
+          "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session),
           "channel": "2", "name": "Retained owner",
         ]))
       conversation = .init(id: owner.id, channel: "2", name: owner.name, owner: owner, messages: [])

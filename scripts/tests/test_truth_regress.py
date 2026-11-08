@@ -34,56 +34,39 @@ STUB_SIDECAR = """{
 
 FAKE_CODESCRIBE = r"""#!/usr/bin/env bash
 set -euo pipefail
-input=""
-for arg in "$@"; do
-  case "$arg" in
-    --|transcribe|--raw|--no-bus) ;;
-    --*) ;;
-    *) input=$arg ;;
-  esac
-done
-if [[ -z "$input" ]]; then
-  printf 'usage: codescribe transcribe <file>\n' >&2
-  exit 2
-fi
-cat >"${input}.truth.json" <<'EOF'
-%s
-EOF
-""" % STUB_SIDECAR
-
-FAKE_QUBE_REPORT = r"""#!/usr/bin/env bash
-set -euo pipefail
-baseline=""
-candidate=""
-out=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --baseline-dir)
-      baseline=$2
-      shift 2
-      ;;
-    --candidate-dir)
-      candidate=$2
-      shift 2
-      ;;
-    --out|--output)
-      out=$2
-      shift 2
-      ;;
-    *)
-      shift
-      ;;
-  esac
-done
-if [[ -z "$candidate" ]]; then
-  printf 'missing --candidate-dir\n' >&2
-  exit 2
-fi
-if [[ -z "$out" ]]; then
-  out=$candidate
-fi
-mkdir -p -- "$out"
-python3 - "$candidate" "$out/comparison.json" <<'PY'
+if [[ "${1:-}" == "report" ]]; then
+  shift
+  baseline=""
+  candidate=""
+  out=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --baseline-dir)
+        baseline=$2
+        shift 2
+        ;;
+      --candidate-dir)
+        candidate=$2
+        shift 2
+        ;;
+      --out|--output)
+        out=$2
+        shift 2
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+  if [[ -z "$candidate" ]]; then
+    printf 'missing --candidate-dir\n' >&2
+    exit 2
+  fi
+  if [[ -z "$out" ]]; then
+    out=$candidate
+  fi
+  mkdir -p -- "$out"
+  python3 - "$candidate" "$out/comparison.json" <<'PY'
 import json, sys
 from pathlib import Path
 cand = Path(sys.argv[1])
@@ -101,7 +84,25 @@ payload = {
 out.write_text(json.dumps(payload, indent=2) + "\n")
 print("comparison:", out)
 PY
-"""
+  exit 0
+fi
+
+input=""
+for arg in "$@"; do
+  case "$arg" in
+    --|transcribe|--raw|--no-bus) ;;
+    --*) ;;
+    *) input=$arg ;;
+  esac
+done
+if [[ -z "$input" ]]; then
+  printf 'usage: codescribe transcribe <file>\n' >&2
+  exit 2
+fi
+cat >"${input}.truth.json" <<'EOF'
+%s
+EOF
+""" % STUB_SIDECAR
 
 
 class TruthRegressTests(unittest.TestCase):
@@ -127,9 +128,6 @@ class TruthRegressTests(unittest.TestCase):
         codescribe = self.bindir / "codescribe"
         codescribe.write_text(FAKE_CODESCRIBE)
         codescribe.chmod(codescribe.stat().st_mode | stat.S_IXUSR)
-        qube = self.bindir / "qube-report"
-        qube.write_text(FAKE_QUBE_REPORT)
-        qube.chmod(qube.stat().st_mode | stat.S_IXUSR)
 
     def run_script(self, *args: str, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
         env = os.environ.copy()

@@ -91,6 +91,9 @@ final class OverlayPerConversationComposerTests: XCTestCase {
         state: state, textScale: TextScaleController(key: suite),
         desktopStore: OverlayIntercomDesktopStore(defaults: defaults))
       intercom = controller
+      // The panel stays unpresented, so the hidden-canvas gate (c26865b77)
+      // would empty the card on the first state change after it is made.
+      controller.rendersUnpresentedInstanceCards = true
       XCTAssertTrue(
         controller.detach(.init(digit: conversation.channel, conversation: conversation)))
       let panels = NSApp.windows.filter {

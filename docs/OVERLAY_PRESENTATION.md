@@ -40,10 +40,9 @@ records the compact-card layout and its matching More/right-click menu.
 The runtime action semantics and availability are defined below.
 
 An agent row gives its full first line to identity, receipt and clock. The
-waveform microphone, speaker and More menu remain visible over the top trailing
-corner of the provider/model/project descriptor and routed two-line preview
-below it. The preview keeps the full text layout width underneath the controls,
-like the conversation's message-header actions. The delivery/reader state line
+waveform microphone, speaker and More menu sit in their own column beside the
+provider/model/project descriptor and routed two-line preview below it, so they
+never cover its text and no fade hides it. The delivery/reader state line
 remains below the preview; panel and Sync controls keep their separate targets
 on the identity row.
 The conversation button and these controls remain siblings; opening a
@@ -1021,9 +1020,9 @@ dictation control keeps the plain `mic`, the dictation verb (Maciej,
 Channel activity updates an already visible main overlay, but the vertical
 Intercom does not summon a closed main overlay; Show in Agents remains explicit.
 The floating pills retain their rich informational hover. The classic Agents
-list keeps its inline actions and also offers the last-message hover described
-above; provider, model, status and session metadata are not repeated in a
-second tooltip.
+list keeps its inline actions and its inline two-line preview and offers the
+last-message hover described above, like the pinned pill, rail and saved rows; provider,
+model, status and session metadata are not repeated in a second tooltip.
 The same `OverlayChannelMapPreference` stores the layout; switching it preserves
 the selected conversation, drafts and active route. No second inventory or
 recorder is created. The default remains horizontal, and an absent opt-in stays off.

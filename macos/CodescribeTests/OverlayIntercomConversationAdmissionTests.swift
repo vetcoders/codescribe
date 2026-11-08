@@ -15,20 +15,12 @@ final class OverlayIntercomConversationAdmissionTests: XCTestCase {
   // so it stays below the composer gate at every scale; a fixed height tuned
   // to the old 10 pt body no longer fits one line at 0.8.
   func testGroupedCardBelowComposerGateRendersOnlyLatestPreview() throws {
+    // The title row never shrinks below 30 pt and the context strip sits under
+    // it again (6ca5ea7e3), so at scale 0.8 a 100 pt fixture is an 80 pt card:
+    // 34 pt left of the 36 pt a one-line preview needs. 120 pt admits the
+    // preview at every scale and stays below the composer gate.
     for scale in [CGFloat(0.8), 1, 1.6] {
-      let layout = NSLayoutManager()
-      let body = ceil(
-        layout.defaultLineHeight(
-          for: .systemFont(ofSize: OverlayConversationMessageContent.bodyFontSize * scale)))
-      let metadata = ceil(layout.defaultLineHeight(for: .systemFont(ofSize: 10 * scale)))
-      let firstPreview =
-        OverlayIntercomWidgetLayout.controlHeight(scale: scale)
-        + OverlayIntercomWidgetLayout.contextStripHeight(scale: scale)
-        + body + metadata
-        + 2 * OverlayIntercomWidgetLayout.compactPreviewVerticalPadding
-        + OverlayIntercomWidgetLayout.compactPreviewSpacing
-      // One point of slack keeps the boundary clear of floating-point dust.
-      try renderCard(scale: scale, height: (firstPreview + 1) / scale, expectsComposer: false)
+      try renderCard(scale: scale, height: 120, expectsComposer: false)
     }
   }
 

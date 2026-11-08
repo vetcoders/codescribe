@@ -112,12 +112,21 @@ final class OverlayChannelMapPreferenceTests: XCTestCase {
       counter.onCounter()
       XCTAssertEqual(state.presentationMode, mode, "Reveal must not switch overlay density")
     }
-    XCTAssertEqual(reveals, 3)
+    XCTAssertEqual(reveals, 2)
     XCTAssertEqual(state.captureGeneration, generation)
     XCTAssertEqual(state.selectedConversationID, selected)
     XCTAssertEqual(state.channelHudStates, hud)
     XCTAssertEqual(state.conversationDrafts["layout-draft"], "unfinished message")
     XCTAssertTrue(state.pendingChannelToggles.isEmpty)
+    // The expanded window keeps its own Agents control: the press switches
+    // the window to its Agents view and never reveals the Intercom group.
+    state.setPresentationMode(.expanded)
+    XCTAssertNil(DictationOverlayView(state: state).channelMap)
+    state.toggleAgentSidebar()
+    XCTAssertEqual(reveals, 2, "the expanded window is not the Fiszki router")
+    XCTAssertEqual(state.presentationMode, .expanded)
+    XCTAssertEqual(state.captureGeneration, generation)
+    XCTAssertEqual(state.conversationDrafts["layout-draft"], "unfinished message")
     state.channelMapPreference.selectLayout(.horizontal)
     XCTAssertTrue(state.channelMapInHeader)
     XCTAssertEqual(view.channelMap(roster: view.channelStatusView)?.stacked, false)

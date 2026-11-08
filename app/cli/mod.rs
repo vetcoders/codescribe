@@ -8,8 +8,8 @@
 //!
 //! Each module here owns one job's arguments and dispatch. `bin/codescribe.rs`
 //! mounts them as subcommands, which are the single authority for these jobs.
-//! The four standalone binaries still call the same functions and are slated
-//! for removal under the one-throne rule; nothing new may depend on them.
+//! The four standalone binaries have been removed; callers use these
+//! subcommands through the single executable.
 //!
 //! A process-level consequence matters for the engine: a unified entry point
 //! loads Whisper once per invocation instead of once per binary in a pipeline.

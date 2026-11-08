@@ -54,8 +54,12 @@ synthetic geometry checks do not constitute native recognition-quality acceptanc
 
 - `RecordingController` owns capture; `StreamingRecorder` fans one physical
   stream out to registered subscribers. Dictation and Agent channels do not
-  allocate independent microphones. Their transcription sessions, ledgers and
-  lifecycle are nevertheless distinct.
+  allocate independent microphones. A dictation take has its own transcription
+  session, ledger and lifecycle. All open Agent channels share one channel
+  subscriber, one transcription session, one ledger and one archive; each
+  channel message receives only the occurrences inside its own sample-clock
+  interval (`core/audio/channel_demux.rs`, see TRANSCRIPT_BUS.md "Shared channel
+  recognition and participation intervals").
 - Apple supplies fast observations. Rust retains the open phrase; Swift partial
   revisions do not manufacture finals. Timed Apple phrase ends may qualify an
   existing owner at a measured, calibrated Silero valley. Neither string
@@ -83,8 +87,14 @@ synthetic geometry checks do not constitute native recognition-quality acceptanc
   before EOF. Recognizer-final waiting and useful-refinement drain have separate
   budgets. This is not a fixed 1.5-second bound on complete delivery, nor proof
   that the last word will be admitted.
-- `AgentChannel` has no LLM formatter. `HandsFree` may format sealed fragments
-  live; `SingleTurn` composer capture formats once at terminal processing.
+- `AgentChannel` disarms per-occurrence LLM formatting. Its optional message
+  formatter is bounded by `agent_channel.format_wait_sec`; missing authority,
+  timeout or refusal delivers Light+ from the committed message. Each seat
+  finishes independently. Intermediate Raw still projects to the HUD and
+  in-process consumers, while channel buses retain their quiet start/terminal,
+  manual-edit and coverage publication contract, including shared captures.
+  `HandsFree` may format sealed fragments live; `SingleTurn` composer capture
+  formats once at terminal processing.
   Smart/Correction use the text formatter; Max uses grouped Agent consultation.
 - Formatter lexical and structural choices are governed by the selected sealed
   prompt. There is no word-count/order veto or pre-provider repetition cleanup.

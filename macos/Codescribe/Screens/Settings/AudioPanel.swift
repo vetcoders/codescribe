@@ -760,6 +760,7 @@ func audioInputDisplayState(_ snapshot: CsAudioInputSnapshot) -> AudioInputDispl
 struct AudioPanel: View {
   @ObservedObject var model: SettingsViewModel
   @State private var recordingControls: (state: OverlayState, tray: TrayViewModel)?
+  @State private var recordingMedia: RecordingMediaDucker?
   @State private var showingCalibrationDetails = false
 
   private static let systemDefaultChoice = "__codescribe_system_default__"
@@ -794,8 +795,16 @@ struct AudioPanel: View {
         .padding(.top, SettingsScale.headerGap)
         .task {
           recordingControls = model.audioRecordingControls()
+          recordingMedia = AppModel.shared.recordingMedia
           await model.refreshAdmission()
         }
+
+      if let recordingMedia {
+        SettingsSectionLabel(String(localized: "Playback during recording"))
+          .padding(.top, SettingsScale.sectionGap)
+        RecordingMediaSection(media: recordingMedia)
+          .padding(.top, SettingsScale.headerGap)
+      }
 
       SettingsSectionLabel(String(localized: "Audio retention"))
         .padding(.top, SettingsScale.sectionGap)

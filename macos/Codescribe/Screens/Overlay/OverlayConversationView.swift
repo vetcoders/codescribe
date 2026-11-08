@@ -109,6 +109,24 @@ struct OverlayConversationMessageContent: View {
 }
 
 /// Paints the passive observer's immutable conversation projection.
+/// Cuts a transcript off above one line and nowhere else. The scroll view
+/// keeps `scrollClipDisabled`, so its rows still reach the pane's own clip on
+/// the other three sides; a plain `.clipped()` would bring back the strip.
+struct OverlayTranscriptTopClip: Shape {
+  /// Points below the view's top edge; `nil` cuts nothing.
+  var top: CGFloat?
+
+  func path(in rect: CGRect) -> Path {
+    let reach: CGFloat = 4096
+    let open = rect.insetBy(dx: -reach, dy: -reach)
+    guard let top else { return Path(open) }
+    return Path(
+      CGRect(
+        x: open.minX, y: rect.minY + top, width: open.width,
+        height: open.maxY - (rect.minY + top)))
+  }
+}
+
 struct OverlayConversationView: View {
   /// Channel 0's display name for its "0 · <name>" header.
   @Environment(\.overlaySharedChannelName) private var sharedChannelName
@@ -259,13 +277,30 @@ struct OverlayConversationView: View {
   private var visibleNavigationHeight: CGFloat { hidesNavigation ? 0 : navigationHeight }
 
   /// The bubble cap follows ⌘+ text scale until the window's own bound wins.
-  /// The window bound keeps a margin on the far side so leading and trailing
-  /// bubbles stay told apart; at 0.82 that margin was a sixth of the column
-  /// and left an empty band beside the docked drawer (Founder, 2026-10-18).
-  /// 0.92 of the text column is the same cue at a tenth of the width. The
-  /// absolute 660 pt is a reading measure, not a margin, and does not move.
-  nonisolated static func bubbleCap(contentWidth: CGFloat, textScale: CGFloat) -> CGFloat {
-    max(0, min(660 * textScale, (contentWidth - 40) * 0.92))
+  /// The absolute 660 pt is a reading measure, not a margin, and does not move.
+  /// In the window (`.standard`) the bubbles share the measure of the header
+  /// card and the composer: the column inside the same 20 pt insets, never
+  /// narrower than 180 pt. The Intercom keeps a margin on the far side so
+  /// leading and trailing bubbles stay told apart; at 0.82 that margin was a
+  /// sixth of the column and left an empty band beside the docked drawer
+  /// (Founder, 2026-10-18). 0.92 of the text column is the same cue at a
+  /// tenth of the width.
+  nonisolated static func bubbleCap(
+    contentWidth: CGFloat, textScale: CGFloat, presentation: OverlayConversationPresentation
+  ) -> CGFloat {
+    switch presentation {
+    case .standard:
+      return max(0, min(660 * textScale, max(180, contentWidth - 40)))
+    case .intercom:
+      return max(0, min(660 * textScale, (contentWidth - 40) * 0.92))
+    }
+  }
+
+  /// The window's conversation reserves no scrollbar gutter, so the bubbles
+  /// keep the header card's 20 pt on both sides; its scroller is inset on its
+  /// own instead. The Intercom keeps its gutter beside the tighter card.
+  private var scrollbarGutter: CGFloat {
+    presentation == .standard ? 0 : OverlayResizeHit.scrollbarInset
   }
 
   /// The newest receiving user turn owns the activity cue, independently of ACKs.
@@ -279,8 +314,8 @@ struct OverlayConversationView: View {
       ScrollViewReader { proxy in
         trackedMessages(
           maxBubbleWidth: Self.bubbleCap(
-            contentWidth: max(0, geometry.size.width - OverlayResizeHit.scrollbarInset),
-            textScale: textScale)
+            contentWidth: max(0, geometry.size.width - scrollbarGutter),
+            textScale: textScale, presentation: presentation)
         )
         .onChange(of: replyNavigationID) { _, id in
           guard let id else { return }
@@ -298,7 +333,7 @@ struct OverlayConversationView: View {
           orderedMessages.isEmpty ? "empty" : "rows",
         ])
 
-        .padding(.trailing, OverlayResizeHit.scrollbarInset)
+        .padding(.trailing, scrollbarGutter)
         // Nothing above the rows is viewport space: the window's inset and
         // the header card are glass floating over the scrolling text, as the
         // composer is. The rows take both as a content margin and scroll
@@ -387,7 +422,7 @@ struct OverlayConversationView: View {
             } else {
               navigation
                 .padding(.horizontal, 20)
-                .padding(.top, 4)
+                .padding(.top, Self.navigationTopPadding)
                 .padding(.bottom, 8)
                 .onGeometryChange(for: CGFloat.self) {
                   $0.size.height
@@ -886,6 +921,21 @@ struct OverlayConversationView: View {
     // The window inset and the header card's height: the newest rows rest
     // under them and scroll through the glass, the way they do under the composer.
     .contentMargins(.top, topInset + visibleNavigationHeight)
+    // The window's list reaches its trailing edge so the bubbles keep the
+    // header card's measure. Only the scroller steps in: inside the window's
+    // resize band the pointer resizes and the knob cannot be grabbed.
+    .contentMargins(
+      .trailing, presentation == .standard ? OverlayResizeHit.scrollbarInset : 0,
+      for: .scrollIndicators
+    )
+    // Both halves of the Agents window end their rows on the same line: the
+    // roster stops at the top of its mailbox card, the transcript at the top
+    // of its conversation label (Maciej, 2026-11-06: "zrób po prostu po obu
+    // stronach tak samo"). Rows still pass under the label's glass; the gap
+    // between the bar and the label stays clear. Without the label (a
+    // fiszka) nothing is cut and rows keep flowing under the header.
+    .clipShape(
+      OverlayTranscriptTopClip(top: hidesNavigation ? nil : topInset + Self.navigationTopPadding))
     if #available(macOS 26.0, *) {
       // Only the actual glass surfaces soften the rows. A viewport-wide edge
       // treatment would also blur the clear gaps between floating controls.
@@ -896,6 +946,9 @@ struct OverlayConversationView: View {
       list
     }
   }
+
+  /// The label card's distance below the window inset.
+  static let navigationTopPadding: CGFloat = 4
 
   /// How far a borderless-button menu sets its label in from its own leading
   /// edge (measured through the accessibility frames, 2026-10-18).
@@ -1305,7 +1358,10 @@ struct OverlayNamePillGlass: ViewModifier {
   @ViewBuilder
   func body(content: Content) -> some View {
     if #available(macOS 26.0, *) {
-      content.glassEffect(interactive ? .regular.interactive() : .regular, in: Capsule())
+      // `interactive` no longer asks for `.interactive()` glass: one pill per
+      // row tracking the pointer committed the window on every mouse move
+      // (Instruments, 2026-11-07). The button's own style answers a press.
+      content.glassEffect(.regular, in: Capsule())
     } else {
       content.background(.regularMaterial, in: Capsule())
     }

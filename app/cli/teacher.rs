@@ -6,8 +6,7 @@
 //!                         └─ lexicon hints ─┘
 //! ```
 //!
-//! Reached as `codescribe teach` and, for compatibility, as the standalone
-//! `codescribe-teacher` binary.
+//! Reached as `codescribe teach`.
 //!
 //! Examples:
 //! ```bash

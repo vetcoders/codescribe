@@ -10,6 +10,8 @@
 pub(crate) mod archive;
 /// Per-session capture-level receipt (active-speech RMS, non-terminal WARN).
 pub mod capture_receipt;
+/// Sample-clock participant intervals over the one shared channel recognizer.
+pub mod channel_demux;
 /// Fixed-size PCM framing for STT windows and streaming hops.
 pub mod chunker;
 /// Decode audio files (WAV/MP3/…) into mono PCM for the STT path.

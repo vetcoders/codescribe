@@ -31,6 +31,7 @@ final class AppModel: ObservableObject {
   let chat: AgentChatStore
   let overlay: OverlayController
   let tray: TrayViewModel
+  let recordingMedia = RecordingMediaDucker()
   /// The one invalidation scope for already-open configuration projections
   /// (Settings window, tray Quick Settings). Carries edges, never values.
   let configurationInvalidation: ConfigurationInvalidation
@@ -367,10 +368,10 @@ final class OverlayController: ObservableObject {
     let preference = state.channelMapPreference
     // One presentation owner: the full Agents canvas and its floating views
     // are alternatives, not two concurrent projections on the desktop.
-    let showsAgentsCanvas =
-      panelPresented && state.presentationMode == .expanded && state.windowContentSurface == .agents
+    let showsExpandedMainCanvas =
+      panelPresented && state.presentationMode == .expanded
     let wantsWidget =
-      preference.enabled && preference.layout == .vertical && overlayEnabled && !showsAgentsCanvas
+      preference.enabled && preference.layout == .vertical && overlayEnabled && !showsExpandedMainCanvas
     if wantsWidget, panelPresented, state.windowContentSurface == .agents {
       // A compact Agents widget is replaced by the floating presentation.
       // orderOut clears panelPresented before re-entering this same owner.
@@ -401,6 +402,7 @@ final class OverlayController: ObservableObject {
   private func showIntercom() {
     guard intercomPresentationStarted else { return }
     readOverlayPreference()
+    state.selectConversation(nil, expand: false)
     dismiss()
     intercomWidget?.revealGroup()
   }
@@ -420,14 +422,13 @@ final class OverlayController: ObservableObject {
   /// An explicit Tray entry uses the same cached panel and leaves capture,
   /// transcript selection, drafts and recording preferences with their owners.
   func showWidget() {
-    let enabled = readOverlayPreference()
-    if enabled, intercomPresentationStarted, state.channelMapPreference.enabled,
-      state.channelMapPreference.layout == .vertical
-    {
-      showIntercom()
-      return
+    readOverlayPreference()
+    if panel?.isVisible != true {
+      if state.isVerticalIntercom, state.windowContentSurface == .agents {
+        state.selectConversation(nil, expand: false)
+      }
+      state.setPresentationMode(.mini)
     }
-    if panel?.isVisible != true { state.setPresentationMode(.mini) }
     show()
   }
 
@@ -568,6 +569,10 @@ final class OverlayController: ObservableObject {
         // The transition already landed on this height. A later projection
         // can still grow the settled panel; an equal height writes nothing.
         self.resizeForProjectedContent()
+      }
+      if state.windowContentSurface == .agents, state.agentsLayout == .split {
+        floating.ensureAgentsSplitWidth(
+          OverlayAgentDrawerLayout.minimumSplitWindowWidth(textScale: textScale.scale))
       }
       floating.setContentSurface(state.windowContentSurface)
       floating.setPresentationMode(state.presentationMode)
@@ -711,6 +716,10 @@ final class OverlayController: ObservableObject {
     }
     guard (panel as? FloatingOverlayPanel)?.isFrameTransitioning != true else { return }
     if let floating = panel as? FloatingOverlayPanel {
+      if state.windowContentSurface == .agents, state.agentsLayout == .split {
+        floating.ensureAgentsSplitWidth(
+          OverlayAgentDrawerLayout.minimumSplitWindowWidth(textScale: textScale.scale))
+      }
       floating.setContentSurface(
         state.windowContentSurface,
         animated: panel.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)

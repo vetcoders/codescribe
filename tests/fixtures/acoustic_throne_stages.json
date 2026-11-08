@@ -1718,7 +1718,7 @@
               "symbol": "relayInsertPasteIntent",
               "file": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
               "required_code": [
-                "private func relayInsertPasteIntent()",
+                "func relayInsertPasteIntent()",
                 "guard let engine else { return }",
                 "let text = activeText",
                 "let shouldDefer = insertCaretInCodescribeProbe()",

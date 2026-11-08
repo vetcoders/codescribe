@@ -8,10 +8,14 @@ The channel map in compact is opt-in in Settings → Creator →
 explicit user resize stays respected. The map geometry below applies when that
 switch is enabled. The switch changes presentation only.
 
-Overlay size is selected explicitly. A still click on the free background of
-mini or the bar (compact, midi) switches between them, round and round: mini →
-bar → mini (`OverlayState.advancePresentationFromHeader`, Founder 2026-11-04,
-bus brief §12.1). Free background is the draggable chrome
+Overlay size is selected explicitly, and each layout owns the still click on
+its free background (`OverlayLayoutContract`,
+`OverlayState.advancePresentationFromHeader`). In Belka the click switches
+between mini and the bar (compact, midi), round and round: mini → bar → mini
+(Monika 2026-11-04, bus brief §12.1). In Klasyczny and Fiszki the click on the
+collapsed overlay opens the window on its last full view, and a click on the
+window's header returns to the compact form the window replaced (Maciej
+2026-11-06). Free background is the draggable chrome
 (`FloatingOverlayPanel.isPresentationClickHit`): all of mini outside its
 controls, and the bar's `overlay-header*` drag regions. A control, an agent's
 circle, the 8 pt resize bands and a drag that moved 3 pt or more never switch
@@ -39,7 +43,7 @@ pauses terminal auto-hide; it does not change the capture route or window size.
 
 Mini at rest is, from the left, the brand dot (the close button),
 transcription, the microphone, the Agents button (✦, its hover list replaces
-the former channel counter) and the preview chevron (Founder, 2026-11-04, bus
+the former channel counter) and the preview chevron (Monika, 2026-11-04, bus
 brief §3). In the horizontal layout it carries no channel counter, waveform,
 timer or map. The vertical layout keeps its stacked counter after the brand
 dot in mini too, as the way to the Intercom group (Maciej, 2026-10-23); a
@@ -58,7 +62,9 @@ The bar (compact) carries the channel map (`docs/guide/chat-overlay.md`,
 "Channel map in the collapsed overlay").
 The expanded bar (compact) is as wide as its content when it carries the
 horizontal map (`docs/OVERLAY_PRESENTATION.md`, channel map section): brand,
-an 82 pt waveform that keeps its width at rest and during a take, the session
+a 110 pt waveform that keeps its width at rest and during a take (up to
+170 pt in the two-row bar's first-row slack; mini's take keeps its own 82 pt
+strip), the session
 timer, the map and the header actions, with nothing stretched between them.
 With 1–5 agents the map follows the timer in one row, each name under its
 circled digit; with 6–9 it is a second row of chips, each name beside its
@@ -100,19 +106,23 @@ commit-on-blur admission; explicit transcript actions still use the existing
 reducer compare-and-swap path. Conversation messages are selectable read-only
 text. Unread reply counts describe viewing only, independently of delivery ACK.
 
-An explicit ordinary hold or toggle start closes active agent capture channels
-through their normal hangup path before admitting dictation (Founder delivery
-`f3cbd666a0d7d7e61d4d1971`, 2026-10-05).
-Each channel releases its PCM feed before dictation admission. Its retained
-terminal task then joins and publishes the final receipt; its words are retained.
-For hold gestures, handover waits until the existing start delay has elapsed.
+Ordinary dictation and agent channels join the same recognized text stream in
+either start order (current user delivery `806be5087709d09a2cdc9e9e`,
+2026-11-07: use the existing text demux to join and cut transcripts with the
+same formatting settings). An ordinary Double Option or raw hold start never hangs up agents.
+The first opener owns the capture namespace, ledger, recognition settings and
+archive; subsequent participants attach their own document at the current
+sample. They hear no earlier speech and open no second PCM feed or recognizer.
+Their explicit delivery targets remain independent. Stop detaches only that
+document; the last participant closes the common producer and microphone.
+For hold gestures, joining waits until the existing start delay has elapsed.
 A hold key released inside the delay starts no take, and an explicit channel
 gesture during the delay (an agents-list click) cancels that pending hold.
 The channel modifier never records (one key, one role, below), so a hold or
-toggle take is never a channel chord's prefix. A take on another key keeps
-running beside a channel opened from the agents list.
+toggle take is never a channel chord's prefix. A dictation take and a channel
+opened from the agents list remain participants of that same stream.
 The same unified overlay then shows My dictation. The channel silence poll shares
-the controller's serial transition lock with this handover. Repeated lifecycle
+the controller's serial transition lock with admission. Repeated lifecycle
 callbacks do not replace a view the user selected during the admitted capture.
 
 A recording Stop gesture binds the already published capture identity before

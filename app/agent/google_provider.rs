@@ -325,6 +325,19 @@ impl AgentProvider for GoogleProvider {
     fn stream_timeouts(&self) -> Option<(Duration, Duration)> {
         Some((self.initial_timeout, self.chunk_timeout))
     }
+    /// The window of the model this request would go to: `options.model`, or
+    /// this provider's default when the session leaves it empty.
+    fn context_window(&self, options: &StreamOptions) -> Option<u64> {
+        let model = if options.model.trim().is_empty() {
+            &self.default_model
+        } else {
+            &options.model
+        };
+        Some(codescribe_core::agent::compaction::default_context_window(
+            model,
+        ))
+    }
+
     fn name(&self) -> &str {
         "google-generate-content"
     }
@@ -473,10 +486,10 @@ fn restore_turns(
             .transpose()?
             .flatten();
         let Some(first) = metadata else {
-            ensure!(
-                messages[index].role != Role::Assistant,
-                "Google history has no original signed parts; start a new conversation"
-            );
+            // Unsigned history, such as the turns of a thread begun on another
+            // provider, is replayed as ordinary content. Gemini validates
+            // signatures only on the current turn's calls, and this history
+            // always precedes the user message that opens the current turn.
             hash_message(&mut digest, &messages[index])?;
             index += 1;
             continue;
@@ -488,16 +501,43 @@ fn restore_turns(
             "Orphan or duplicate Google response occurrence"
         );
         let count = usize::from(first.segment_count);
+        ensure!(
+            count > 0 && index + count <= messages.len(),
+            "Invalid Google response segment count"
+        );
         let response = first
             .response
             .as_ref()
             .ok_or_else(|| anyhow!("Missing Google wire response"))?;
+        if response.wire != "google-generate-content"
+            || response.model != model
+            || response.provider_id != provider_id
+        {
+            // Signed for another model or account: those signatures do not
+            // belong to this request, so its visible content replays unsigned.
+            for (offset, message) in messages[index..index + count].iter().enumerate() {
+                let segment = message
+                    .metadata
+                    .as_ref()
+                    .map(|metadata| metadata.provider_wire())
+                    .transpose()?
+                    .flatten()
+                    .ok_or_else(|| anyhow!("Missing Google response segment"))?;
+                ensure!(
+                    message.role == Role::Assistant
+                        && segment.occurrence_id == first.occurrence_id
+                        && segment.segment_count == first.segment_count
+                        && usize::from(segment.segment_index) == offset,
+                    "Google response occurrence does not match canonical content"
+                );
+                hash_message(&mut digest, message)?;
+            }
+            index += count;
+            continue;
+        }
         ensure!(
-            response.wire == "google-generate-content"
-                && response.model == model
-                && response.provider_id == provider_id
-                && response.context_digest == hex::encode(digest.clone().finalize()),
-            "Google history provider, model or context does not match its signed response"
+            response.context_digest == hex::encode(digest.clone().finalize()),
+            "Google history context does not match its signed response"
         );
         let metadata_bytes = serde_json::to_vec(response)?.len();
         total_bytes = total_bytes.saturating_add(metadata_bytes);
@@ -604,7 +644,9 @@ fn build_request_with_host(
     {
         system.push(json!({"text": prompt}));
     }
-    let mut pending_calls: HashMap<&str, &Call> = HashMap::new();
+    // Outstanding calls by id: the function name and Gemini's own wire id.
+    let mut pending_calls: HashMap<&str, (&str, Option<&str>)> = HashMap::new();
+    let mut last_retained = false;
     let mut answered = HashSet::new();
     let mut index = 0;
     while index < messages.len() {
@@ -615,16 +657,19 @@ fn build_request_with_host(
             );
             contents.push(json!({"role":"model","parts":turn.parts}));
             for call in &turn.calls {
-                pending_calls.insert(call.id.as_str(), call);
+                pending_calls.insert(
+                    call.id.as_str(),
+                    (call.name.as_str(), call.wire_id.as_deref()),
+                );
             }
+            last_retained = true;
             index += turn.message_count;
             continue;
         }
+        // An Assistant message here has no signed parts for this model:
+        // another provider wrote it, or another Gemini model or account. It
+        // replays unsigned, which Gemini accepts outside the current turn.
         let message = &messages[index];
-        ensure!(
-            message.role != Role::Assistant,
-            "Google cannot resume this history without its original signed parts (provider/model changed, history restored or compacted); start a new conversation"
-        );
         let mut parts = Vec::new();
         for block in &message.content {
             match block {
@@ -647,9 +692,24 @@ fn build_request_with_host(
                         parts.push(json!({"inlineData":{"mimeType":asset.media_type,"data":BASE64.encode(data)}}));
                     }
                 }
-                ContentBlock::ToolUse { .. } => bail!(
-                    "Google tool history has no retained signed model parts; start a new turn or restore its original provider session"
-                ),
+                ContentBlock::ToolUse { id, name, input } => {
+                    ensure!(
+                        message.role == Role::Assistant,
+                        "Google tool call outside an assistant message"
+                    );
+                    ensure!(
+                        pending_calls
+                            .insert(id.as_str(), (name.as_str(), None))
+                            .is_none(),
+                        "Duplicate Google tool call identity"
+                    );
+                    let args = if input.is_object() {
+                        input.clone()
+                    } else {
+                        json!({ "arguments": input })
+                    };
+                    parts.push(json!({"functionCall":{"name":name,"args":args}}));
+                }
                 ContentBlock::ToolResult {
                     tool_use_id,
                     content,
@@ -659,11 +719,12 @@ fn build_request_with_host(
                         message.role == Role::User && answered.insert(tool_use_id.as_str()),
                         "Duplicate or non-user Google tool result"
                     );
-                    let call = pending_calls.remove(tool_use_id.as_str()).ok_or_else(|| {
-                        anyhow!("Google tool result has no preceding outstanding model call")
-                    })?;
-                    let mut response = json!({"name":call.name,"response":{"result":tool_result_text(content),"is_error":is_error}});
-                    if let Some(id) = &call.wire_id {
+                    let (name, wire_id) =
+                        pending_calls.remove(tool_use_id.as_str()).ok_or_else(|| {
+                            anyhow!("Google tool result has no preceding outstanding model call")
+                        })?;
+                    let mut response = json!({"name":name,"response":{"result":tool_result_text(content),"is_error":is_error}});
+                    if let Some(id) = wire_id {
                         response["id"] = json!(id);
                     }
                     parts.push(json!({"functionResponse":response}));
@@ -695,9 +756,19 @@ fn build_request_with_host(
                     .as_array_mut()
                     .unwrap()
                     .extend(parts);
+            } else if role == "model"
+                && !last_retained
+                && contents.last().is_some_and(|last| last["role"] == "model")
+            {
+                // One unsigned model turn, never appended to a signed one.
+                contents.last_mut().unwrap()["parts"]
+                    .as_array_mut()
+                    .unwrap()
+                    .extend(parts);
             } else {
                 contents.push(json!({"role":role,"parts":parts}));
             }
+            last_retained = false;
         }
         index += 1;
     }
@@ -1668,6 +1739,183 @@ mod tests {
                 "mutation={mutation}"
             );
         }
+    }
+
+    /// 2026-11-08 08:16Z: a thread that had run eight turns on OpenAI was
+    /// switched to Gemini, and every send was refused before any request
+    /// left. Those turns carry no Google wire state. They replay unsigned,
+    /// and the first Gemini answer then signs its own occurrence over that
+    /// history, so the turn after it still restores.
+    #[tokio::test]
+    async fn a_thread_begun_on_another_provider_continues_on_gemini() {
+        use codescribe_core::agent::AgentSession;
+        let mut server = mockito::Server::new_async().await;
+        let path = "/v1beta/models/gemini-test:streamGenerateContent?alt=sse";
+        let foreign = vec![
+            Message::new(Role::User, vec![ContentBlock::Text("read the plan".into())]),
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::Text("Reading it.".into())],
+            ),
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::ToolUse {
+                    id: "call_openai_1".into(),
+                    name: "read_file".into(),
+                    input: json!({"path":"TASK.md"}),
+                }],
+            ),
+            Message::new(
+                Role::User,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_openai_1".into(),
+                    content: vec![ContentBlock::Text("# Plan".into())],
+                    is_error: false,
+                }],
+            ),
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::Text("The plan has one heading.".into())],
+            ),
+        ];
+        let history = json!([
+            {"role":"user","parts":[{"text":"read the plan"}]},
+            {"role":"model","parts":[
+                {"text":"Reading it."},
+                {"functionCall":{"name":"read_file","args":{"path":"TASK.md"}}}
+            ]},
+            {"role":"user","parts":[
+                {"functionResponse":{"name":"read_file","response":{"result":"# Plan","is_error":false}}}
+            ]},
+            {"role":"model","parts":[{"text":"The plan has one heading."}]}
+        ]);
+        let signed = json!([{"text":"Continuing on Gemini.","thoughtSignature":"gemini-first"}]);
+        let mut first_contents = history.as_array().unwrap().clone();
+        first_contents.push(json!({"role":"user","parts":[{"text":"continue on gemini"}]}));
+        let first_contents = Value::Array(first_contents);
+        let first = server
+            .mock("POST", path)
+            .match_request(move |request| {
+                serde_json::from_slice::<Value>(request.body().unwrap()).unwrap()["contents"]
+                    == first_contents
+            })
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse(
+                json!({"candidates":[{"content":{"parts":signed},"finishReason":"STOP"}]}),
+            ))
+            .create_async()
+            .await;
+        let mut second_contents = history.as_array().unwrap().clone();
+        second_contents.push(json!({"role":"user","parts":[{"text":"continue on gemini"}]}));
+        second_contents.push(json!({"role":"model","parts":signed}));
+        second_contents.push(json!({"role":"user","parts":[{"text":"again"}]}));
+        let second_contents = Value::Array(second_contents);
+        let second = server
+            .mock("POST", path)
+            .match_request(move |request| {
+                serde_json::from_slice::<Value>(request.body().unwrap()).unwrap()["contents"]
+                    == second_contents
+            })
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse(
+                json!({"candidates":[{"content":{"parts":[{"text":"done"}]},"finishReason":"STOP"}]}),
+            ))
+            .create_async()
+            .await;
+        let provider = GoogleProvider::from_configuration(
+            format!("{}/v1beta", server.url()),
+            "gemini-test".into(),
+            "fixture-key".into(),
+            &timing(),
+        )
+        .unwrap();
+        let (tx, _rx) = mpsc::channel(128);
+        let mut session = AgentSession::new(Box::new(provider), Arc::new(ToolRegistry::new()), tx);
+        session.restore_messages(foreign);
+        session
+            .send(
+                "continue on gemini".into(),
+                Vec::new(),
+                &StreamOptions::default(),
+            )
+            .await
+            .unwrap();
+        session
+            .send("again".into(), Vec::new(), &StreamOptions::default())
+            .await
+            .unwrap();
+        first.assert_async().await;
+        second.assert_async().await;
+    }
+
+    /// A Gemini occurrence signed for another model replays as its visible
+    /// content, without the other model's signatures.
+    #[tokio::test]
+    async fn an_occurrence_signed_for_another_gemini_model_replays_unsigned() {
+        use codescribe_core::agent::AgentSession;
+        let mut server = mockito::Server::new_async().await;
+        let old = server
+            .mock(
+                "POST",
+                "/v1beta/models/gemini-old:streamGenerateContent?alt=sse",
+            )
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse(json!({"candidates":[{"content":{"parts":[
+                {"thought":true,"text":"planning","thoughtSignature":"old-thought"},
+                {"text":"Old answer.","thoughtSignature":"old-text"}
+            ]},"finishReason":"STOP"}]})))
+            .create_async()
+            .await;
+        let expected = json!([
+            {"role":"user","parts":[{"text":"hello"}]},
+            {"role":"model","parts":[{"text":"Old answer."}]},
+            {"role":"user","parts":[{"text":"next"}]}
+        ]);
+        let new = server
+            .mock("POST", "/v1beta/models/gemini-test:streamGenerateContent?alt=sse")
+            .match_request(move |request| {
+                serde_json::from_slice::<Value>(request.body().unwrap()).unwrap()["contents"]
+                    == expected
+            })
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse(
+                json!({"candidates":[{"content":{"parts":[{"text":"New answer."}]},"finishReason":"STOP"}]}),
+            ))
+            .create_async()
+            .await;
+        let endpoint = format!("{}/v1beta", server.url());
+        let provider = |model: &str| {
+            GoogleProvider::from_configuration(
+                endpoint.clone(),
+                model.into(),
+                "fixture-key".into(),
+                &timing(),
+            )
+            .unwrap()
+        };
+        let (tx, _rx) = mpsc::channel(128);
+        let mut earlier = AgentSession::new(
+            Box::new(provider("gemini-old")),
+            Arc::new(ToolRegistry::new()),
+            tx,
+        );
+        earlier
+            .send("hello".into(), Vec::new(), &StreamOptions::default())
+            .await
+            .unwrap();
+        let (tx, _rx) = mpsc::channel(128);
+        let mut later = AgentSession::new(
+            Box::new(provider("gemini-test")),
+            Arc::new(ToolRegistry::new()),
+            tx,
+        );
+        later.restore_messages(earlier.messages().to_vec());
+        later
+            .send("next".into(), Vec::new(), &StreamOptions::default())
+            .await
+            .unwrap();
+        old.assert_async().await;
+        new.assert_async().await;
     }
 
     #[tokio::test]

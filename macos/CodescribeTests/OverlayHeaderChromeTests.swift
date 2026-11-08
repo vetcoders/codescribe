@@ -161,8 +161,14 @@ final class OverlayHeaderChromeTests: XCTestCase {
       interactive: true)
     owner.hide(allowPointerRetention: true)
     XCTAssertTrue(owner.isPresented, "the row-to-preview gap has a short grace period")
-    try await Task.sleep(for: .milliseconds(300))
-    XCTAssertFalse(owner.isPresented)
+    // The grace is a 220 ms timer on the main actor. A fixed 300 ms wait
+    // raced it by 80 ms and lost under a loaded full suite; wait for the
+    // dismissal itself, bounded.
+    let deadline = ContinuousClock.now + .seconds(3)
+    while owner.isPresented, ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    XCTAssertFalse(owner.isPresented, "the card closes once the grace has passed")
     XCTAssertNil(OverlayHintPanel.shared.presentedTitle)
   }
 
@@ -337,7 +343,9 @@ final class OverlayHeaderChromeTests: XCTestCase {
       for (name, token, selectedView, restingView) in cases {
         let label = "\(name)-\(palette.appearance == .dark ? "dark" : "light")"
         let selected = try hoverFrames(selectedView, palette: palette)
-        let resting = try hoverFrames(restingView, palette: palette)
+        // Only the resting frame of the unchosen control is compared. The
+        // full hover cycle for it put this test at 9.8 s under a 10 s ceiling.
+        let resting = try hoverFrames(restingView, palette: palette, restOnly: true)
         XCTAssertGreaterThan(
           headerShift(resting.rest, selected.rest, toward: token), 0.04,
           "\(label): the choice is not tinted toward its mode colour")
@@ -653,7 +661,8 @@ final class OverlayHeaderChromeTests: XCTestCase {
   private func hoverFrames<V: View>(
     _ view: V, palette: OverlayAppearancePalette,
     size: NSSize = NSSize(width: 64, height: 64),
-    minimumWidth: CGFloat = 0
+    minimumWidth: CGFloat = 0,
+    restOnly: Bool = false
   ) throws -> (rest: [HeaderPixel], hover: [HeaderPixel], leave: [HeaderPixel], width: Int) {
     let root =
       view
@@ -676,6 +685,9 @@ final class OverlayHeaderChromeTests: XCTestCase {
     headerSettle(host)
     let rest = headerRaster(host)
     XCTAssertFalse(rest.pixels.isEmpty, "control did not render")
+    // A caller that compares resting frames alone skips the hover round trip
+    // and its two animation waits.
+    if restOnly { return (rest.pixels, rest.pixels, rest.pixels, rest.width) }
     try headerPointer(
       true, on: host, minimumWidth: minimumWidth)
     headerSettle(host, seconds: CSMotion.Tempo.hover + 0.05)

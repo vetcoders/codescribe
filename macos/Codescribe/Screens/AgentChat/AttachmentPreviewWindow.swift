@@ -159,6 +159,60 @@ final class AttachmentPreviewWindowController: NSObject, NSWindowDelegate {
 
 // MARK: - Markup
 
+enum AttachmentMarkupGeometry {
+  /// Computes a zoom range for `PaperMarkupViewController` that allows fitting
+  /// high-DPI pixel canvases inside a point-sized viewport without locking the
+  /// minimum zoom to 100% pixel scale.
+  static func fittedZoomRange(canvas: CGSize, viewport: CGSize) -> ClosedRange<CGFloat> {
+    let rawFit = min(
+      viewport.width / max(canvas.width, 1),
+      viewport.height / max(canvas.height, 1))
+    let fit = max(0.02, min(1.0, rawFit))
+    return min(0.05, fit * 0.5)...max(4.0, fit * 4.0)
+  }
+
+  /// Default stroke width scaled to the pixel canvas so inserted shapes remain
+  /// legible on Retina captures without overpowering small images.
+  static func defaultShapeLineWidth(canvas: CGSize) -> CGFloat {
+    max(4, min(24, round(min(canvas.width, canvas.height) * 0.006)))
+  }
+
+  /// Unfilled shape configuration with a high-contrast red stroke so inserting
+  /// a rectangle or ellipse highlights content instead of covering it in black.
+  static func defaultShapeConfiguration(
+    for type: ShapeConfiguration.Shape,
+    canvas: CGSize
+  ) -> ShapeConfiguration {
+    ShapeConfiguration(
+      type: type,
+      fillColor: nil,
+      strokeColor: CGColor(srgbRed: 0.95, green: 0.23, blue: 0.23, alpha: 1.0),
+      lineWidth: defaultShapeLineWidth(canvas: canvas))
+  }
+
+  /// Centers a newly inserted shape inside the currently visible portion of the
+  /// canvas, falling back to the full canvas when the visible frame is empty.
+  static func defaultShapeFrame(in visibleFrame: CGRect, canvas: CGRect) -> CGRect {
+    let intersection = visibleFrame.intersection(canvas)
+    let target: CGRect
+    if !intersection.isNull, !intersection.isEmpty, !intersection.isInfinite,
+      intersection.width > 0, intersection.height > 0
+    {
+      target = intersection
+    } else {
+      target = canvas
+    }
+    let side = min(
+      max(48, round(min(target.width, target.height) * 0.28)),
+      min(target.width, target.height))
+    return CGRect(
+      x: target.midX - side / 2,
+      y: target.midY - side / 2,
+      width: side,
+      height: side)
+  }
+}
+
 /// One Markup pass over an image: the system PaperKit editor and toolbar over
 /// the untouched original, flattened to a PNG on save.
 @MainActor
@@ -183,7 +237,8 @@ final class AttachmentMarkupSession {
     let toolbar = MarkupToolbarViewController(supportedFeatureSet: .latest)
 
     // Resolve point size from DPI metadata or NSImage to preserve Retina 2x scale on export.
-    var resolvedPointSize = NSImage(contentsOf: url)?.size ?? CGSize(width: image.width, height: image.height)
+    var resolvedPointSize =
+      NSImage(contentsOf: url)?.size ?? CGSize(width: image.width, height: image.height)
     if let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] {
       let dpiW = (props[kCGImagePropertyDPIWidth] as? NSNumber)?.doubleValue
       let dpiH = (props[kCGImagePropertyDPIHeight] as? NSNumber)?.doubleValue
@@ -200,7 +255,7 @@ final class AttachmentMarkupSession {
     self.initialMarkup = initialMarkup
     self.paper = paper
     self.toolbar = toolbar
-    toolbar.delegate = paper
+    toolbar.delegate = self
 
     // The original sits under the markup as content, not as a markup
     // element, so no tool can move or delete the screenshot itself.
@@ -208,6 +263,15 @@ final class AttachmentMarkupSession {
     imageView.image = NSImage(cgImage: image, size: canvas.size)
     imageView.imageScaling = .scaleAxesIndependently
     paper.contentView = imageView
+    paper.zoomRange = 0.05...4.0
+    paper.setContentVisibleFrame(canvas, animated: false)
+  }
+
+  func fitCanvasToViewport(_ viewportSize: CGSize) {
+    guard viewportSize.width > 1, viewportSize.height > 1 else { return }
+    paper.zoomRange = AttachmentMarkupGeometry.fittedZoomRange(
+      canvas: canvas.size, viewport: viewportSize)
+    paper.setContentVisibleFrame(canvas, animated: false)
   }
 
   var hasChanges: Bool {
@@ -252,6 +316,59 @@ final class AttachmentMarkupSession {
   }
 }
 
+extension AttachmentMarkupSession: @preconcurrency MarkupToolbarViewController.Delegate {
+  func markupToolbarViewController(
+    _ markupToolbarViewController: MarkupToolbarViewController,
+    insertNewShape type: ShapeConfiguration.Shape
+  ) {
+    let config = AttachmentMarkupGeometry.defaultShapeConfiguration(
+      for: type, canvas: canvas.size)
+    let frame = AttachmentMarkupGeometry.defaultShapeFrame(
+      in: paper.contentVisibleFrame, canvas: canvas)
+    var updated = paper.markup ?? initialMarkup
+    updated.insertNewShape(configuration: config, frame: frame)
+    paper.markup = updated
+  }
+
+  func markupToolbarViewControllerInsertNewTextbox(
+    _ markupToolbarViewController: MarkupToolbarViewController
+  ) {
+    paper.markupToolbarViewControllerInsertNewTextbox(markupToolbarViewController)
+  }
+
+  func markupToolbarViewController(
+    _ markupToolbarViewController: MarkupToolbarViewController,
+    insertNewLineWithStartMarker lineStartMarker: Bool,
+    endMarker lineEndMarker: Bool
+  ) {
+    paper.markupToolbarViewController(
+      markupToolbarViewController,
+      insertNewLineWithStartMarker: lineStartMarker,
+      endMarker: lineEndMarker)
+  }
+
+  func markupToolbarViewController(
+    _ markupToolbarViewController: MarkupToolbarViewController,
+    insertNewContents toInsert: PaperMarkup
+  ) {
+    paper.markupToolbarViewController(
+      markupToolbarViewController,
+      insertNewContents: toInsert)
+  }
+
+  func markupToolbarViewControllerSelectedIndirectPointerTouchModeChanged(
+    _ toolbar: MarkupToolbarViewController
+  ) {
+    paper.markupToolbarViewControllerSelectedIndirectPointerTouchModeChanged(toolbar)
+  }
+
+  func markupToolbarViewControllerSelectedDrawingToolChanged(
+    _ toolbar: MarkupToolbarViewController
+  ) {
+    paper.markupToolbarViewControllerSelectedDrawingToolChanged(toolbar)
+  }
+}
+
 /// Hosts the system Markup toolbar above the PaperKit editor.
 struct AttachmentMarkupEditor: NSViewControllerRepresentable {
   let session: AttachmentMarkupSession
@@ -268,6 +385,7 @@ struct AttachmentMarkupEditor: NSViewControllerRepresentable {
 @MainActor
 final class AttachmentMarkupContainerController: NSViewController {
   private let session: AttachmentMarkupSession
+  private var lastFittedViewportSize: CGSize = .zero
 
   init(session: AttachmentMarkupSession) {
     self.session = session
@@ -298,6 +416,16 @@ final class AttachmentMarkupContainerController: NSViewController {
       paperView.bottomAnchor.constraint(equalTo: root.bottomAnchor),
     ])
     view = root
+  }
+
+  override func viewDidLayout() {
+    super.viewDidLayout()
+    let viewportSize = session.paper.view.bounds.size
+    guard viewportSize.width > 1, viewportSize.height > 1,
+      viewportSize != lastFittedViewportSize
+    else { return }
+    lastFittedViewportSize = viewportSize
+    session.fitCanvasToViewport(viewportSize)
   }
 
   override func viewDidAppear() {

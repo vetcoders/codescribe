@@ -220,6 +220,24 @@ pub fn extract_speech_indexed(
         );
     }
 
+    if samples.len() < window_size / 2 {
+        return (
+            Vec::new(),
+            VadExtractStats {
+                speech_pct: 0.0,
+                speech_windows: 0,
+                total_windows: 0,
+                no_speech_reason: Some("vad_audio_too_short".to_string()),
+                sparkline: String::new(),
+                probabilities: Vec::new(),
+                fine_probabilities: Vec::new(),
+                fine_sparkline: String::new(),
+                fine_hop_samples: CHUNK_SIZE,
+            },
+            Vec::new(),
+        );
+    }
+
     let mut vad = match take_extract_vad(sample_rate) {
         Ok(v) => v,
         Err(e) => {

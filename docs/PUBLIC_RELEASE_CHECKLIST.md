@@ -68,10 +68,12 @@ artifact; disclose that failure.
       locally verified artifacts by hand; then publish the release.
 - [ ] Download the public DMG and checksum into a fresh directory. Verify hash,
       payload, signature, notarization ticket and embedded provenance again.
-- [ ] Install that downloaded, verified app through the guarded prebuilt path:
+- [ ] Install that downloaded, verified app the way a user does, then let the
+      idle restart swap the running application:
 
       ```sh
-      make install-if-idle INSTALL_APP_SOURCE=<mounted-verified-app>
+      rsync -a --delete <mounted-verified-app>/ /Applications/Codescribe.app/
+      make restart-if-idle
       ```
 
       Do not use `install-app-release`: that target can terminate the running

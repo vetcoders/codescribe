@@ -272,9 +272,10 @@ final class OverlayAgentDrawerReceiptTests: XCTestCase {
     }
   }
 
-  /// Founder, 2026-10-23: a click on the All row's preview did nothing; only
-  /// its title line opened the conversation, unlike an agent row's preview.
-  func testAllRowPreviewOpensTheBroadcastConversation() throws {
+  /// Maciej, 2026-10-23: a click on the All row's preview did nothing; only
+  /// its title line opened the conversation. The pinned pill (2026-11-06)
+  /// has one line for All, and the whole line opens the conversation.
+  func testPinnedAllLineOpensTheBroadcastConversation() throws {
     try BackgroundTestWindow.requireIsolatedGUI()
     var message = try XCTUnwrap(fixture(read: true).messages.first)
     message.sourceChannel = "0"
@@ -294,14 +295,14 @@ final class OverlayAgentDrawerReceiptTests: XCTestCase {
     BackgroundTestWindow.present(window)
     defer { window.close() }
     host.layoutSubtreeIfNeeded()
-    _ = try NativeAccessibilityProbe.waitForElements("overlay-all-preview")
-    let pressed = try NativeAccessibilityProbe.query("overlay-all-preview", press: true)
-    XCTAssertEqual(pressed.pressStatus, 0, "the preview is pressable: \(pressed.trace)")
+    _ = try NativeAccessibilityProbe.waitForElements("overlay-view-conversation-0")
+    let pressed = try NativeAccessibilityProbe.query("overlay-view-conversation-0", press: true)
+    XCTAssertEqual(pressed.pressStatus, 0, "the line is pressable: \(pressed.trace)")
     let deadline = Date().addingTimeInterval(2)
     while selections.isEmpty && Date() < deadline {
       RunLoop.main.run(until: Date().addingTimeInterval(0.02))
     }
-    XCTAssertEqual(selections, ["0"], "the preview opens the broadcast conversation")
+    XCTAssertEqual(selections, ["0"], "the line opens the broadcast conversation")
   }
 
   func testLongNativeRowFitsFiveTextLinesAtBothTextScales() throws {

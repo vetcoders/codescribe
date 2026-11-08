@@ -173,7 +173,8 @@ struct OverlayControlGlass: ViewModifier {
   func body(content: Content) -> some View {
     let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
     let tint = glassPreferences.tint(for: .busHeader)
-    let base = Glass.regular.interactive()
+    // Surface glass stays still under the pointer; controls own interaction.
+    let base = Glass.regular
     let material =
       role == .chrome && tint > 0
       ? base.tint(

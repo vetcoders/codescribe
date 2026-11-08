@@ -16,6 +16,13 @@ final class OverlayLostRosterMenuTests: XCTestCase {
         "contentOnly: true", "rosterRowState(channel, receiptText: receiptText)",
         "} .frame(maxWidth: .infinity, alignment: .leading)",
         "compactAgentActions(for: channel)"], in: row)
+    // The audio pair has its own column, so nothing covers the preview and
+    // no fade hides the text it used to sit on.
+    XCTAssertFalse(row.contains("ZStack(alignment: .topTrailing)"))
+    XCTAssertFalse(row.contains("LinearGradient("))
+    // The inline preview is two lines; the hover card carries the whole
+    // message (Maciej, 2026-11-06: "hover cards są spoko").
+    XCTAssertEqual(row.components(separatedBy: "OverlayRosterMessageHint(").count - 1, 2)
   }
 
   func testStatePanelAndSyncRemainOutsideTheAudioAndMoreControls() throws {

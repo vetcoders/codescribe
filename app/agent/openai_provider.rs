@@ -87,6 +87,57 @@ pub struct OpenAiProvider {
 /// turns send the model-default request instead of paying it again.
 static REFUSED_REASONING: OnceLock<std::sync::Mutex<HashSet<String>>> = OnceLock::new();
 
+/// Response IDs whose server-side chain already holds a stored `developer`
+/// input item for the given system prompt, plus prompts staged on an in-flight
+/// predecessor ID awaiting clean terminal promotion.
+#[derive(Default)]
+struct ChainPromptTracker {
+    seeded_by_response_id: std::collections::HashMap<String, String>,
+    staged_by_predecessor_id: std::collections::HashMap<String, String>,
+}
+
+static SEEDED_CHAIN_PROMPTS: OnceLock<std::sync::Mutex<ChainPromptTracker>> = OnceLock::new();
+
+fn chain_has_developer_prompt(previous_response_id: &str, prompt: &str) -> bool {
+    SEEDED_CHAIN_PROMPTS
+        .get_or_init(Default::default)
+        .lock()
+        .is_ok_and(|tracker| {
+            tracker
+                .seeded_by_response_id
+                .get(previous_response_id)
+                .map(String::as_str)
+                == Some(prompt)
+        })
+}
+
+fn stage_chain_developer_prompt(previous_response_id: &str, prompt: &str) {
+    if previous_response_id.is_empty() || prompt.trim().is_empty() {
+        return;
+    }
+    if let Ok(mut tracker) = SEEDED_CHAIN_PROMPTS.get_or_init(Default::default).lock() {
+        tracker
+            .staged_by_predecessor_id
+            .insert(previous_response_id.to_string(), prompt.to_string());
+    }
+}
+
+fn promote_staged_chain_developer_prompt(previous_response_id: &str, response_id: &str) {
+    if previous_response_id.is_empty() || response_id.is_empty() {
+        return;
+    }
+    if let Ok(mut tracker) = SEEDED_CHAIN_PROMPTS.get_or_init(Default::default).lock()
+        && let Some(prompt) = tracker
+            .staged_by_predecessor_id
+            .get(previous_response_id)
+            .cloned()
+    {
+        tracker
+            .seeded_by_response_id
+            .insert(response_id.to_string(), prompt);
+    }
+}
+
 fn refusal_key(endpoint: &str, model: &str, effort: ReasoningEffort) -> String {
     format!("{endpoint}\n{model}\n{}", effort.as_str())
 }
@@ -410,6 +461,19 @@ impl AgentProvider for OpenAiProvider {
     }
 
     /// Stable provider id used in logs and session diagnostics.
+    /// The window of the model this request would go to: `options.model`, or
+    /// this provider's default when the session leaves it empty.
+    fn context_window(&self, options: &StreamOptions) -> Option<u64> {
+        let model = if options.model.trim().is_empty() {
+            &self.default_model
+        } else {
+            &options.model
+        };
+        Some(codescribe_core::agent::compaction::default_context_window(
+            model,
+        ))
+    }
+
     fn name(&self) -> &str {
         "openai-responses"
     }
@@ -525,6 +589,9 @@ async fn forward_events_and_track_chain(
         match chain_effect {
             ChainEffect::Advance(response_id) => {
                 let mut lock = previous_response_id.lock().await;
+                if let Some(prev_id) = lock.as_deref() {
+                    promote_staged_chain_developer_prompt(prev_id, &response_id);
+                }
                 *lock = Some(response_id);
             }
             ChainEffect::Reset => {
@@ -764,25 +831,33 @@ fn chained_instructions(
     }
 }
 
-/// Build the full `input` array for a request. On chained turns the system
-/// prompt rides as a leading `developer` message item, because the
-/// `instructions` param is absent there (see [`chained_instructions`]) and
-/// the chain does not carry it server-side. First turns carry the prompt via
-/// `instructions` only — no duplicate developer item.
+/// Build the full `input` array for a request.
+///
+/// First turns (`previous_response_id == None`) carry the system prompt via the
+/// top-level `instructions` param only. Because OpenAI does not persist
+/// top-level `instructions` across `previous_response_id`, the FIRST chained
+/// step (`previous_response_id == Some(resp_1)`) seeds the prompt once as a
+/// leading `developer` message item in `input`. Once `resp_2` completes, that
+/// `developer` item is stored in the server-side chain permanently, so all
+/// subsequent chained turns and tool-call round-trips (`resp_2..resp_N`) omit
+/// it instead of duplicating the system prompt on every step.
 fn build_request_input(
     system_prompt: &Option<String>,
     messages: &[Message],
     previous_response_id: Option<&str>,
 ) -> Result<Vec<Value>> {
     let mut items = Vec::new();
-    if previous_response_id.is_some()
+    if let Some(prev_id) = previous_response_id
         && let Some(prompt) = system_prompt.as_deref().filter(|p| !p.trim().is_empty())
     {
-        items.push(json!({
-            "type": "message",
-            "role": "developer",
-            "content": [{"type": "input_text", "text": prompt}]
-        }));
+        stage_chain_developer_prompt(prev_id, prompt);
+        if !chain_has_developer_prompt(prev_id, prompt) {
+            items.push(json!({
+                "type": "message",
+                "role": "developer",
+                "content": [{"type": "input_text", "text": prompt}]
+            }));
+        }
     }
     items.extend(build_request_input_items(messages, previous_response_id)?);
     Ok(items)
@@ -1343,6 +1418,20 @@ mod tests {
             promptless.iter().all(|item| item["role"] != "developer"),
             "no prompt configured ⇒ no developer item"
         );
+
+        // Once the first chained turn (`resp_prev` -> `resp_seeded`) completes
+        // cleanly, the developer item is permanently stored in the server-side
+        // chain; subsequent chained steps (`resp_seeded` -> `resp_3` -> ...)
+        // must send ONLY the new delta without re-injecting `developer`.
+        super::promote_staged_chain_developer_prompt("resp_prev", "resp_seeded");
+        let third_turn = build_request_input(&system, &messages, Some("resp_seeded"))
+            .expect("subsequent chained input builds without duplicate developer item");
+        assert_eq!(
+            third_turn.len(),
+            1,
+            "once seeded in the chain, later turns must not duplicate developer prompt"
+        );
+        assert_eq!(third_turn[0]["role"], "user");
     }
 
     /// Resuming a chain omits prior turns already stored server-side.

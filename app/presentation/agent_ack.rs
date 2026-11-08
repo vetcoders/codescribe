@@ -31,7 +31,7 @@ pub struct ScanStats {
     pub skipped_unproven: usize,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct Cursor {
     emitted: BTreeSet<String>,
     known_seals: BTreeSet<String>,
@@ -296,7 +296,9 @@ pub(crate) fn append_json_line(bus: &Path, value: &Value) -> io::Result<()> {
     encoded.push(b'\n');
     // A dedicated channel bus may precede its directory (W5); a receipt
     // must not vanish over a missing parent.
-    if let Some(parent) = bus.parent() {
+    if let Some(parent) = bus.parent()
+        && !parent.exists()
+    {
         std::fs::create_dir_all(parent)?;
     }
     let file = shared_bus_file(bus)?;
@@ -354,20 +356,61 @@ fn cursor_path(bridge_home: &Path) -> PathBuf {
 
 fn load_cursor(bridge_home: &Path) -> io::Result<Cursor> {
     let path = cursor_path(bridge_home);
+    // The 500 ms scan rereads a cursor only after it changed on disk: its
+    // own writes refresh the cache, so an idle bridge never reparses it.
+    let stamp = match fs::metadata(&path) {
+        Ok(metadata) => FileStamp::of(&metadata),
+        Err(error) => {
+            forget_cursor(&path);
+            if error.kind() == io::ErrorKind::NotFound {
+                return Ok(Cursor::default());
+            }
+            return Err(error);
+        }
+    };
+    if let Some(stamp) = stamp
+        && let Some(cursor) = cached_cursor(&path, stamp)
+    {
+        return Ok(cursor);
+    }
+    #[cfg(test)]
+    tests::CURSOR_BODY_READS.with(|reads| reads.set(reads.get() + 1));
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Cursor::default()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            forget_cursor(&path);
+            return Ok(Cursor::default());
+        }
         Err(error) => return Err(error),
     };
-    let value: Value = match serde_json::from_str(&text) {
+    let Some(cursor) = parse_cursor(&path, &text) else {
+        forget_cursor(&path);
+        return Ok(Cursor::default());
+    };
+    // Cache only a body read between two identical stamps; a write racing
+    // the read is picked up on the next pass instead.
+    let unchanged = stamp.is_some()
+        && fs::metadata(&path)
+            .ok()
+            .and_then(|after| FileStamp::of(&after))
+            == stamp;
+    match stamp {
+        Some(stamp) if unchanged => remember_cursor(&path, stamp, &cursor),
+        _ => forget_cursor(&path),
+    }
+    Ok(cursor)
+}
+
+fn parse_cursor(path: &Path, text: &str) -> Option<Cursor> {
+    let value: Value = match serde_json::from_str(text) {
         Ok(value) => value,
         Err(error) => {
             tracing::warn!(%error, path = %path.display(), "agent ack cursor ignored");
-            return Ok(Cursor::default());
+            return None;
         }
     };
     if value.get("schema").and_then(Value::as_str) != Some(CURSOR_SCHEMA) {
-        return Ok(Cursor::default());
+        return None;
     }
     let bus_marks = value
         .get("bus_marks")
@@ -418,7 +461,7 @@ fn load_cursor(bridge_home: &Path) -> io::Result<Cursor> {
                 .collect()
         })
         .unwrap_or_default();
-    Ok(Cursor {
+    Some(Cursor {
         emitted: string_set(value.get("emitted")),
         known_seals: string_set(value.get("known_seals")),
         ducked_replies: string_list(value.get("ducked_replies")),
@@ -476,7 +519,81 @@ fn write_cursor(bridge_home: &Path, cursor: &Cursor) -> io::Result<()> {
             })
             .collect::<serde_json::Map<_, _>>(),
     });
-    write_private_json(&path, &body)
+    if let Err(error) = write_private_json(&path, &body) {
+        forget_cursor(&path);
+        return Err(error);
+    }
+    // The cursor on disk is now exactly this one; the next pass reuses it.
+    match fs::metadata(&path)
+        .ok()
+        .and_then(|metadata| FileStamp::of(&metadata))
+    {
+        Some(stamp) => remember_cursor(&path, stamp, cursor),
+        None => forget_cursor(&path),
+    }
+    Ok(())
+}
+
+/// Identity of a file version: an atomic replace changes the inode, an
+/// in-place edit moves the length or mtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileStamp {
+    len: u64,
+    modified: SystemTime,
+    ino: u64,
+}
+
+impl FileStamp {
+    fn of(metadata: &fs::Metadata) -> Option<Self> {
+        Some(Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok()?,
+            ino: file_ino(metadata),
+        })
+    }
+}
+
+struct CachedCursor {
+    stamp: FileStamp,
+    cursor: Cursor,
+}
+
+fn cursor_cache() -> &'static std::sync::Mutex<HashMap<PathBuf, CachedCursor>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, CachedCursor>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+fn cached_cursor(path: &Path, stamp: FileStamp) -> Option<Cursor> {
+    let cache = cursor_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    cache
+        .get(path)
+        .and_then(|hit| (hit.stamp == stamp).then(|| hit.cursor.clone()))
+}
+
+fn remember_cursor(path: &Path, stamp: FileStamp, cursor: &Cursor) {
+    let mut cache = cursor_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if cache.len() >= 64 && !cache.contains_key(path) {
+        cache.clear();
+    }
+    cache.insert(
+        path.to_path_buf(),
+        CachedCursor {
+            stamp,
+            cursor: cursor.clone(),
+        },
+    );
+}
+
+fn forget_cursor(path: &Path) {
+    cursor_cache()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(path);
 }
 
 fn write_private_json(path: &Path, value: &Value) -> io::Result<()> {
@@ -566,9 +683,7 @@ struct LeasePendingSnapshot {
 }
 
 struct CachedLease {
-    len: u64,
-    modified: SystemTime,
-    ino: u64,
+    stamp: FileStamp,
     record: LeaseRecord,
 }
 
@@ -594,19 +709,16 @@ fn load_leases(bridge_home: &Path) -> Vec<LeaseRecord> {
         if !metadata.is_file() {
             continue;
         }
-        let len = metadata.len();
-        let ino = file_ino(&metadata);
-        let Some(modified) = metadata.modified().ok() else {
+        let Some(stamp) = FileStamp::of(&metadata) else {
             continue;
         };
         let cached = {
             let cache = lease_cache()
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            cache.get(&path).and_then(|hit| {
-                (hit.len == len && hit.ino == ino && hit.modified == modified)
-                    .then(|| hit.record.clone())
-            })
+            cache
+                .get(&path)
+                .and_then(|hit| (hit.stamp == stamp).then(|| hit.record.clone()))
         };
         if let Some(record) = cached {
             leases.push(record);
@@ -655,9 +767,10 @@ fn load_leases(bridge_home: &Path) -> Vec<LeaseRecord> {
             bus,
             pending,
         };
-        let unchanged = fs::metadata(&path).ok().is_some_and(|after| {
-            after.len() == len && file_ino(&after) == ino && after.modified().ok() == Some(modified)
-        });
+        let unchanged = fs::metadata(&path)
+            .ok()
+            .and_then(|after| FileStamp::of(&after))
+            == Some(stamp);
         if unchanged {
             let mut cache = lease_cache()
                 .lock()
@@ -668,9 +781,7 @@ fn load_leases(bridge_home: &Path) -> Vec<LeaseRecord> {
             cache.insert(
                 path,
                 CachedLease {
-                    len,
-                    modified,
-                    ino,
+                    stamp,
                     record: record.clone(),
                 },
             );
@@ -1164,6 +1275,7 @@ mod tests {
         pub(super) static MARKER_BODY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
         pub(super) static LEASE_BODY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
         pub(super) static ACK_DIR_ENUMS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        pub(super) static CURSOR_BODY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
 
     const SEAL_ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaa";
@@ -1837,6 +1949,57 @@ mod tests {
         let third = load_leases(&bridge);
         assert_eq!(third[0].pending[0].id, DRAFT_ID);
         assert_eq!(LEASE_BODY_READS.with(|reads| reads.get()), 2);
+    }
+
+    #[test]
+    fn an_unchanged_cursor_is_read_once_and_follows_its_own_writes() {
+        let root = tempfile::tempdir().unwrap();
+        let bus = root.path().join("bus.jsonl");
+        let bridge = bridge_with_lease(root.path(), &bus);
+        let reads = || CURSOR_BODY_READS.with(|reads| reads.get());
+
+        // Idle scans: the first writes the cursor, which primes the cache.
+        fs::write(&bus, seal_row(SEAL_ID)).unwrap();
+        marker_for(&bridge, SEAL_ID);
+        CURSOR_BODY_READS.with(|reads| reads.set(0));
+        assert_eq!(scan(&bridge, &bus).unwrap().appended, 1);
+        for _ in 0..3 {
+            assert_eq!(scan(&bridge, &bus).unwrap().appended, 0);
+        }
+        assert_eq!(
+            reads(),
+            0,
+            "an idle 500 ms pass must not reparse the cursor"
+        );
+
+        // A cursor written here is the cursor the next load returns.
+        let mut cursor = load_cursor(&bridge).unwrap();
+        assert!(cursor.emitted.contains(SEAL_ID));
+        cursor.emitted.insert(DRAFT_ID.to_string());
+        write_cursor(&bridge, &cursor).unwrap();
+        let loaded = load_cursor(&bridge).unwrap();
+        assert!(loaded.emitted.contains(SEAL_ID) && loaded.emitted.contains(DRAFT_ID));
+        assert_eq!(reads(), 0);
+
+        // A replacement from elsewhere changes the stamp and is read once.
+        let path = cursor_path(&bridge);
+        let staged = path.with_extension("json.foreign");
+        fs::write(
+            &staged,
+            serde_json::to_vec(&json!({"schema": CURSOR_SCHEMA, "emitted": [HIDDEN_ID]})).unwrap(),
+        )
+        .unwrap();
+        fs::rename(&staged, &path).unwrap();
+        let foreign = load_cursor(&bridge).unwrap();
+        assert!(foreign.emitted.contains(HIDDEN_ID));
+        assert!(!foreign.emitted.contains(SEAL_ID));
+        assert_eq!(reads(), 1);
+        assert!(load_cursor(&bridge).unwrap().emitted.contains(HIDDEN_ID));
+        assert_eq!(reads(), 1, "an unchanged stamp reuses the cached cursor");
+
+        // A removed cursor is gone, not served from memory.
+        fs::remove_file(&path).unwrap();
+        assert!(load_cursor(&bridge).unwrap().emitted.is_empty());
     }
 
     /// Move a marker directory's mtime safely past the quiet window, the way

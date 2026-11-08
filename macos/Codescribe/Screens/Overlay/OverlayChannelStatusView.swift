@@ -139,11 +139,15 @@ struct OverlayAgentStatusMark: View {
     Group {
       if showsSpinner {
         if rotates {
-          TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-            spinner.rotationEffect(
-              rotation(at: timeline.date.timeIntervalSinceReferenceDate)
-            )
-          }
+          // Spun by the render server: one of these per waiting row under a
+          // 30 Hz timeline committed the window every frame (2026-11-07).
+          OverlayRenderServerArc(
+            from: 0.08, to: 0.82, lineWidth: 1.5, color: glyph.tone(in: palette).color,
+            period: 1,
+            phase: rotation(at: Date().timeIntervalSinceReferenceDate).radians,
+            accessibilityIdentifier: "overlay-agent-spinner"
+          )
+          .frame(width: fontSize, height: fontSize)
         } else {
           spinner
         }
@@ -290,6 +294,35 @@ struct OverlaySidebarToggleButton: View {
       Image(systemName: symbol)
         .font(.system(size: 13 * square / 22))
         .frame(width: square, height: square)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .focusable(false)
+    .foregroundStyle(palette.mutedText.color)
+    .modifier(OverlayRowHoverHighlight(palette: palette, cornerRadius: 6))
+    .accessibilityLabel(Text(verbatim: title))
+    .accessibilityHint(Text(verbatim: title))
+    .accessibilityIdentifier(identifier)
+  }
+}
+
+/// The list's one fold button (Monika, 2026-11-05: "jeden po prawej stronie
+/// to był dokładnie taki układ, jaki chciałam"): a muted glyph blended into
+/// the background with the rows' hover wash (Maciej, 2026-10-19: "wtopione w
+/// tło"). The same button heads the list and the folded rail.
+struct OverlaySidebarToggleButton: View {
+  let symbol: String
+  let title: String
+  let identifier: String
+  let palette: OverlayAppearancePalette
+  let textScale: CGFloat
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      Image(systemName: symbol)
+        .font(.system(size: 13 * textScale))
+        .frame(width: 22 * textScale, height: 22 * textScale)
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
@@ -919,6 +952,7 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
   var carriesRowMarks = false
   var focusState: OverlayAgentPanelFocusState? = nil
   @State private var commandError: String?
+  @State private var exportOutcome: ThreadExportOutcome?
 
   @MainActor
   static func setPolicy(
@@ -927,6 +961,15 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
   ) async throws {
     try await RealAgentBridgeInstaller.setBroadcastPolicy(
       policy, for: identity, installer: installer)
+  }
+
+  @MainActor
+  static func exportHistory(
+    channel: String, agentOnly: Bool,
+    installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
+  ) async throws -> String {
+    try await RealAgentBridgeInstaller.exportChannelHistory(
+      channel: channel, agentOnly: agentOnly, installer: installer)
   }
 
   func body(content: Content) -> some View {
@@ -978,6 +1021,27 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
           .accessibilityIdentifier("overlay-broadcast-policy-error")
         }
       }
+      .alert(
+        exportOutcome?.title ?? Text(verbatim: ""),
+        isPresented: Binding(
+          get: { exportOutcome != nil },
+          set: { if !$0 { exportOutcome = nil } }
+        ),
+        presenting: exportOutcome
+      ) { outcome in
+        if case .saved(let path, _) = outcome {
+          let url = URL(fileURLWithPath: path)
+          Button("Reveal in Finder") {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+          }
+          Button("Open") {
+            NSWorkspace.shared.open(url)
+          }
+        }
+        Button("OK", role: .cancel) {}
+      } message: { outcome in
+        outcome.message
+      }
     }
   }
 
@@ -999,6 +1063,7 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
         Divider()
       }
       policyActions(for: member)
+      exportSection(channel: member.channel, title: "\(member.channel) · \(member.agent)")
       // The jump to the agent's panel is a button beside the pair (header);
       // roster rows carry it here and show it inline only when it fits.
       if let archive = agentActions?.archive {
@@ -1009,6 +1074,7 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
       ForEach(members) { member in
         Menu {
           policyActions(for: member)
+          exportSection(channel: member.channel, title: "\(member.channel) · \(member.agent)")
         } label: {
           Label {
             Text(verbatim: "\(member.channel) · \(member.agent)")
@@ -1016,6 +1082,39 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
             Image(systemName: member.broadcastPolicy.statusSymbol)
           }
         }
+      }
+      exportSection(channel: "0", title: "0 · All")
+    }
+  }
+
+  @ViewBuilder
+  private func exportSection(channel: String, title: String) -> some View {
+    Section {
+      Button("Export to Markdown") {
+        export(channel: channel, title: title, agentOnly: false)
+      }
+      .disabled(!enabled)
+      .accessibilityIdentifier("overlay-agent-menu-export-\(channel)")
+      Button("Export Agent replies only") {
+        export(channel: channel, title: title, agentOnly: true)
+      }
+      .disabled(!enabled)
+      .accessibilityIdentifier("overlay-agent-menu-export-agent-\(channel)")
+    } header: {
+      Text(
+        "Exports save to the Transcripts folder",
+        comment: "Menu section header above the Markdown export actions")
+    }
+  }
+
+  private func export(channel: String, title: String, agentOnly: Bool) {
+    commandError = nil
+    Task { @MainActor in
+      do {
+        let path = try await Self.exportHistory(channel: channel, agentOnly: agentOnly)
+        exportOutcome = .saved(path: path, assistantOnly: agentOnly)
+      } catch {
+        exportOutcome = .failed(threadTitle: title, assistantOnly: agentOnly)
       }
     }
   }
@@ -2357,6 +2456,9 @@ struct OverlayChannelStatusView: View {
           .accessibilityIdentifier(
             "overlay-view-conversation-\(conversation?.id ?? channel.channel)"
           )
+          // The hover card carries the whole last message and its carousel;
+          // the inline preview is two lines of it (Maciej, 2026-11-06:
+          // "hover cards są spoko, tylko NIE poza oknem").
           .modifier(
             OverlayRosterMessageHint(
               conversation: conversation, palette: palette, textScale: textScale,
@@ -2772,43 +2874,7 @@ struct OverlayChannelStatusView: View {
     return (panelFocusTarget(for: channel) ?? .frame).help
   }
 
-  /// The "0 · All" row keeps the roster's model; its title carries the
-  /// broadcast wake count and its context menu every member's policy.
-  ///
-  /// The shared channel stands apart from the agent rows through structure,
-  /// not colour: it leads the roster, it wears the antenna where an agent
-  /// wears its status dot, and a divider parts it from the agents under it.
-  /// Both decisions are recorded here — Maciej, 2026-10-17: "wyróżnić bardziej
-  /// kanał ogólny", which arrived as an accent wash behind the row; Founder,
-  /// 2026-10-18: that wash "wygląda tragicznie" and goes. The intent stayed,
-  /// its paint did not.
-  private func broadcastRow(
-    _ broadcast: OverlayConversation, rowFocus: FocusState<String?>.Binding?
-  ) -> some View {
-    Button {
-      onSelectConversation?(broadcast.id)
-    } label: {
-      // Preview lives beside the All controls, so this button keeps the
-      // identity line (name, antenna, clock) and does not nest those controls.
-      rosterRowLabel(
-        title: broadcastHeader, statusChannel: nil, conversation: broadcast, dot: .broadcast,
-        includePreview: false)
-    }
-    .buttonStyle(.plain)
-    .modifier(OptionalRowFocus(binding: rowFocus, id: broadcast.id))
-    .foregroundStyle(palette.primaryText.color)
-    .modifier(
-      OverlayRosterMessageHint(
-        conversation: broadcast, palette: palette, textScale: textScale,
-        emptyHint: String(localized: "View conversation without changing the microphone"),
-        isOpen: broadcast.id == selectedConversationID,
-        onOpen: { onSelectConversation?(broadcast.id) })
-    )
-    .accessibilityHint(
-      Text(verbatim: String(localized: "View conversation without changing the microphone"))
-    )
-    .accessibilityIdentifier("overlay-view-conversation-\(broadcast.id)")
-  }
+
 
   /// Your inbox as a roster row: the envelope where an agent's digit and
   /// presence dot stand (it has neither), its name, the last message's
