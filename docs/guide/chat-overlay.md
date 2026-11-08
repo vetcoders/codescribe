@@ -17,10 +17,13 @@ Markup is nightly-only.
 The overlay can be a minimal control, a compact strip or an expanded conversation.
 Use its presentation control or context menu to choose the form. Moving the
 window sets its position; resizing changes how much content it shows. The
-expanded view supports edge and corner resizing. While you drag, a light
-outline with the window's header follows the pointer and the content waits;
-on release the window takes that size and lays the conversation out once.
-The compact strip resizes live.
+expanded view supports edge and corner resizing. While you drag, one frozen
+image of the header and content follows the pointer. Text keeps its pixel size;
+shrinking clips the image and growing exposes background until release. The
+conversation renderer keeps its original dimensions throughout the gesture.
+On release the window takes the new size and lays the conversation out once.
+Cancel restores the original size. The compact strip resizes live; detached
+grouped cards retain their lightweight header-and-outline feedback.
 
 The header gives access to transcription, agents and pinning. Pinning controls **Always on Top**. Unpinning removes that window level; it
 should leave the overlay visible in place, without hiding or sending it behind

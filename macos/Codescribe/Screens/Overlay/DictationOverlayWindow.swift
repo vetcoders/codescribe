@@ -910,7 +910,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
         palette: OverlayAppearancePalette.resolve(
           effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             ? ColorScheme.dark : ColorScheme.light),
-        cornerRadius: CSRadius.window)
+        cornerRadius: CSRadius.window, capturesContent: true)
       resizePreviewMonitor = NSEvent.addLocalMonitorForEvents(
         matching: [.leftMouseDragged, .leftMouseUp]
       ) { [weak self] event in
