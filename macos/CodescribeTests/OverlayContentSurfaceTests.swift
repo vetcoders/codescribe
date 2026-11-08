@@ -221,9 +221,14 @@ final class OverlayContentSurfaceTests: XCTestCase {
       let host = NSHostingView(rootView: SurfaceFoldProbe(state: state, recorder: recorder))
       host.sizingOptions = []
       host.autoresizingMask = []
-      let panel = panel(defaults: defaults)
+      // The real mini is content-sized. A bare panel retains its old default
+      // capsule size and cannot verify the production control's screen point.
+      let panel = try XCTUnwrap(
+        DictationOverlayWindow.make(
+          state: state, textScale: TextScaleController(key: "SurfaceFold.actualGeometry"),
+          sizeDefaults: defaults) as? FloatingOverlayPanel)
+      panel.invalidatePresence()
       panel.contentView = OverlayContentContainer(hosting: host)
-      wireModes(state, to: panel)
       defer { panel.close() }
       BackgroundTestWindow.present(panel)
       @MainActor func foldPoint() throws -> NSPoint {
