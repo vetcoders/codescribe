@@ -21,6 +21,18 @@ enum OverlayAgentDrawerLayout {
     contentMinimumWidth(textScale: textScale) + minimumConversationWidth(textScale: textScale)
   }
 
+  /// The window may shrink, but it must not crush the user's explicit pane
+  /// choice. Folding remains a divider action, never a width side effect.
+  static func minimumWindowWidth(layout: OverlayAgentsLayout, textScale: CGFloat) -> CGFloat {
+    switch layout {
+    case .split: minimumSplitWindowWidth(textScale: textScale)
+    case .agents:
+      contentMinimumWidth(textScale: textScale) + conversationEdgeWidth(textScale: textScale)
+    case .rail:
+      minimumConversationWidth(textScale: textScale) + railWidth(textScale: textScale)
+    }
+  }
+
   static func isDocked(windowWidth: CGFloat, textScale: CGFloat) -> Bool {
     windowWidth > 0
   }

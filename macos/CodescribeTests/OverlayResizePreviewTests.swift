@@ -6,6 +6,39 @@ import XCTest
 
 @MainActor
 final class OverlayResizePreviewTests: XCTestCase {
+  func testSplitBusResizeStopsAtBothPaneFloorsWithoutReflowOrFolding() throws {
+    let state = OverlayState.previewFormatted()
+    state.setAgentsLayout(.split)
+    state.showAgentMonitor()
+    let panel = try XCTUnwrap(
+      DictationOverlayWindow.make(
+        state: state, textScale: TextScaleController(key: "ResizePreview.splitFloor"))
+        as? FloatingOverlayPanel)
+    defer {
+      panel.invalidatePresence()
+      panel.close()
+    }
+    panel.settleFrameTransition()
+    let floor = OverlayAgentDrawerLayout.minimumSplitWindowWidth(textScale: 1)
+    XCTAssertGreaterThanOrEqual(panel.presentationMinimumSize.width, floor)
+    let initial = panel.frame
+    XCTAssertTrue(panel.beginUserResize(edge: .right, at: .zero))
+    XCTAssertTrue(panel.updateUserResize(to: NSPoint(x: -2_000, y: 0)))
+    XCTAssertGreaterThanOrEqual(panel.resizeGestureFrame.width, floor)
+    XCTAssertEqual(panel.frame, initial, "the renderer's geometry remains frozen")
+    XCTAssertEqual(state.agentsLayout, .split, "resizing never folds either pane")
+    panel.endUserResize()
+    panel.settleFrameTransition()
+    XCTAssertGreaterThanOrEqual(panel.frame.width, floor)
+    XCTAssertEqual(state.agentsLayout, .split)
+    XCTAssertEqual(
+      OverlayAgentDrawerLayout.minimumWindowWidth(layout: .split, textScale: 1.5), floor * 1.5)
+    XCTAssertLessThan(
+      OverlayAgentDrawerLayout.minimumWindowWidth(layout: .agents, textScale: 1), floor)
+    XCTAssertLessThan(
+      OverlayAgentDrawerLayout.minimumWindowWidth(layout: .rail, textScale: 1), floor)
+  }
+
   private final class SourceView: NSView {
     var paints = 0
     override func draw(_ dirtyRect: NSRect) {
