@@ -72,17 +72,7 @@ final class RealChatEngine: AgentChatEngine {
   }
 
   func availabilityDetail() -> String? {
-    let availability = agent.availability()
-    if availability.available { return nil }
-    // The bridge always fills `detail`; the fallback keeps the chat honest
-    // if an older dylib ever returns an empty reason.
-    if availability.detail.isEmpty {
-      return String(
-        localized:
-          "The assistive model isn't reachable yet — open Settings → Engine to configure the assistive lane."
-      )
-    }
-    return availability.detail
+    agent.availability().reason?.userFacingSentence
   }
 
   func generateThreadTitle(_ text: String) async throws -> String? {

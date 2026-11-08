@@ -28,7 +28,6 @@ data  CsAdmissionReadiness.calibrationPath
 data  CsAdmissionReadiness.calibratedDevices
 data  CsAdmissionReadiness.sealLaneSource
 data  CsAdmissionReadiness.sealLaneEnv
-prose CsAgentAvailability.detail
 data  CsAgentTurnConfiguration.provider
 data  CsAgentTurnConfiguration.model
 data  CsAgentTurnConfiguration.reasoningEffort
@@ -245,7 +244,11 @@ data  CsRuntimeLlmLane.wire
 data  CsRuntimeLlmLane.endpoint
 data  CsRuntimeLlmLane.model
 data  CsRuntimeLlmLane.keyAccount
-prose CsRuntimeLlmLane.unavailableReason
+data  CsLlmLaneUnavailable.customProviderMissing.customId
+data  CsLlmLaneUnavailable.modelMissing.provider
+data  CsLlmLaneUnavailable.credentialMissing.provider
+data  CsLlmLaneUnavailable.credentialMissing.endpoint
+data  CsLlmLaneUnavailable.credentialMissing.keyAccount
 data  CsSettings.holdArmModifier
 data  CsSettings.deferredInsertShortcut
 data  CsSettings.channelModifier

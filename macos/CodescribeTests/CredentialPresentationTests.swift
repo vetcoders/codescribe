@@ -100,7 +100,7 @@ final class CredentialPresentationTests: XCTestCase {
       lane: .assistive, providerId: provider.id, providerDisplayName: provider.displayName,
       wire: provider.wire, endpoint: provider.endpoint, model: "current-model",
       keyAccount: provider.apiKeyAccount, keyPresent: false, accountAuth: true,
-      available: true, unavailableReason: nil)
+      available: true, unavailable: nil)
     let lane = LLMLaneModel(
       lane: .assistive, runtime: runtime, provider: provider, configuredModel: "current-model",
       discovery: CsModelDiscovery(
@@ -121,6 +121,31 @@ final class CredentialPresentationTests: XCTestCase {
     XCTAssertTrue(cached.usesDiscoveredPicker, "usable cached catalogs retain model selection")
   }
 
+  /// The lane's refusal arrives as data and Swift writes the sentence, naming
+  /// the lane by its localized title rather than Rust's wire name.
+  func testUnavailableLaneSentenceIsComposedInSwift() {
+    let provider = CsProviderOption.sampleProviders[1]
+    let reason = CsLlmLaneUnavailable.credentialMissing(
+      lane: .formatting, provider: "OpenAI (Responses)",
+      endpoint: "https://api.openai.com/v1/responses", keyAccount: "LLM_OPENAI_API_KEY")
+    let runtime = CsRuntimeLlmLane(
+      lane: .formatting, providerId: provider.id, providerDisplayName: provider.displayName,
+      wire: provider.wire, endpoint: provider.endpoint, model: "formatter-model",
+      keyAccount: "LLM_OPENAI_API_KEY", keyPresent: false, accountAuth: false,
+      available: false, unavailable: reason)
+    let lane = LLMLaneModel(
+      lane: .formatting, runtime: runtime, provider: provider, configuredModel: "formatter-model",
+      discovery: CsModelDiscovery(
+        providerId: provider.id, status: "no_key", message: nil, models: []))
+    XCTAssertEqual(
+      lane.availabilityDescription,
+      "The Formatting lane points at OpenAI (Responses) (https://api.openai.com/v1/responses), which requires a credential, but neither Keychain account LLM_OPENAI_API_KEY nor a supported signed-in provider account is available."
+    )
+    XCTAssertEqual(
+      CsLlmLaneUnavailable.modelMissing(provider: "My Box").userFacingSentence,
+      "No model selected for provider My Box.")
+  }
+
   func testFormattingRespectsResponsesAccountWithoutInventingAnAPIKey() {
     var provider = CsProviderOption.sampleProviders[1]
     provider.accountSignedIn = true
@@ -129,7 +154,7 @@ final class CredentialPresentationTests: XCTestCase {
       lane: .formatting, providerId: provider.id, providerDisplayName: provider.displayName,
       wire: provider.wire, endpoint: provider.endpoint, model: "formatter-model",
       keyAccount: provider.apiKeyAccount, keyPresent: false, accountAuth: true,
-      available: true, unavailableReason: nil)
+      available: true, unavailable: nil)
     let lane = LLMLaneModel(
       lane: .formatting, runtime: runtime, provider: provider, configuredModel: "formatter-model",
       discovery: CsModelDiscovery(
@@ -158,7 +183,7 @@ final class CredentialPresentationTests: XCTestCase {
       lane: .formatting, providerId: provider.id, providerDisplayName: "xAI",
       wire: provider.wire, endpoint: provider.endpoint, model: "grok-4",
       keyAccount: provider.apiKeyAccount, keyPresent: true, accountAuth: false,
-      available: true, unavailableReason: nil)
+      available: true, unavailable: nil)
     let rejected = LLMLaneModel(
       lane: .formatting, runtime: runtime, provider: provider, configuredModel: "",
       discovery: CsModelDiscovery(
@@ -182,7 +207,7 @@ final class CredentialPresentationTests: XCTestCase {
       lane: .formatting, providerId: provider.id, providerDisplayName: "xAI",
       wire: provider.wire, endpoint: provider.endpoint, model: "grok-4",
       keyAccount: provider.apiKeyAccount, keyPresent: true, accountAuth: true,
-      available: true, unavailableReason: nil)
+      available: true, unavailable: nil)
     let rejectedWithAccount = LLMLaneModel(
       lane: .formatting, runtime: accountRuntime, provider: accountProvider, configuredModel: "",
       discovery: CsModelDiscovery(
@@ -226,7 +251,7 @@ final class CredentialPresentationTests: XCTestCase {
         lane: lane, providerId: providerId, providerDisplayName: provider.displayName,
         wire: provider.wire, endpoint: provider.endpoint, model: "m",
         keyAccount: provider.apiKeyAccount, keyPresent: true, accountAuth: false,
-        available: true, unavailableReason: nil)
+        available: true, unavailable: nil)
     }
     func model(_ lane: LLMLane, providerId: String, status: String) -> LLMLaneModel {
       LLMLaneModel(
