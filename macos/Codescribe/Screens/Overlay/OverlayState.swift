@@ -1546,6 +1546,7 @@ final class OverlayState {
       let root = OverlayChannelDeliveryReader.productionRoot()
       let cacheRoot = URL(fileURLWithPath: CodescribeConfig().churnDir(), isDirectory: true)
       restoreReadState(cacheRoot: cacheRoot)
+      restoreComposerDrafts(cacheRoot: cacheRoot)
       restoreAgentsLayout(defaults: .standard)
       observeChannelDelivery(
         using: OverlayChannelDeliveryReader(
@@ -1857,6 +1858,19 @@ final class OverlayState {
   /// history survives a launch, so its read marks survive with it.
   private var viewedReplyIDs: Set<String> = []
   @ObservationIgnored private var readStateRoot: URL?
+  /// Where unsent drafts are mirrored once `restoreComposerDrafts(cacheRoot:)` ran.
+  @ObservationIgnored private var composerDraftRoot: URL?
+  /// What the draft file holds, so an unchanged draft keeps its `savedAt`.
+  @ObservationIgnored private var storedComposerDrafts: [String: OverlayComposerDraftStore.Entry] =
+    [:]
+  /// Restored drafts whose exact conversation has not appeared yet. They stay
+  /// in the file but out of `conversationDrafts`: an owner that never returns
+  /// must not hold `founderComposing`, and with it every idle restart, forever.
+  @ObservationIgnored private var unadoptedComposerDrafts:
+    [String: OverlayComposerDraftStore.Entry] = [:]
+  @ObservationIgnored private var composerDraftPersistTask: Task<Void, Never>?
+  /// Typing is coalesced; a crash loses at most this much of it.
+  static let composerDraftPersistDelay: Duration = .milliseconds(250)
   /// No marks were ever stored at `readStateRoot`. The first inventory is
   /// adopted as read once, so an update does not resurface the whole history.
   @ObservationIgnored private var readStateNeedsAdoption = false
@@ -3122,6 +3136,76 @@ final class OverlayState {
     }
   }
 
+  /// Unsent drafts live next to the read marks. Call before the first
+  /// conversation snapshot: each draft returns to its exact conversation when
+  /// that conversation appears, never to another owner on the same channel.
+  func restoreComposerDrafts(cacheRoot: URL, now: Date = Date()) {
+    composerDraftRoot = cacheRoot
+    let stored = OverlayComposerDraftStore.load(cacheRoot: cacheRoot, now: now) ?? [:]
+    storedComposerDrafts = stored
+    unadoptedComposerDrafts = stored
+    adoptRestoredComposerDrafts(in: conversations)
+  }
+
+  private func adoptRestoredComposerDrafts(in available: [OverlayConversation]) {
+    guard !unadoptedComposerDrafts.isEmpty else { return }
+    for conversation in available {
+      guard let entry = unadoptedComposerDrafts.removeValue(forKey: conversation.id) else {
+        continue
+      }
+      // Words typed since launch are newer than the file and stay.
+      guard
+        conversationDraft(for: conversation.id).trimmingCharacters(in: .whitespacesAndNewlines)
+          .isEmpty
+      else { continue }
+      conversationDrafts[conversation.id] = entry.text
+      if conversationReplies[conversation.id] == nil, let reply = entry.reply {
+        conversationReplies[conversation.id] = reply
+      }
+    }
+  }
+
+  private func composerDraftsChanged(emptied: Bool) {
+    guard composerDraftRoot != nil else { return }
+    if emptied {
+      // A sent or cleared draft leaves the file at once: a crash right after
+      // Send must not bring the sent words back.
+      persistComposerDrafts()
+      return
+    }
+    guard composerDraftPersistTask == nil else { return }
+    composerDraftPersistTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(for: OverlayState.composerDraftPersistDelay)
+      guard let self, !Task.isCancelled else { return }
+      self.persistComposerDrafts()
+    }
+  }
+
+  /// Mirror every non-blank draft, and every restored draft still waiting for
+  /// its conversation, to the private file.
+  func persistComposerDrafts(now: Date = Date()) {
+    composerDraftPersistTask?.cancel()
+    composerDraftPersistTask = nil
+    guard let composerDraftRoot else { return }
+    var next = unadoptedComposerDrafts
+    for (id, text) in conversationDrafts
+    where !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      let reply = conversationReplies[id]
+      if let stored = storedComposerDrafts[id], stored.text == text, stored.reply == reply {
+        next[id] = stored
+      } else {
+        next[id] = OverlayComposerDraftStore.Entry(text: text, reply: reply, savedAt: now)
+      }
+    }
+    guard next != storedComposerDrafts else { return }
+    do {
+      try OverlayComposerDraftStore.save(cacheRoot: composerDraftRoot, drafts: next)
+      storedComposerDrafts = next
+    } catch {
+      NSLog("codescribe: composer drafts not saved: \(error)")
+    }
+  }
+
   func applyConversationSnapshot(_ snapshot: OverlayChannelDeliverySnapshot, now: Date = Date()) {
     defer { reconcileDraftSyncOwners() }
     let playbackWasActive = selectedReplyPlaybackActive
@@ -3138,6 +3222,7 @@ final class OverlayState {
     }
     resolveWaitingCaptureAttachments(in: projected)
     recoverClosedCaptureAttachments(in: projected)
+    adoptRestoredComposerDrafts(in: projected)
     guard conversations != projected else {
       // The first snapshot can already match the stored inventory, including
       // an empty one. That snapshot is still the baseline, so the next genuine
@@ -3369,12 +3454,20 @@ final class OverlayState {
 
   var conversationDrafts: [String: String] = [:] {
     didSet {
+      var changed = false
+      var emptied = false
       for id in Set(oldValue.keys).union(conversationDrafts.keys) {
         if !OverlayComposerProseEdit.identical(oldValue[id] ?? "", conversationDrafts[id] ?? "") {
           conversationDraftRevisions[id] = UUID()
           conversationDraftReceipts.removeValue(forKey: id)
+          changed = true
+          emptied =
+            emptied
+            || (conversationDrafts[id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+              .isEmpty
         }
       }
+      if changed { composerDraftsChanged(emptied: emptied) }
     }
   }
   /// Groups own only membership/epoch metadata; the dictionary is keyed by exact owner.
@@ -3385,12 +3478,15 @@ final class OverlayState {
   @ObservationIgnored var conversationDraftReceipts: [String: OverlayComposerDraftPublication] = [:]
   var conversationReplies: [String: OverlayUserReplyReference] = [:] {
     didSet {
+      var changed = false
       for id in Set(oldValue.keys).union(conversationReplies.keys) {
         if oldValue[id] != conversationReplies[id] {
           conversationReplyRevisions[id] = UUID()
           conversationDraftReceipts.removeValue(forKey: id)
+          changed = true
         }
       }
+      if changed { composerDraftsChanged(emptied: false) }
     }
   }
   var draftCapture = OverlayDraftCapture()
