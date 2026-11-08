@@ -27,7 +27,7 @@ final class OverlayResizePreviewTests: XCTestCase {
     var restorations = 0
     let preview = OverlayResizePreview(
       windows: [window], group: false, headerHeight: 40,
-      palette: .resolve(.dark), capturesContent: true,
+      palette: .resolve(ColorScheme.dark), capturesContent: true,
       restore: { _ in restorations += 1 })
     defer {
       preview.finish()
@@ -71,7 +71,7 @@ final class OverlayResizePreviewTests: XCTestCase {
     }
     let view = OverlayResizePreviewView(
       headers: [.init(image: header, splitX: 100, content: body)], group: false,
-      headerHeight: 40, palette: .resolve(.dark), cornerRadius: 0)
+      headerHeight: 40, palette: .resolve(ColorScheme.dark), cornerRadius: 0)
     for width in [160 as CGFloat, 400] {
       view.frame = NSRect(x: 0, y: 0, width: width, height: 180)
       let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
