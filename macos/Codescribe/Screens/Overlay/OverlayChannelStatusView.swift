@@ -2847,6 +2847,44 @@ struct OverlayChannelStatusView: View {
     return (panelFocusTarget(for: channel) ?? .frame).help
   }
 
+  /// The "0 · All" row keeps the roster's model; its title carries the
+  /// broadcast wake count and its context menu every member's policy.
+  ///
+  /// The shared channel stands apart from the agent rows through structure,
+  /// not colour: it leads the roster, it wears the antenna where an agent
+  /// wears its status dot, and a divider parts it from the agents under it.
+  /// Both decisions are recorded here — Maciej, 2026-10-17: "wyróżnić bardziej
+  /// kanał ogólny", which arrived as an accent wash behind the row; Founder,
+  /// 2026-10-18: that wash "wygląda tragicznie" and goes. The intent stayed,
+  /// its paint did not.
+  private func broadcastRow(
+    _ broadcast: OverlayConversation, rowFocus: FocusState<String?>.Binding?
+  ) -> some View {
+    Button {
+      onSelectConversation?(broadcast.id)
+    } label: {
+      // Preview lives beside the All controls, so this button keeps the
+      // identity line (name, antenna, clock) and does not nest those controls.
+      rosterRowLabel(
+        title: broadcastHeader, statusChannel: nil, conversation: broadcast, dot: .broadcast,
+        includePreview: false)
+    }
+    .buttonStyle(.plain)
+    .modifier(OptionalRowFocus(binding: rowFocus, id: broadcast.id))
+    .foregroundStyle(palette.primaryText.color)
+    .modifier(
+      OverlayRosterMessageHint(
+        conversation: broadcast, palette: palette, textScale: textScale,
+        emptyHint: String(localized: "View conversation without changing the microphone"),
+        isOpen: broadcast.id == selectedConversationID,
+        onOpen: { onSelectConversation?(broadcast.id) })
+    )
+    .accessibilityHint(
+      Text(verbatim: String(localized: "View conversation without changing the microphone"))
+    )
+    .accessibilityIdentifier("overlay-view-conversation-\(broadcast.id)")
+  }
+
   /// Your inbox as a roster row: the envelope where an agent's digit and
   /// presence dot stand (it has neither), its name, the last message's
   /// preview, the unread badge and the clock, in the agents' glass with
