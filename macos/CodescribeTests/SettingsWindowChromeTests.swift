@@ -41,7 +41,7 @@ final class SettingsWindowChromeTests: XCTestCase {
               in: root,
               where: {
                 $0.identifier?.rawValue == "codescribe-header-glass"
-              }),
+              }) as? NSGlassEffectView,
             let sidebar = (self.splitView(in: window)?.delegate as? NSSplitViewController)?
               .splitViewItems.first
           else { return false }
