@@ -66,7 +66,10 @@ use serde::{Deserialize, Serialize};
 /// when a shorter speech component crosses its window's later fence.
 /// v38: an explicit sequence correspondence names one physical target across
 /// decoder passes; another observation cannot regain that target by overlap.
-pub const WORD_POLICY: &str = "word-adjudication/v38-exclusive-sequence-targets";
+/// v39: complete native DT evidence may address the unique overlapping word
+/// between two mapped neighbours; its resolved exact word decision survives
+/// the commit guard, and explicit neighbours bound clock overshoot.
+pub const WORD_POLICY: &str = "word-adjudication/v39-native-dt-word-decisions";
 const MAX_OPEN_COMPONENTS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1739,6 +1742,52 @@ impl AcousticLedger {
     /// trail, while their selected hypothesis lives in the immutable seal.
     pub fn word_choices(&self) -> &[WordChoiceReceipt] {
         &self.word_adjudication.choices
+    }
+
+    /// Bind commit authority to the latest lexical decision for this exact
+    /// physical target and proposal. An older acceptance cannot defeat a
+    /// later refusal, and an accepted word cannot authorize its neighbours.
+    pub(super) fn resolved_independent_word_operation(
+        &self,
+        operation: &SlotOperationReceipt,
+    ) -> bool {
+        let ([source], [output]) = (operation.sources.as_slice(), operation.outputs.as_slice())
+        else {
+            return false;
+        };
+        if operation.kind != SlotOperationKind::Correct
+            || operation.observation.producer != ObservationProducer::AppleDictation
+            || source.producer != ObservationProducer::Whisper
+            || source.observation.occurrence != operation.observation.occurrence
+            || self.coarse_word_source(source)
+            || output.producer != ObservationProducer::AppleDictation
+            || output.observation != operation.observation
+            || source.sample_start != output.sample_start
+            || source.sample_end != output.sample_end
+        {
+            return false;
+        }
+        let target = SlotTarget::from(source);
+        self.word_adjudication
+            .choices
+            .iter()
+            .rev()
+            .find(|choice| {
+                choice.observation == operation.observation
+                    && choice.targets.as_slice() == std::slice::from_ref(&target)
+            })
+            .is_some_and(|choice| {
+                choice.accepted
+                    && choice.lexical_resolved
+                    && choice.candidate.complete
+                    && choice.candidate.acoustic_boundaries_complete
+                    && choice.candidate.original_text.is_some()
+                    && choice.candidate.pins.len() == 1
+                    && choice.candidate.observation == operation.observation
+                    && choice.candidate.targets.as_slice() == std::slice::from_ref(&target)
+                    && choice.candidate.surface == output.text
+                    && choice.selected_label == output.text
+            })
     }
 
     fn component_for_sources(

@@ -1593,6 +1593,8 @@ impl AcousticLedger {
                 && !operations.iter().any(|operation| {
                     operation.sources.contains(source)
                         && (operation.rule_id == "witness_absence_preserves_speech/v1"
+                            || (operation.observation == *observation
+                                && self.resolved_independent_word_operation(operation))
                             || self
                                 .independent_dt_partition_debt(
                                     observation,
