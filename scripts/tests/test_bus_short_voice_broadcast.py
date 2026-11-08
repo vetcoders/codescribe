@@ -279,6 +279,19 @@ class ChannelZeroFollowerTests(unittest.TestCase):
         resumed = self.follow()
         self.assertEqual([item for item in resumed if item.get("kind") in DEMUX.DRAFT_KINDS], [])
 
+    def test_a_refused_take_prints_no_line_on_the_follower_output(self):
+        """A managed follower (follower events + coalescing) buffers previews
+        and prints them when its read pass ends. A preview printed before the
+        seal arrived cannot be withdrawn; one still buffered must not print."""
+        events = self.home / "follower-events.jsonl"
+        self.speak("agent-channel-0-quiet", ["Dzięki"], "Dzięki")
+        self.speak("agent-channel-0-loud", ["Dzień dobry wszystkim"], "Dzień dobry wszystkim")
+        result = self.run_demux("--name", NAME, "--from-start", "--drafts", "--coalesce",
+                                "--follower-events", str(events))
+        lines = [line for line in result.stdout.splitlines() if not line.startswith("{")]
+        self.assertTrue(any("Dzień dobry wszystkim" in line for line in lines), lines)
+        self.assertEqual([line for line in lines if "Dzięki" in line], [])
+
     def test_once_finds_nothing_to_deliver_for_a_short_take(self):
         self.speak("agent-channel-0-once", ["Dzięki"], "Dzięki")
         for flags in ((), ("--drafts",)):
