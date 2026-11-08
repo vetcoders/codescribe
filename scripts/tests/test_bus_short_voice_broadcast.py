@@ -230,7 +230,7 @@ class ChannelZeroFollowerTests(unittest.TestCase):
         self.assertEqual(self.seals(emitted), [], "no follower message")
         state = self.state()
         self.assertEqual(state["pending"], [], "nothing waits in the mailbox, drafts included")
-        self.assertEqual(state.get("held", []), [], "nothing is held for later release")
+        self.assertFalse(state.get("held"), "nothing is held for later release")
         self.assertEqual(self.hook_runs(0), [], "the seal hook never fired")
 
     def test_one_word_take_reaches_nobody(self):
