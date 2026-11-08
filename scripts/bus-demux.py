@@ -1934,6 +1934,25 @@ def emit_follower(
         sys.stdout.flush()
 
 
+def short_spoken_broadcast(event: dict[str, Any]) -> bool:
+    """Keep short channel-zero microphone interjections out of agent mailboxes."""
+    if (event.get("schema") not in (CLEAN_SCHEMA, EVIDENCE_SCHEMA)
+            or event.get("status") != SEALED
+            or event.get("mode") != "agent"
+            or event.get("audience") != "*"
+            or channel_of_session(str(event.get("session_id") or "")) != "0"
+            or event.get("attachments")):
+        return False
+    text = event.get("text")
+    if not isinstance(text, str):
+        return False
+    # Count the complete closing snapshot, never an interim fragment or an
+    # acoustic occurrence. Punctuation and uncertainty tags are not words.
+    text = re.sub(r"</?unclear>", " ", text, flags=re.IGNORECASE)
+    words = re.findall(r"[^\W_]+(?:[-’'][^\W_]+)*", text)
+    return len(words) < 3
+
+
 def consider(
     event: dict[str, Any],
     *,
@@ -1990,6 +2009,13 @@ def consider(
                 "routing_match": "audience"}
     status = event.get("status")
     if status != SEALED and not (drafts and status in LIVE_STATUSES):
+        return None
+    # Maciej, 2026-11-08: intended spoken messages to All have at least
+    # three words. Gate delivery here, before hold/pending/emission/wake;
+    # the reducer document and the source history remain intact.
+    if short_spoken_broadcast(event):
+        if debug:
+            sys.stderr.write("bus-demux: drop short channel-zero voice message\n")
         return None
     text = event.get("text") or ""
     audience = event.get("audience")
