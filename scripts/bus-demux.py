@@ -43,6 +43,7 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
+import copy
 import ctypes
 import datetime
 import fcntl
@@ -305,6 +306,10 @@ def generation_sources(path: Path) -> tuple[list[dict[str, Any]], int, int, floa
             active = dict(next_generation)
         elif (current.st_dev, current.st_ino) != (active["dev"], active["ino"]):
             raise ValueError("broken generation transaction")
+
+    # A receipt does not attest that its files still exist unchanged. In a
+    # pending rotation the effective set also changes when the active inode
+    # changes, before the receipt itself is rewritten.
     expected = 0
     events = path.parent / "events"
     for segment in segments:
@@ -346,16 +351,31 @@ def generation_metadata(path: Path) -> Any:
 class GenerationFile:
     """Bounded ordinary open/read/seek over verified, ordered journal files."""
     def __init__(self, path: Path) -> None:
+        self._handle: Any | None = None
+        self._handle_segment_key: tuple[str, int, int] | None = None
         self.path = path
         self.segments, self.dev, self.ino, _ = generation_sources(path)
         self.position = 0
         self.size = self.segments[-1]["start"] + self.segments[-1]["length"]
 
+    def close(self) -> None:
+        handle = getattr(self, "_handle", None)
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError:
+                pass
+            self._handle = None
+            self._handle_segment_key = None
+
     def __enter__(self) -> GenerationFile:
         return self
 
     def __exit__(self, *_: Any) -> None:
-        pass
+        self.close()
+
+    def __del__(self) -> None:
+        self.close()
 
     def metadata(self, refresh: bool = False) -> Any:
         return generation_metadata(self.path)
@@ -370,6 +390,43 @@ class GenerationFile:
         self.position = position
         return position
 
+    def _segment_handle(self, segment: dict[str, Any]) -> Any:
+        seg_key = (segment["path"], segment["dev"], segment["ino"])
+        if self._handle is not None and self._handle_segment_key == seg_key:
+            try:
+                current = Path(segment["path"]).stat()
+            except FileNotFoundError:
+                # Resolve a moved generation through the current receipt below.
+                self.close()
+            else:
+                if (current.st_dev, current.st_ino) != (segment["dev"], segment["ino"]):
+                    self.close()
+                    raise ValueError("changed generation descriptor")
+        if self._handle is None or self._handle_segment_key != seg_key:
+            self.close()
+            try:
+                self._handle = Path(segment["path"]).open("rb")
+            except FileNotFoundError:
+                refreshed, _, _, _ = generation_sources(self.path)
+                current = next(
+                    (s for s in refreshed if s.get("id") == segment.get("id") and s["start"] == segment["start"] and s["length"] == segment["length"]),
+                    None,
+                )
+                if current is None:
+                    raise ValueError("lost generation")
+                segment.update(current)
+                seg_key = (segment["path"], segment["dev"], segment["ino"])
+                self._handle = Path(segment["path"]).open("rb")
+            self._handle_segment_key = seg_key
+        handle = self._handle
+        # Retaining a descriptor saves open/close, not the validation: a
+        # truncate must refuse even when buffered bytes are still available.
+        meta = os.fstat(handle.fileno())
+        if (meta.st_dev, meta.st_ino) != (segment["dev"], segment["ino"]) or meta.st_size < segment["length"]:
+            self.close()
+            raise ValueError("changed generation descriptor")
+        return handle
+
     def read(self, width: int) -> bytes:
         if width < 0:
             raise ValueError("unbounded generation read refused")
@@ -380,21 +437,12 @@ class GenerationFile:
                 continue
             if self.position < segment["start"]:
                 raise ValueError("generation gap")
-            try:
-                descriptor = Path(segment["path"]).open("rb")
-            except FileNotFoundError:
-                refreshed, _, _, _ = generation_sources(self.path)
-                current = next((s for s in refreshed if s.get("id") == segment.get("id") and s["start"] == segment["start"] and s["length"] == segment["length"]), None)
-                if current is None:
-                    raise ValueError("lost generation")
-                segment = current
-                descriptor = Path(segment["path"]).open("rb")
-            with descriptor as handle:
-                meta = os.fstat(handle.fileno())
-                if (meta.st_dev, meta.st_ino) != (segment["dev"], segment["ino"]) or meta.st_size < segment["length"]:
-                    raise ValueError("changed generation descriptor")
-                handle.seek(self.position - segment["start"])
-                raw = handle.read(min(width, end - self.position))
+            handle = self._segment_handle(segment)
+            target = self.position - segment["start"]
+            if handle.tell() != target:
+                handle.seek(target)
+            to_read = min(width, end - self.position)
+            raw = handle.read(to_read)
             if not raw:
                 raise ValueError("short generation")
             out.extend(raw)
@@ -404,16 +452,26 @@ class GenerationFile:
 
     def readline(self, limit: int = 1024 * 1024 + 1) -> bytes:
         out = bytearray()
-        while len(out) < limit:
-            raw = self.read(min(4096, limit - len(out)))
-            if not raw:
+        for segment in self.segments:
+            if len(out) >= limit:
                 break
-            newline = raw.find(b"\n")
-            if newline >= 0:
-                out.extend(raw[:newline + 1])
-                self.position -= len(raw) - newline - 1
-                break
+            end = segment["start"] + segment["length"]
+            if self.position >= end:
+                continue
+            if self.position < segment["start"]:
+                raise ValueError("generation gap")
+            handle = self._segment_handle(segment)
+            target = self.position - segment["start"]
+            if handle.tell() != target:
+                handle.seek(target)
+            width = min(limit - len(out), end - self.position)
+            raw = handle.readline(width)
+            if not raw or (len(raw) < width and not raw.endswith(b"\n")):
+                raise ValueError("short generation")
             out.extend(raw)
+            self.position += len(raw)
+            if raw.endswith(b"\n"):
+                break
         return bytes(out)
 
 
@@ -4288,10 +4346,18 @@ class SessionLease:
             self.persist(active=True)
 
     def collect_acknowledgments(self, native: Any = None) -> None:
+        state_view = {
+            "schema": LEASE_SCHEMA,
+            "lease_id": self.lease_id,
+            "provider": self.provider,
+            "provider_session_id": self.provider_session_id,
+            "bus": self.bus,
+            "pending": list(self.pending.values()),
+        }
         completed = [
             delivery_id
             for delivery_id in self.pending
-            if delivery_acknowledged(self.root, self.lease_id, delivery_id, self.pending[delivery_id])
+            if delivery_acknowledged(self.root, self.lease_id, delivery_id, self.pending[delivery_id], state=state_view)
         ]
         settled = []
         for delivery_id in completed:
@@ -4392,7 +4458,8 @@ def receipt_envelope(payload: dict[str, Any], bus: str) -> dict[str, Any]:
 
 def delivery_acknowledged(root: Path, lease_id: str, delivery_id: str,
                           expected_payload: dict[str, Any] | None = None, *,
-                          historical: bool = False) -> bool:
+                          historical: bool = False,
+                          state: dict[str, Any] | None = None) -> bool:
     path = root / "acknowledgments" / lease_id / f"{delivery_id}.json"
     try:
         metadata = path.lstat()
@@ -4405,19 +4472,19 @@ def delivery_acknowledged(root: Path, lease_id: str, delivery_id: str,
         return False
     if set(receipt) == {"lease_id", "delivery_id"}:
         if historical:
-            state = read_json(root / "leases" / f"{lease_id}.json") or {}
-            return expected_payload is not None and expected_payload.get("bus") == state.get("bus")
+            current_state = state if state is not None else (read_json(root / "leases" / f"{lease_id}.json") or {})
+            return expected_payload is not None and expected_payload.get("bus") == current_state.get("bus")
         return True
-    state = read_json(root / "leases" / f"{lease_id}.json")
-    if (not state or state.get("schema") != LEASE_SCHEMA
-            or state.get("lease_id") != lease_id
-            or not all(isinstance(state.get(key), str) and state[key]
+    current_state = state if state is not None else read_json(root / "leases" / f"{lease_id}.json")
+    if (not current_state or current_state.get("schema") != LEASE_SCHEMA
+            or current_state.get("lease_id") != lease_id
+            or not all(isinstance(current_state.get(key), str) and current_state[key]
                        for key in ("provider", "provider_session_id", "bus"))
-            or lease_identifier(state["provider"], state["provider_session_id"]) != lease_id):
+            or lease_identifier(current_state["provider"], current_state["provider_session_id"]) != lease_id):
         return False
-    owner = {key: state[key] for key in ("lease_id", "provider", "provider_session_id", "bus")}
+    owner = {key: current_state[key] for key in ("lease_id", "provider", "provider_session_id", "bus")}
     if historical:
-        if (not owned_queue_envelope(expected_payload, state["provider_session_id"])
+        if (not owned_queue_envelope(expected_payload, current_state["provider_session_id"])
                 or not isinstance(expected_payload.get("bus"), str)):
             return False
         owner["bus"] = expected_payload["bus"]
@@ -4432,7 +4499,7 @@ def delivery_acknowledged(root: Path, lease_id: str, delivery_id: str,
             or any(not isinstance(item, dict) for item in frozen)
             or not any(matches(item) for item in frozen)):
         return False
-    pending = state.get("pending", [])
+    pending = current_state.get("pending", [])
     original = expected_payload
     if original is None and isinstance(pending, list):
         original = next((item for item in pending if isinstance(item, dict)
@@ -4886,6 +4953,21 @@ def unread_pending(args: argparse.Namespace, *, include_quiet: bool = False) -> 
     if not isinstance(pending, list) or any(not isinstance(row, dict) for row in pending):
         raise MailboxReadError("mailbox_pending_invalid", "invalid pending mailbox; nothing read")
     rows = []
+    policy_cache: dict[tuple[str, str, str, bool], str] = {}
+
+    def cached_delivery_broadcast_policy(payload: dict[str, Any]) -> str:
+        key = (
+            str(payload.get("provider", "")),
+            str(payload.get("provider_session_id", "")),
+            str(payload.get("bus", "")),
+            is_broadcast_delivery(payload),
+        )
+        cached = policy_cache.get(key)
+        if cached is None:
+            cached = delivery_broadcast_policy(args.bridge_home, payload)
+            policy_cache[key] = cached
+        return cached
+
     for row in pending:
         identity = row.get("delivery_id")
         if row.get("kind") in DRAFT_KINDS:
@@ -4899,8 +4981,8 @@ def unread_pending(args: argparse.Namespace, *, include_quiet: bool = False) -> 
         if not isinstance(owner, dict) or any(owner.get(key) != row[key] for key in (
                 "lease_id", "provider", "provider_session_id")):
             raise MailboxReadError("mailbox_delivery_owner_mismatch", "foreign pending delivery owner; nothing read")
-        if (not delivery_acknowledged(args.bridge_home, lease_id, identity, row)
-                and (include_quiet or delivery_broadcast_policy(args.bridge_home, row) == "on")):
+        if (not delivery_acknowledged(args.bridge_home, lease_id, identity, row, state=state)
+                and (include_quiet or cached_delivery_broadcast_policy(row) == "on")):
             rows.append(row)
     return state, rows
 
@@ -5920,7 +6002,7 @@ def _openai_speech_key() -> str | None:
         capture_output=True,
         text=True,
     )
-    key = probe.stdout.strip()
+    key = probe.stdout.strip() if probe.returncode == 0 else ""
     return key or None
 
 
@@ -7275,11 +7357,13 @@ def installation_idle_with_checkpoint(bus: Path, *, bridge_root: Path) -> bool:
     try:
         while time.monotonic() < deadline:
             previous = _lifecycle_offsets(cursor)
+            previous_state = copy.deepcopy(cursor)
             idle = installation_idle(
                 bus, sealed_is_idle=False, cursor=cursor, bridge_root=bridge_root,
                 deadline=deadline,
             )
-            _save_lifecycle_cursor_unless_locked(lock, bus, bridge_root, cursor)
+            if cursor != previous_state:
+                _save_lifecycle_cursor_unless_locked(lock, bus, bridge_root, cursor)
             if idle:
                 return True
             if _lifecycle_cursor_caught_up(cursor) and _cursor_holds_take(
@@ -7463,8 +7547,8 @@ def _wait_for_take_end(
 ) -> bool:
     """Read until idle, the deadline, or a stop.
 
-    With no lock descriptor, every pass writes the checkpoint. A descriptor
-    is the caller's already-open playback.lock: after a pass that advanced,
+    Save changed parser state, including same-offset identity or hash changes.
+    A descriptor is the caller's already-open playback.lock: after a changed pass,
     try a non-blocking exclusive lock, save, and release it at once. A busy
     lock skips that save. The lock is never waited on and never held during
     a scan. Last writer wins; a stored offset is not compared or adopted.
@@ -7477,14 +7561,16 @@ def _wait_for_take_end(
         if control is not None and control.stopped():
             return False
         previous = _lifecycle_offsets(cursor)
+        previous_state = copy.deepcopy(cursor)
         idle = installation_idle(
             bus, sealed_is_idle=False, cursor=cursor, bridge_root=root,
             deadline=deadline, channel_released=channel_released,
         )
         current = _lifecycle_offsets(cursor)
         if checkpoint_lock is None:
-            _save_lifecycle_cursor(bus, root, cursor)
-        elif current != previous:
+            if cursor != previous_state or idle:
+                _save_lifecycle_cursor(bus, root, cursor)
+        elif cursor != previous_state:
             _save_lifecycle_cursor_unless_locked(checkpoint_lock, bus, root, cursor)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -7618,6 +7704,7 @@ def _play_pcm_24k(
                 ["afplay", wav_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
             )
         incomplete_scans = 0
+        last_saved_cursor = copy.deepcopy(cursor)
         while True:
             if control is not None and control.stopped():
                 if feeder is not None:
@@ -7652,7 +7739,9 @@ def _play_pcm_24k(
                 return False, "take started during playback", "take_started"
             # Stop on an observed take before any checkpoint filesystem write.
             # A refused prefix can be replayed by the next admission scan.
-            _save_lifecycle_cursor(speech_bus, root, cursor)
+            if cursor != last_saved_cursor or refuse:
+                _save_lifecycle_cursor(speech_bus, root, cursor)
+                last_saved_cursor = copy.deepcopy(cursor)
             # A player that ended before the refusal played every sample: a take
             # that starts after the last sample cannot unsay the reply, so the
             # result below reports what the player did (Founder, 2026-10-23).
@@ -9665,6 +9754,8 @@ def send_text_command(args: argparse.Namespace) -> int:
         sent_to = ([{"name": owner["audience"], "channel": owner["channel"]}
                     for owner in owners if policies[owner["lease_id"]] != "off"]
                    if broadcast else None)
+        # Keep the selected binding alive until its durable append completes.
+        # A takeover must not retire that owner between admission and publication.
         for owner in owners:
             event = {"schema": AGENT_USER_MESSAGE_SCHEMA, "kind": "agent_user_message",
                      **owner, **hold, "message_id": identity, "source_event_id": identity,

@@ -196,15 +196,6 @@ pub fn parse_layered_phase_value(raw: &str) -> Option<u8> {
     }
 }
 
-/// Active layered-transcription phase. Unset, explicit `off`/`0`/`false`, and
-/// unparseable garbage all fail closed to `None`.
-///
-/// Product-mode bootstrap owns the default when no override is supplied.
-pub fn layered_phase() -> Option<u8> {
-    let raw = std::env::var(LAYERED_TRANSCRIPTION_ENV).ok();
-    layered_phase_from_raw(raw.as_deref())
-}
-
 /// Resolve the layered phase from an optional raw override without touching
 /// process-global environment state. `None` means no diagnostic override;
 /// recording bootstrap resolves the product-mode default.

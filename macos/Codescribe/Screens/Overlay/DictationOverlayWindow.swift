@@ -1227,20 +1227,28 @@ final class OverlayContentContainer: NSView {
   /// existing scroll view, including when the pointer is over a corner.
   override func scrollWheel(with event: NSEvent) {
     let point = convert(event.locationInWindow, from: nil)
+    if let hitView = hosting.hitTest(point) {
+      if let scroll = (hitView as? NSScrollView) ?? hitView.enclosingScrollView {
+        scroll.scrollWheel(with: event)
+        return
+      }
+    }
     var target: NSScrollView?
     var distance = CGFloat.infinity
     func visit(_ view: NSView) {
       guard !view.isHidden, !view.visibleRect.isEmpty else { return }
-      for child in view.subviews { visit(child) }
-      guard let scroll = view as? NSScrollView else { return }
-      let rect = convert(scroll.visibleRect, from: scroll)
-      let dx = max(rect.minX - point.x, 0, point.x - rect.maxX)
-      let dy = max(rect.minY - point.y, 0, point.y - rect.maxY)
-      let candidateDistance = dx * dx + dy * dy
-      if candidateDistance < distance {
-        target = scroll
-        distance = candidateDistance
+      if let scroll = view as? NSScrollView {
+        let rect = convert(scroll.visibleRect, from: scroll)
+        let dx = max(rect.minX - point.x, 0, point.x - rect.maxX)
+        let dy = max(rect.minY - point.y, 0, point.y - rect.maxY)
+        let candidateDistance = dx * dx + dy * dy
+        if candidateDistance < distance {
+          target = scroll
+          distance = candidateDistance
+        }
+        return
       }
+      for child in view.subviews { visit(child) }
     }
     visit(hosting)
     if let target {
