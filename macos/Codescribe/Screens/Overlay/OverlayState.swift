@@ -1829,6 +1829,16 @@ final class OverlayState {
       conversationSelected: selectedConversationID != nil)
   }
 
+  /// The full roster chosen for the Agents canvas. The canvas and the header
+  /// hover share this verdict; a folded rail is not the full list.
+  var agentListPresented: Bool {
+    windowContentSurface == .agents
+      && (showsAgentMonitor
+        || OverlayAgentDrawerLayout.listPinned(
+          layout: agentsLayout, docked: agentDrawerDocked,
+          conversationSelected: selectedConversation != nil))
+  }
+
   func setAgentDrawerDocked(_ docked: Bool) {
     agentDrawerDocked = docked
   }

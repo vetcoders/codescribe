@@ -58,6 +58,52 @@ final class OverlayAgentsHoverListTests: XCTestCase {
 
   // MARK: - Rows
 
+  /// Founder, 2026-11-08: keep the switcher on every view except the full
+  /// roster, where it duplicates the list already on screen.
+  func testHeaderHoverOnlySuppressesTheAlreadyVisibleFullRoster() throws {
+    let agent = try conversation("2", session: "s2", lease: "a")
+    let state = OverlayState()
+    state.applyChannelRoster([
+      CsChannelRosterState(
+        channel: "2", audience: agent.name, provider: agent.owner?.provider,
+        providerSessionId: agent.owner?.providerSessionID, open: false, loud: false,
+        autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+    ])
+    state.applyConversationSnapshot(
+      .init(deliveries: [], conversations: [agent, .humanInbox(messages: [])]))
+
+    func header() -> OverlayChannelStatusView {
+      .intercomRoster(state: state, palette: .dark, animates: false)
+    }
+
+    state.showTranscription()
+    XCTAssertFalse(state.agentListPresented)
+    XCTAssertFalse(
+      header().headerHoverListRows.isEmpty, "Empty/transcription canvas keeps the list")
+
+    state.selectConversation(agent.id)
+    XCTAssertTrue(state.agentListPresented)
+    XCTAssertTrue(header().fullListVisible)
+    XCTAssertTrue(header().headerHoverListRows.isEmpty, "Split view already displays the roster")
+
+    state.foldAgentList()
+    XCTAssertFalse(state.agentListPresented)
+    XCTAssertTrue(header().headerSelected, "The Agents glyph stays selected on a conversation")
+    XCTAssertFalse(header().headerHoverListRows.isEmpty, "Conversation and rail keep the switcher")
+
+    state.setAgentsLayout(.agents)
+    state.showAgentMonitor()
+    XCTAssertTrue(state.agentListPresented)
+    XCTAssertTrue(
+      header().headerHoverListRows.isEmpty, "Roster-only view already displays the list")
+
+    for mode in [OverlayPresentationMode.midi, .mini] {
+      state.setPresentationMode(mode)
+      XCTAssertFalse(header().fullListVisible)
+      XCTAssertFalse(header().headerHoverListRows.isEmpty, "Compact forms keep the switcher")
+    }
+  }
+
   func testRowsFollowAscendingChannelsWithoutChannelZeroAndCarryUnread() throws {
     let miksa = try conversation("2", session: "s2", lease: "a")
     let kuba = try conversation("5", session: "s5", lease: "b")

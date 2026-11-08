@@ -828,13 +828,7 @@ struct DictationOverlayView: View {
         // drawer width, or no selected conversation does not mount it on
         // transcription. Beside a conversation the list stays as its corner
         // buttons left it (Maciej, 2026-10-19).
-        let listOnScreen =
-          agentsSurface
-          && expandedCanvasActive
-          && (state.showsAgentMonitor
-            || OverlayAgentDrawerLayout.listPinned(
-              layout: state.agentsLayout, docked: docked,
-              conversationSelected: state.selectedConversation != nil))
+        let listOnScreen = expandedCanvasActive && state.agentListPresented
         let columnShown = listOnScreen
         // A folded list leaves its own rail. A folded conversation leaves a
         // separate edge control on the left; neither panel owns the other's toggle.

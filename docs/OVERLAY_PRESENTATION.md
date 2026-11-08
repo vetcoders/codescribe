@@ -445,7 +445,11 @@ small list of the mailboxes and the bound agents after a short pause
 replaces the button's "Agents" hint; while agent capture is open, or with no
 row to show (no current mailbox conversation and no agent bound), the button
 keeps its one-line hint, because a click then stops the capture or opens the
-Agents canvas. A click on ✦ keeps its action
+Agents canvas. When the full roster is already visible, the quick list is
+suppressed to avoid duplicating it (Founder, 2026-11-08). It remains available
+on transcription, conversations with the roster folded, and compact forms.
+The canvas and header share `OverlayState.agentListPresented`; the selected
+appearance of ✦ alone does not suppress the list. A click on ✦ keeps its action
 (`OverlayState.toggleAgentSidebar`). The list rides the shared interactive
 hint panel (`OverlayHeaderControlChrome`, as the roster's message preview):
 it is a child window of the overlay, stays while the pointer crosses from ✦
@@ -1070,23 +1074,24 @@ Hiding the roster chooses the rail, and hovering that rail cannot undo the fold.
 Open nonzero capture uses a violet microphone; only an open channel zero uses
 the outlined broadcast megaphone. These glyphs project routing and never choose it.
 
-### All and inbox rows
+### Sticky shared channel and inbox
 
-The full Agents column lists `0 · All` and your inbox as its first two rows,
-in the rail's order, then channels 1–9 and the saved conversations: one list,
-scrolled together (Founder, 2026-11-04: one sidebar, no separate card on top).
-Until then the two sat on a pinned card over the list, on the composer's
-surface (Maciej, 2026-10-30); the card and its surface are gone, and the
-monitor's pinned slot stays empty. Each mailbox row wears the agents' glass,
-padding, selection bar, hover and gesture focus ring. All keeps its
-three-line preview, recipient counts, microphone/megaphone and playback
-controls, drawn as the agents' glass circles (`rosterDiameter`), not the
-flat glyphs the card had; there is one All row and one projection of its
-state. The inbox
-row shows the envelope where an agent's digit and presence dot stand (it
-has neither), its name, the last message's preview, the unread badge and the
-clock (`inboxRow`, identifier `overlay-inbox-row`). Keyboard focus and
-scroll-to-selected reach both rows like any other.
+The full Agents column keeps the shared channel and the human inbox above the
+scrolling agent rows on one stationary, rounded glass surface (Founder,
+2026-11-08, retaining the sticky interaction from `73588fe49`). Agents continue
+scrolling beneath that glass. The two destinations have equal 13 pt semibold
+names, separate click targets, unread badges, hover and selection marks; a
+subtle separator divides their label areas. The inbox keeps its envelope.
+Last-message previews remain in the existing hover cards so the sticky area
+stays compact. The shared channel's existing megaphone and playback controls
+stay together on the right, with their existing state, actions and broadcast
+policy menu. Viewing either mailbox never changes capture.
+
+`OverlayPinnedMailboxes` fills the monitor's existing pinned slot. It uses the
+composer material and its Reduce Transparency sheet, without the additional
+drawn outer border. Agent rows are the scrolling content; there is no duplicate
+shared channel or inbox row below the pinned surface. Keyboard and gesture
+selection can reach both mailboxes without scrolling the agent list to them.
 
 ### One fold button
 

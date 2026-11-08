@@ -167,6 +167,7 @@ struct OverlayControlGlass: ViewModifier {
   var cornerRadius: CGFloat = CSRadius.window
   var isEnabled = true
   var role: OverlayGlassRole = .readingCanvas
+  var showsBorder = true
   var glassPreferences = ChromeGlassPreferences()
 
   @ViewBuilder
@@ -204,7 +205,7 @@ struct OverlayControlGlass: ViewModifier {
       }
     }
     .overlay {
-      if isEnabled && role == .readingCanvas {
+      if isEnabled && role == .readingCanvas && showsBorder {
         // A short, soft contour separates glass from passing letters without
         // shadowing the panel's text or spreading across the clear gaps.
         shape.strokeBorder(
@@ -228,6 +229,7 @@ struct OverlayControlGlass: ViewModifier {
 struct OverlayComposerSurface: ViewModifier {
   let palette: OverlayAppearancePalette
   var role: OverlayGlassRole = .readingCanvas
+  var showsBorder = true
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
   @Environment(\.csReduceTransparencyOverride) private var reduceTransparencyOverride
 
@@ -242,6 +244,8 @@ struct OverlayComposerSurface: ViewModifier {
         }
       }
       .modifier(
-        OverlayControlGlass(cornerRadius: CSRadius.composer, isEnabled: !opaque, role: role))
+        OverlayControlGlass(
+          cornerRadius: CSRadius.composer, isEnabled: !opaque, role: role,
+          showsBorder: showsBorder))
   }
 }

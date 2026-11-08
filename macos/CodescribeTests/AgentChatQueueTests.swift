@@ -331,6 +331,80 @@ private final class IndependentThreadEngine: ChatEngineFixture {
 }
 
 extension AgentChatQueueTests {
+  /// Exercise the live owner with two concurrent calls and stale disk metadata.
+  /// SwiftUI's accessibility subtree is not exposed through AppKit under this
+  /// test host; the final wiring guards pair the behavioral proof with the view
+  /// that must consume it, without showing a window on the Founder's desktop.
+  func testContextPanelTracksSelectedExecutionQueueAndFrozenModelAcrossRefresh() async throws {
+    final class RefreshingProvider: ThreadsFixture {
+      func listThreads() -> [ChatThread] {
+        PairThreadsProvider().listThreads().map { row in
+          var thread = row
+          thread.provider = "stale-provider"
+          thread.model = "stale-model"
+          return thread
+        }
+      }
+    }
+    let engine = IndependentThreadEngine()
+    let suite = "AgentContextLive-\(UUID())"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let store = AgentChatStore(
+      engine: engine, threadsProvider: RefreshingProvider(), persistenceDefaults: defaults)
+    let a = try XCTUnwrap(store.threads.first { $0.backendId == "t_a" }?.id)
+    let b = try XCTUnwrap(store.threads.first { $0.backendId == "t_b" }?.id)
+    store.selectedThreadID = a
+    sendMessage("A1", in: store)
+    await waitUntil { engine.starts.count == 1 }
+    sendMessage("A2", in: store)
+    engine.deltas["t_a"]?("A is answering")
+    XCTAssertEqual(store.selectedHeaderActivity, .answering)
+    XCTAssertEqual(store.selectedModelIdentity, "provider-A/model-A")
+    XCTAssertEqual(store.queuedTurns(in: a).count, 1)
+
+    engine.selection = AgentTurnConfiguration(
+      provider: "provider-B", model: "model-B", reasoningEffort: "low", receipt: "sealed-B")
+    store.selectedThreadID = b
+    sendMessage("B1", in: store)
+    await waitUntil { engine.starts.count == 2 }
+    store.refreshThreads()
+    XCTAssertEqual(store.selectedThreadID, b, "refresh must not select a background turn")
+    XCTAssertEqual(store.selectedHeaderActivity, .thinking)
+    XCTAssertEqual(store.selectedModelIdentity, "provider-B/model-B")
+    XCTAssertTrue(store.queuedTurns(in: b).isEmpty)
+    store.selectedThreadID = a
+    XCTAssertEqual(store.selectedHeaderActivity, .answering)
+    XCTAssertEqual(store.selectedModelIdentity, "provider-A/model-A")
+    XCTAssertEqual(store.queuedTurns(in: a).count, 1)
+    engine.finish("t_a", result: .success("A1 complete"))
+    await waitUntil { engine.starts.count == 3 }
+    XCTAssertEqual(store.selectedModelIdentity, "provider-A/model-A")
+    XCTAssertTrue(store.queuedTurns(in: a).isEmpty)
+    engine.finish("t_a", result: .success("A2 complete"))
+    engine.finish("t_b", result: .success("B1 complete"))
+    await waitUntil { store.activeComposerTurns.isEmpty }
+    XCTAssertEqual(store.selectedHeaderActivity, .idle)
+
+    let screens = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent().deletingLastPathComponent()
+      .appendingPathComponent("Codescribe/Screens/AgentChat")
+    let panel = try String(
+      contentsOf: screens.appendingPathComponent("AgentContextPanel.swift"), encoding: .utf8)
+    let context = try XCTUnwrap(
+      panel.components(separatedBy: "struct AgentContextPanel: View").last)
+    XCTAssertTrue(context.contains("@ObservedObject var store: AgentChatStore"))
+    XCTAssertTrue(context.contains("if let thread = store.currentThread"))
+    XCTAssertTrue(
+      context.contains("AgentLiveStatusPill(activity: store.headerActivity(in: thread.id))"))
+    XCTAssertTrue(context.contains("store.modelIdentity(for: thread)"))
+    XCTAssertTrue(context.contains("store.queuedTurns(in: thread.id).count"))
+    XCTAssertFalse(context.contains("Self.model(of:"), "no independent historical model formatter")
+    let view = try String(
+      contentsOf: screens.appendingPathComponent("AgentChatView.swift"), encoding: .utf8)
+    XCTAssertTrue(view.contains("AgentContextPanel(\n            store: store,"))
+  }
+
   func testIndependentABStopWaitsForItsTerminalAndPreservesOtherThreadAndFIFO() async throws {
     let engine = IndependentThreadEngine()
     let suite = "AgentChatAB-\(UUID())"
