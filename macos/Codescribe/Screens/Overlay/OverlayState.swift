@@ -1,7 +1,7 @@
 import AppKit
 import CoreServices
-import Observation
 import OSLog
+import Observation
 import SwiftUI
 import Synchronization
 
@@ -197,7 +197,8 @@ private final class OverlayChannelFileObservation: Sendable {
         Unmanaged<OverlayChannelObservationSink>.fromOpaque(info).release()
       }, copyDescription: nil)
     // Watch the parent while the bridge is absent so its creation is a wakeup.
-    let watched = FileManager.default.fileExists(atPath: root.path)
+    let watched =
+      FileManager.default.fileExists(atPath: root.path)
       ? root : root.deletingLastPathComponent()
     let callback: FSEventStreamCallback = { _, info, count, paths, flags, _ in
       guard let info else { return }
@@ -206,12 +207,15 @@ private final class OverlayChannelFileObservation: Sendable {
       var relevant = false
       for index in 0..<count {
         let path = String(cString: names[index])
-        let rootEvent = flags[index] & FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged) != 0
+        let rootEvent =
+          flags[index] & FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged) != 0
         // Dropped/coalesced events can name "/", outside the selected root.
         // They still require the reader's inventory/cursor reconciliation.
-        let rescan = flags[index] & FSEventStreamEventFlags(
-          kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagUserDropped
-            | kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagEventIdsWrapped) != 0
+        let rescan =
+          flags[index]
+          & FSEventStreamEventFlags(
+            kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagUserDropped
+              | kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagEventIdsWrapped) != 0
         guard rescan || rootEvent || path == sink.root || path.hasPrefix(sink.root + "/") else {
           continue
         }
@@ -223,12 +227,13 @@ private final class OverlayChannelFileObservation: Sendable {
       }
       if relevant { sink.wake() }
     }
-    guard let stream = FSEventStreamCreate(
-      nil, callback, &context, [watched.path] as CFArray,
-      FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.05,
-      FSEventStreamCreateFlags(
-        kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagWatchRoot
-          | kFSEventStreamCreateFlagNoDefer))
+    guard
+      let stream = FSEventStreamCreate(
+        nil, callback, &context, [watched.path] as CFArray,
+        FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.05,
+        FSEventStreamCreateFlags(
+          kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagWatchRoot
+            | kFSEventStreamCreateFlagNoDefer))
     else {
       Self.logger.error("Could not create bridge FSEvents observer; safety wakeup remains armed")
       return nil
@@ -2788,8 +2793,11 @@ final class OverlayState {
   /// "Spoken") was heard to the end, so it counts as read (L14b,
   /// 2026-11-07); an interrupted, failed or refused one stays unread.
   func unreadReplies(in conversation: OverlayConversation) -> Int {
-    conversation.messages.filter { message in
-      message.kind == .reply && !viewedReplyIDs.contains(message.id)
+    // Read the observed set once, while preserving the current rule that
+    // replies heard to completion are already read.
+    let viewed = viewedReplyIDs
+    return conversation.messages.filter { message in
+      message.kind == .reply && !viewed.contains(message.id)
         && message.playback?.state != "spoken"
     }.count
   }
@@ -4514,7 +4522,8 @@ final class OverlayState {
         source.setDeadline(nextDeadlineUnixMs())
       }
     }
-    let readHistory: @MainActor @Sendable (AsyncStream<Void>) async -> Void = { [weak self] events in
+    let readHistory: @MainActor @Sendable (AsyncStream<Void>) async -> Void = {
+      [weak self] events in
       for await _ in events {
         guard !Task.isCancelled, self != nil else { return }
         do {
@@ -5749,8 +5758,14 @@ final class OverlayState {
 
   /// Consume the canonical Rust indicator mode. Agent arm is a one-shot
   /// session latch; the accepted orange processing phase must not disarm it.
+  private func publish<Value: Equatable>(
+    _ keyPath: ReferenceWritableKeyPath<OverlayState, Value>, _ value: Value
+  ) {
+    if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
+  }
+
   func applyIndicatorMode(_ mode: CsIndicatorMode) {
-    indicatorMode = mode
+    publish(\.indicatorMode, mode)
     if mode == .assistive {
       agentSessionArmed = true
     }
@@ -7037,31 +7052,32 @@ final class OverlayState {
       // value to decide whether the app-level stopped callback is still owed.
       abortRecordingSession()
     }
-    latestTranscriptProjection = projection
+    publish(\.latestTranscriptProjection, projection)
     if projection.reducerAction == "light_plus_tick_deadline" {
       showFooterNotice(projection.label)
     }
     // Mirror this accepted projection; a successor or a later document verdict
     // cannot inherit a notice belonging to its predecessor.
-    coverageRefusalNotice =
+    publish(
+      \.coverageRefusalNotice,
       projection.terminal && projection.phase == OverlayMode.coverageRefused.rawValue
-      ? coverageRefusalCopy.notice : nil
+        ? coverageRefusalCopy.notice : nil)
     if !projection.terminal, !finalized {
       markTranscriptActivity()
     }
-    transcriptMode = projection.mode
-    mode = OverlayMode(rawValue: projection.phase) ?? mode
-    revision = projection.reducerRevision
-    canPaste = projection.canPaste
-    canInsert = projection.canInsert
-    canCopy = projection.canCopy
-    canRetranscribe = projection.canRetranscribe
-    canFormat = projection.canFormat
-    canSendToAgent = projection.canSendToAgent
-    terminal = projection.terminal
+    publish(\.transcriptMode, projection.mode)
+    publish(\.mode, OverlayMode(rawValue: projection.phase) ?? mode)
+    publish(\.revision, projection.reducerRevision)
+    publish(\.canPaste, projection.canPaste)
+    publish(\.canInsert, projection.canInsert)
+    publish(\.canCopy, projection.canCopy)
+    publish(\.canRetranscribe, projection.canRetranscribe)
+    publish(\.canFormat, projection.canFormat)
+    publish(\.canSendToAgent, projection.canSendToAgent)
+    publish(\.terminal, projection.terminal)
     if projection.terminal { refreshRetranscriptionAvailability() }
     // A document observation cannot consume a stopped callback or reopen capture.
-    if isLifecycleTerminal { finalized = true }
+    if isLifecycleTerminal { publish(\.finalized, true) }
 
     userRevisionProvenance = revisionReceipt
     if completesPendingRevision {
@@ -7849,18 +7865,18 @@ final class OverlayState {
   ) {
     guard audioCaptureActive else { return }
     levelMeter.push(rms: rms, speechActive: vadActive, now: now)
-    if levelMeter.gain != nil { hasMeasuredAudioLevel = true }
+    if !hasMeasuredAudioLevel, levelMeter.gain != nil { hasMeasuredAudioLevel = true }
   }
 
   func applyVad(_ active: Bool) {
     // Drop late VAD toggles after finalize: the waveform is gone in Idle and a
     // stray `vadActive` flip is just another needless invalidation.
     guard !finalized else { return }
-    vadActive = active
+    publish(\.vadActive, active)
     if active {
       cancelWarmupWatchdog()
-      warmingUp = false
-      audioReady = true
+      publish(\.warmingUp, false)
+      publish(\.audioReady, true)
     }
   }
 

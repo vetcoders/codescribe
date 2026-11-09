@@ -716,13 +716,14 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     let (broadcast, lena, astra) = try rosterFixture()
     let state = OverlayState.previewFormatted()
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast, lena, astra]))
-    state.applyChannelRoster([broadcast, lena, astra].map {
-      CsChannelRosterState(
-        channel: $0.channel, audience: $0.name, provider: $0.owner?.provider,
-        providerSessionId: $0.owner?.providerSessionID, open: false, loud: false,
-        autosealDeadlineUnixMs: nil, followerAlive: $0.owner == nil ? nil : true,
-        unreadSinceUnixMs: nil)
-    })
+    state.applyChannelRoster(
+      [broadcast, lena, astra].map {
+        CsChannelRosterState(
+          channel: $0.channel, audience: $0.name, provider: $0.owner?.provider,
+          providerSessionId: $0.owner?.providerSessionID, open: false, loud: false,
+          autosealDeadlineUnixMs: nil, followerAlive: $0.owner == nil ? nil : true,
+          unreadSinceUnixMs: nil)
+      })
     state.selectConversation(lena.id)
     state.setConversationDraft("unsent words", for: lena.id)
     XCTAssertTrue(state.toggleDraftSync(from: lena.id, with: astra.id))
@@ -747,10 +748,11 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
       host.layoutSubtreeIfNeeded()
     }
     func send(_ type: NSEvent.EventType, _ point: NSPoint) throws {
-      let event = try XCTUnwrap(NSEvent.mouseEvent(
-        with: type, location: point, modifierFlags: [],
-        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber,
-        context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1))
+      let event = try XCTUnwrap(
+        NSEvent.mouseEvent(
+          with: type, location: point, modifierFlags: [],
+          timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber,
+          context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1))
       panel.sendEvent(event)
       RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     }
@@ -1936,9 +1938,12 @@ final class OverlayAgentDrawerDockingTests: XCTestCase {
     let canvas = try section(
       of: overlay, from: "private func canvasStack", to: "private var header: some View")
     XCTAssertFalse(canvas.contains("hidesNavigation: columnShown"))
-    XCTAssertTrue(canvas.contains("navigationActions: conversationHeaderActions(conversation)"))
+    // The header helpers share one roster built once per body pass.
     XCTAssertTrue(
-      canvas.contains("navigationIndicators: conversationHeaderIndicators(conversation)"))
+      canvas.contains("navigationActions: conversationHeaderActions(conversation, roster: roster)"))
+    XCTAssertTrue(
+      canvas.contains(
+        "navigationIndicators: conversationHeaderIndicators(conversation, roster: roster)"))
     let conversation = try overlaySource("OverlayConversationView.swift")
     let anchor = try section(
       of: conversation, from: ".overlay(alignment: .top)", to: ".onChange(of: conversation.id)")
