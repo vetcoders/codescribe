@@ -2,6 +2,14 @@
 
 Swift unit tests for the SwiftUI front-end, executed by `make test-swift`.
 
+The Agent window-floor diagnostic in `AgentWindowChromeTests` also mounts the
+production `TextScaleRoot` and keeps `NSHostingController.sizingOptions = []`.
+That setting protects against a display-cycle crash and is not enabled merely
+to obtain a window-size pass. The diagnostic retains frame, content minimum,
+native minimum and fitting-size evidence across layout and sidebar updates.
+It does not simulate a pointer resize or certify the minimum enforced during a
+real drag; the recorded desktop gesture remains a separate acceptance check.
+
 ```bash
 make test-swift                                    # whole suite
 make test-swift SWIFT_TEST_ARGS='-only-testing:CodescribeTests/OverlayStateTests'

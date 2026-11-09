@@ -198,6 +198,54 @@ final class AgentWindowChromeTests: XCTestCase {
       as? NSGlassEffectView
   }
 
+  /// Match the app's crash-protected host, not only a bare test controller.
+  func testProductionHostRetainsWindowFloorAcrossLayoutUpdates() throws {
+    let previous = UserDefaults.standard.object(forKey: sidebarKey)
+    defer { restoreSidebarDefault(previous) }
+    UserDefaults.standard.set(true, forKey: sidebarKey)
+
+    let scale = TextScaleController(key: "AgentWindowChromeTests.productionHostScale")
+    let root = TextScaleRoot(controller: scale) {
+      AgentChatView(store: AgentChatStore(engine: nil))
+        .environment(\.csReduceTransparencyOverride, false)
+        .environment(\.csContrastOverride, .standard)
+    }
+    let hosting = NSHostingController(rootView: root)
+    hosting.sizingOptions = []
+    let window = AgentWindowChrome.makeWindow(content: hosting)
+    defer {
+      window.orderOut(nil)
+      window.close()
+    }
+    BackgroundTestWindow.present(window)
+    var evidence: [String] = []
+    for (expanded, width) in [
+      (true, CGFloat(1120)), (true, AgentWindowMetrics.minWidth),
+      (false, AgentWindowMetrics.minWidth), (true, AgentWindowMetrics.minWidth),
+    ] {
+      UserDefaults.standard.set(expanded, forKey: sidebarKey)
+      window.setContentSize(NSSize(width: width, height: AgentWindowMetrics.minHeight))
+      pump(window) {
+        let split = self.splitView(in: window)?.delegate as? NSSplitViewController
+        return split?.splitViewItems.first?.isCollapsed == !expanded
+          && self.rectangularHeaderGlass(in: window) != nil
+      }
+      window.contentView?.superview?.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      evidence.append(
+        "expanded=\(expanded) width=\(width) frame=\(window.frame) "
+          + "min=\(window.minSize) contentMin=\(window.contentMinSize) "
+          + "layout=\(window.contentLayoutRect) fitting=\(hosting.view.fittingSize)")
+      XCTAssertGreaterThanOrEqual(window.contentMinSize.width, AgentWindowMetrics.minWidth)
+      XCTAssertGreaterThanOrEqual(window.contentMinSize.height, AgentWindowMetrics.minHeight)
+      XCTAssertTrue(hosting.sizingOptions.isEmpty, "retain the display-cycle crash protection")
+    }
+    let attachment = XCTAttachment(string: evidence.joined(separator: "\n"))
+    attachment.name = "Production Agent host window floor"
+    attachment.lifetime = .keepAlways
+    add(attachment)
+  }
+
   func testIntegratedHeaderAtMinimumAndNormalWidths() throws {
     let previous = UserDefaults.standard.object(forKey: sidebarKey)
     defer {
