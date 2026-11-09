@@ -73,18 +73,18 @@ final class OverlayRosterObservationTests: XCTestCase {
 
   func testMemoizedRosterRechecksChangedInputsAndCopiedViews() throws {
     let first = try owner(lease: "a")
-    let second = try owner(lease: "b", session: "other-session")
-    var view = OverlayChannelStatusView(channels: [], unavailable: false, palette: .dark)
-    view.conversations = [conversation(first)]
+    let state = OverlayState()
+    state.applyChannelRoster([roster()])
+    let view = OverlayChannelStatusView(
+      channels: [], unavailable: false, palette: .dark, animates: false,
+      hudStates: state.channelHudStates, conversations: [conversation(first)])
     XCTAssertEqual(view.currentConversations.map(\.id), [first.id])
     var copy = view
-    copy.conversations = [conversation(second)]
-    XCTAssertEqual(copy.currentConversations.map(\.id), [second.id])
+    copy.archivedOwners = [first]
+    XCTAssertTrue(copy.currentConversations.isEmpty)
     XCTAssertEqual(view.currentConversations.map(\.id), [first.id])
-    view.archivedOwners = [first]
-    XCTAssertTrue(view.currentConversations.isEmpty)
-    view.archivedOwners = []
-    XCTAssertEqual(view.currentConversations.map(\.id), [first.id])
+    copy.archivedOwners = []
+    XCTAssertEqual(copy.currentConversations.map(\.id), [first.id])
   }
 
   private func owner(lease: Character, session: String = "roster-session") throws

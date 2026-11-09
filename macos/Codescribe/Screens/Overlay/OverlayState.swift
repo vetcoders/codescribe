@@ -7052,7 +7052,7 @@ final class OverlayState {
       // value to decide whether the app-level stopped callback is still owed.
       abortRecordingSession()
     }
-    publish(\.latestTranscriptProjection, projection)
+    if latestTranscriptProjection != projection { latestTranscriptProjection = projection }
     if projection.reducerAction == "light_plus_tick_deadline" {
       showFooterNotice(projection.label)
     }
@@ -7066,7 +7066,9 @@ final class OverlayState {
       markTranscriptActivity()
     }
     publish(\.transcriptMode, projection.mode)
-    publish(\.mode, OverlayMode(rawValue: projection.phase) ?? mode)
+    if mode != (OverlayMode(rawValue: projection.phase) ?? mode) {
+      mode = OverlayMode(rawValue: projection.phase) ?? mode
+    }
     publish(\.revision, projection.reducerRevision)
     publish(\.canPaste, projection.canPaste)
     publish(\.canInsert, projection.canInsert)
@@ -7074,7 +7076,7 @@ final class OverlayState {
     publish(\.canRetranscribe, projection.canRetranscribe)
     publish(\.canFormat, projection.canFormat)
     publish(\.canSendToAgent, projection.canSendToAgent)
-    publish(\.terminal, projection.terminal)
+    if terminal != projection.terminal { terminal = projection.terminal }
     if projection.terminal { refreshRetranscriptionAvailability() }
     // A document observation cannot consume a stopped callback or reopen capture.
     if isLifecycleTerminal { publish(\.finalized, true) }
