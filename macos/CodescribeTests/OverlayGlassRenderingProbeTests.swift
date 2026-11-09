@@ -159,12 +159,25 @@ final class OverlayGlassRenderingProbeTests: XCTestCase {
   func testFullMiniAppend() throws { try runFullPanel(mini: true, append: true, bus: false) }
   func testFullMiniFixedBus() throws { try runFullPanel(mini: true, append: false, bus: true) }
   func testFullMiniAppendBus() throws { try runFullPanel(mini: true, append: true, bus: true) }
+  func testFullExpandedFixedHeartbeat() throws {
+    try runFullPanel(mini: false, append: false, bus: true, heartbeat: true)
+  }
+  func testFullExpandedAppendHeartbeat() throws {
+    try runFullPanel(mini: false, append: true, bus: true, heartbeat: true)
+  }
+  func testFullMiniFixedHeartbeat() throws {
+    try runFullPanel(mini: true, append: false, bus: true, heartbeat: true)
+  }
+  func testFullMiniAppendHeartbeat() throws {
+    try runFullPanel(mini: true, append: true, bus: true, heartbeat: true)
+  }
 
   /// Current production panel, header, mounted text and controller-owned growth.
   /// Synthetic state-boundary input only: no engine, audio, file reader or tray.
   /// The Bus factor repeats equal roster/history snapshots; it does not model
-  /// native observation, bridge I/O, playback-mute refresh or changing heartbeats.
-  private func runFullPanel(mini: Bool, append: Bool, bus: Bool) throws {
+  /// native observation, bridge I/O or playback-mute refresh. The heartbeat
+  /// variant changes only each channel's timestamp, retaining all message data.
+  private func runFullPanel(mini: Bool, append: Bool, bus: Bool, heartbeat: Bool = false) throws {
     let suite = "CodescribeTests.full-glass-probe.\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
@@ -250,7 +263,12 @@ final class OverlayGlassRenderingProbeTests: XCTestCase {
           renderedText: text, phase: "listening", terminal: false,
           reducerAction: "record_ledger_projection"))
       if bus {
-        state.applyChannelRoster(roster)
+        let nextRoster = roster.map { row in
+          var changed = row
+          if heartbeat { changed.lastHeartbeatUnixMs = 1_794_240_000_000 + Int64(index) * 100 }
+          return changed
+        }
+        state.applyChannelRoster(nextRoster)
         state.applyConversationSnapshot(snapshot)
       }
       settle(panel)
@@ -276,7 +294,8 @@ final class OverlayGlassRenderingProbeTests: XCTestCase {
       "scope": QualityCaptureHost.interactiveWindows()
         ? "visible-isolated-gui" : "background-update-layout-only",
       "mode": mini ? "mini" : "expanded", "workload": append ? "append" : "fixed",
-      "equal_bus_snapshots": bus, "conversation_count": 10, "message_count": 400,
+      "equal_bus_snapshots": bus && !heartbeat, "bus_snapshots": bus,
+      "heartbeat_changes": heartbeat, "conversation_count": 10, "message_count": 400,
       "ticks": ticks, "final_utf16": native.string.utf16.count,
       "cpu_seconds": cpu, "wall_seconds": wall,
       "start_unix_ms": wallStarted * 1000,
