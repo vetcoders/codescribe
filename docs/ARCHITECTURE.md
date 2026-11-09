@@ -333,13 +333,13 @@ the floating sidebar or titlebar blocks its view of the scene behind the window.
 In Agent it fills the conversation only; in Settings it fills the detail below
 the titlebar. Neither paints an opaque sheet underneath the header glass.
 
-Agent and Settings share `CSWindowTopHeader`: one trailing titlebar accessory
-in the standard unified band (currently 52 pt high), whose rectangular
-`NSGlassEffectView.contentView` hosts the actual branding and controls. The
-accessory width excludes AppKit's leading control region; a top accessory
-container intercepted the native sidebar toggle despite the custom view's
-nil hit result. Native window controls and the sidebar toggle remain owned by
-AppKit, and cross-window frame conversion covers fullscreen titlebar hosting. Both window owners disable the additional titlebar separator;
+Agent and Settings share `CSWindowTopHeader`: a single passive native-glass
+background spans the header, and a trailing accessory holds the actual branding
+and controls. The background reaches the full window width when the sidebar is
+collapsed while the accessory excludes AppKit's leading controls. They use
+independent bounds and coordinate conversion, so visual coverage cannot reserve
+the native toolbar's pointer region. The glass background alone extends into
+the top safe area; reading canvases do not. Both window owners disable the additional titlebar separator;
 the material retains its native optical edge. See
 [the glass contract](ADR/2026-11-08-WINDOW_GLASS_OWNERSHIP.md) for the product
 requirements, STOP rule, geometry assumptions, attachment diagnostics and

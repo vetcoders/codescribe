@@ -218,6 +218,7 @@ private struct AgentIntegratedChrome: ViewModifier {
         CSWindowTopHeader {
           headerContent
         }
+        .ignoresSafeArea(.container, edges: .top)
       }
       .alert("Rename conversation", isPresented: $isRenaming) {
         TextField("Conversation title", text: $renameText)

@@ -71,7 +71,7 @@ strips and hard panel boundaries need evidence about their actual owner.
 | Surface / responsibility | Owner and boundary |
 | --- | --- |
 | Agent/Settings navigation material | `NavigationSplitView`; `CSSidebarColumn` owns sidebar content/style, not a second material behind it. |
-| Shared Agent/Settings header | `CSWindowTopHeader`; one AppKit accessory and native glass with the real header hosted in its `contentView`. |
+| Shared Agent/Settings header | `CSWindowTopHeader`; one passive native-glass host in the app background and one trailing AppKit accessory for the real foreground content. Material coverage and control exclusion are distinct bounds. |
 | Window buttons and native sidebar toggle | AppKit; never replace them with lookalikes or modify private system views. |
 | Agent conversation / Settings detail | Their reading canvas below the header, respecting leading and top safe areas. |
 | Agent Context | A compact, neutral opaque card over the conversation; no full-height trailing material or decorative glass owner. |
@@ -283,17 +283,27 @@ Continue the AppKit header implementation on `codex/window-chrome-e2e` as the
 single development direction (Founder, 2026-11-08). The parallel SwiftUI header
 experiment remains a reference, not a second runtime path.
 
-`NavigationSplitView` owns sidebar glass. `CSWindowTopHeader` owns one trailing
-(`.right`) titlebar accessory containing one rectangular `NSGlassEffectView`;
-the actual header is hosted inside its `contentView`. The standard unified
-allocation is 52 pt high; AppKit controls its allocated height. AppKit owns
-window controls, the native sidebar toggle and their leading event region.
-The earlier `.top` accessory container covered the toggle even though the
-custom host returned nil outside its content. A native attach/remove/restore
-A/B in both windows isolated that obstruction; a trailing slot leaves the
-system control region outside the accessory container. No private container
-is modified, and no replacement button or click-forwarding layer is added. Agent and Settings set `titlebarSeparatorStyle = .none` to avoid
-an additional system separator; this does not remove the glass optical edge.
+`NavigationSplitView` owns sidebar glass. `CSWindowTopHeader` owns one passive
+rectangular `NSGlassEffectView` in its app-owned background marker, and one
+trailing (`.right`) titlebar accessory for the actual foreground content. The
+standard unified allocation is currently 52 pt high; AppKit owns its height.
+With the sidebar expanded, material starts at the sidebar boundary. Collapsed,
+it covers the full window width behind the native control region. The material
+host always returns nil from hit-testing. Foreground content remains in the
+native accessory, outside AppKit's leading event region; no click forwarding,
+replacement control or private system-view mutation is used.
+
+The earlier `.top` accessory container intercepted the sidebar toggle. Moving
+the whole glass to `.right` repaired that event route but left 212–216 pt of
+native controls without material. The subsequent construction separates these
+responsibilities: one background material can cover the control region without
+reserving it as an interactive accessory. Its glass contentView is only an
+empty passive backing, not a second copy of the header. Native foreground and
+material retain one coordinator and independent coordinate conversion. This
+composition still needs optical/foreground and fullscreen acceptance.
+
+Agent and Settings set `titlebarSeparatorStyle = .none` to avoid an additional
+system separator; this does not remove the glass optical edge.
 The Agent window has no trailing column: since 2026-11-09 its context is an
 opaque card floating over the conversation, which owns no glass. The
 conversation alone owns the opaque reading canvas.
@@ -305,8 +315,9 @@ header sampled desktop colours and letters. Remove that opaque top extension
 in Agent and Settings; keep the reading canvas below it and preserve bottom
 coverage. Desktop comparison remains the optical acceptance gate.
 
-The accessory has an explicit clipping viewport matching its allocated band
-(52 pt in the current unified composition). The native material
+The passive marker has an explicit clipping viewport matching the native band
+(52 pt in the current unified composition). Only this material background opts
+into the top safe area; the opaque reading canvases remain below it. The native material
 extends 8 pt below and to its leading side, placing the joined optical rims
 outside the visible band;
 the real controls retain the original 52 pt frame. No opaque masking stripe is
@@ -316,8 +327,8 @@ active/inactive Light/Dark captures; geometry assertions alone are insufficient.
 
 The leading extension also places the material's top-left bevel outside the
 sidebar/detail join. Text-backdrop captures exposed that small diagonal notch
-once the header could sample the scene. The viewport and controls keep the
-original sidebar boundary; no material or hit area is added over native controls.
+once the header could sample the scene. The expanded viewport keeps the sidebar boundary. On collapse only the passive
+material extends behind native controls; their event region remains AppKit's.
 
 The trailing context column and its material, extended 8 pt above the panel,
 were removed on 2026-11-09 with the Context card. The obsolete trailing-column
