@@ -413,6 +413,51 @@ class IdentityAllowlistTests(unittest.TestCase):
         self.assertTrue(all(key.strip() == key for key in lint.identical_allowed()))
 
 
+class UntranslatedAllowlistTests(unittest.TestCase):
+    """shouldTranslate=false skips check 5 entirely, so it is its own gate:
+    the flag needs a named reason, and a stale name on the list is as silent
+    a gap as a flag with no name at all."""
+
+    def check(self, allowlist_lines: list[str], strings: dict) -> list[str]:
+        errors: list[str] = []
+        with tempfile.TemporaryDirectory() as directory:
+            allow_path = Path(directory) / "l10n-untranslated-allowed.txt"
+            allow_path.write_text("\n".join(allowlist_lines) + "\n", encoding="utf-8")
+            catalog_path = Path(directory) / "Localizable.xcstrings"
+            catalog = {"sourceLanguage": "en", "strings": strings, "version": "1.0"}
+            catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+            original = lint.UNTRANSLATED_ALLOWED
+            lint.UNTRANSLATED_ALLOWED = allow_path
+            lint.untranslated_allowed.cache_clear()
+            try:
+                lint.lint_catalog(catalog_path, errors, [])
+                lint.lint_untranslated_allowlist([catalog_path], errors)
+            finally:
+                lint.UNTRANSLATED_ALLOWED = original
+                lint.untranslated_allowed.cache_clear()
+        return errors
+
+    def test_a_flagged_key_named_on_the_list_is_clean(self):
+        errors = self.check(["Lab  # developer panel"], {"Lab": {"shouldTranslate": False}})
+        self.assertEqual(errors, [])
+
+    def test_a_flagged_key_missing_from_the_list_is_refused(self):
+        errors = self.check([], {"Lab": {"shouldTranslate": False}})
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("'Lab' marked shouldTranslate=false without an entry in", errors[0])
+        self.assertIn("scripts/data/l10n-untranslated-allowed.txt", errors[0])
+
+    def test_a_listed_key_no_catalog_still_flags_is_stale(self):
+        errors = self.check(["Lab  # developer panel"], {"Lab": {}})
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("'Lab' is listed but no catalog marks it shouldTranslate=false", errors[0])
+        self.assertIn("stale allowance", errors[0])
+
+    def test_the_empty_string_key_is_named_by_its_marker(self):
+        errors = self.check([lint.EMPTY_KEY_MARKER], {"": {"shouldTranslate": False}})
+        self.assertEqual(errors, [])
+
+
 class ShippedCatalogTests(unittest.TestCase):
     def test_shipped_catalogs_pass(self):
         errors: list[str] = []
@@ -420,6 +465,7 @@ class ShippedCatalogTests(unittest.TestCase):
         self.assertTrue(catalogs)
         for path in catalogs:
             lint.lint_catalog(path, errors, [])
+        lint.lint_untranslated_allowlist(catalogs, errors)
         lint.lint_usage_descriptions(errors)
         self.assertEqual(errors, [])
 
