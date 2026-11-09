@@ -207,6 +207,9 @@ final class CSSidebarMaterialTests: XCTestCase {
     )
     let window = NSWindow(contentViewController: host)
     window.isReleasedWhenClosed = false
+    // The app's Settings scene selects unified chrome. A plain automatic
+    // toolbar has a different native height and is not that scene's fixture.
+    window.toolbarStyle = .unified
     window.setContentSize(NSSize(width: 1120, height: 720))
     BackgroundTestWindow.present(window)
     defer { window.close() }
