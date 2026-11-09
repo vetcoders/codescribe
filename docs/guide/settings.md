@@ -140,18 +140,25 @@ external attached agent also has its own client's configuration.
 
 The **Context** button in the separate Agent conversation window opens a
 small card under the window header, at the right edge of the conversation. It
-shows how many messages the conversation has, when it last changed, how many
+shows how many messages the conversation has (zero for a new one; nothing until
+a saved conversation's history has loaded), when it last changed, how many
 turns are queued (only while there are any) and **Tool settings**, which opens
 Settings › Agent › Tools. The title, the model and the Agent's live status stay
 in the window header, and the card controls no running work.
 
 The card floats over the conversation: the conversation keeps its full width
 and the window never resizes when the card opens. It narrows to fit a narrow
-window. Click **Context** again, press Escape or click anywhere else to close
-it; that click still does what it was aimed at. The card follows the selected
-conversation, starts closed every time the Agent window is shown again, and
-opening or closing it keeps the current conversation, draft and scroll
-position.
+window, puts a value under its label when both do not fit on one line, and
+scrolls inside itself in a short window. Click **Context** again, press Escape
+or click anywhere outside the visible card to close it; that click still does
+what it was aimed at. Escape that ends text you are still composing (an input
+method or a press-and-hold accent) stays with the text field, and Escape with
+Command, Option or Control is not the card's. When the keyboard focus was on
+**Tool settings**, closing with Escape — or with VoiceOver's escape gesture —
+returns focus to the **Context** button in the same window; a click outside
+never moves focus. The card follows the selected conversation, starts closed
+every time the Agent window is shown again, and opening or closing it keeps the
+current conversation, draft and scroll position.
 
 ### AI models
 
