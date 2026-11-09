@@ -405,6 +405,52 @@ extension AgentChatQueueTests {
     XCTAssertTrue(view.contains("AgentContextPanel(\n            store: store,"))
   }
 
+  func testFailedTurnKeepsItsModelAfterStaleIndexRefreshUntilNextTurnSettles() async throws {
+    final class RefreshingProvider: ThreadsFixture {
+      var provider = "old-provider"
+      var model = "old-model"
+
+      func listThreads() -> [ChatThread] {
+        PairThreadsProvider().listThreads().map { row in
+          var thread = row
+          thread.provider = provider
+          thread.model = model
+          return thread
+        }
+      }
+    }
+    let engine = IndependentThreadEngine()
+    let provider = RefreshingProvider()
+    let suite = "AgentFailedModel-\(UUID())"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let store = AgentChatStore(
+      engine: engine, threadsProvider: provider, persistenceDefaults: defaults)
+    let a = try XCTUnwrap(store.threads.first { $0.backendId == "t_a" }?.id)
+    store.selectedThreadID = a
+    sendMessage("attempt on model A", in: store)
+    await waitUntil { engine.starts.count == 1 }
+    engine.finish("t_a", result: .failure(NSError(domain: "Provider", code: 400)))
+    await waitUntil { store.activeComposerTurns.isEmpty }
+    XCTAssertEqual(store.selectedHeaderActivity, .failed)
+    store.refreshThreads()
+    XCTAssertEqual(store.selectedHeaderActivity, .failed)
+    XCTAssertEqual(store.selectedModelIdentity, "provider-A/model-A")
+
+    engine.selection = AgentTurnConfiguration(
+      provider: "provider-B", model: "model-B", reasoningEffort: "low", receipt: "sealed-B")
+    sendMessage("retry on model B", in: store)
+    await waitUntil { engine.starts.count == 2 }
+    XCTAssertEqual(store.selectedModelIdentity, "provider-B/model-B")
+    engine.finish("t_a", result: .success("retry complete"))
+    await waitUntil { store.activeComposerTurns.isEmpty }
+    provider.provider = "provider-B"
+    provider.model = "model-B"
+    store.refreshThreads()
+    XCTAssertEqual(store.selectedHeaderActivity, .idle)
+    XCTAssertEqual(store.selectedModelIdentity, "provider-B/model-B")
+  }
+
   func testIndependentABStopWaitsForItsTerminalAndPreservesOtherThreadAndFIFO() async throws {
     let engine = IndependentThreadEngine()
     let suite = "AgentChatAB-\(UUID())"
