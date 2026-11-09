@@ -6,6 +6,37 @@ before changing materials, reading bounds, titlebar geometry or resize feedback.
 Refresh Git, PR and running-build identities before continuing: this snapshot
 does not imply that parallel branches have stopped moving.
 
+## Unpublished continuation — reading/header boundary (2026-11-09)
+
+Source work now uses the operator's local checkout; compilation remains on the
+designated build host. The published PR head below has not been advanced.
+
+- Regression checkpoint `427df173f` exposes the expanded reading material and
+  veil behind the independently owned header: eight native geometry assertions
+  fail across both appearances and repeated presentation changes.
+- Product repair `5459b4ffa` starts both reading layers below the measured live
+  header and carries that boundary into the existing frozen resize backdrop.
+  Palette, veil opacity, tint settings and capture/reflow policy are unchanged.
+- Selected native verification at that product source: **27 passed, 6 skipped,
+  0 failures**. The six skipped isolated-GUI cases in `OverlayHeaderMorphTests`
+  remain unverified. The new boundary case, canvas accessibility checks, all
+  eight `OverlayResizePreviewTests`, content-surface and visibility cases ran.
+- Strict Swift formatting, localization catalog/bridge hooks and diff hygiene
+  passed. The current full suite was not run; retain the older unresolved
+  timing failure described below.
+- **Codescribe Glass Boundary**, build **3807**, source **`5459b4ffa`**, was
+  built through canonical `make app PROFILE=debug` with the stable Developer ID.
+  The copied package passed all 128 file hashes, strict signature verification
+  and designated-requirement comparison with Readable Floor.
+- The local automatic switch refused with `process_identity_unavailable`
+  before a native shutdown request. Readable Floor `ec605c02f` remains the
+  observed running control. The operator artifact handoff includes a native
+  Terminal entrypoint using the unchanged idle-restart protocol.
+
+This is a verified backing-boundary repair and a prepared visual candidate,
+not optical acceptance of the tone jump. Real compositor continuity, the
+header/content join, animated transitions and resize smoothness remain open.
+
 ## Recoverable source and running preview
 
 - Published checkpoint: `codex/glass-integration-checkpoint-20261109`.
@@ -27,19 +58,19 @@ does not imply that parallel branches have stopped moving.
 The checkpoint retains the actual merge/cherry-pick history and original
 authorship. These input commits are ancestors of the checkpoint:
 
-| Input | Included revision |
-| --- | --- |
-| Historical global-tip integration | `029fa0142`, followed by `890c04d3d` |
-| Bar series, PR #225 | `8b29ff161` |
-| Untranslated-key allowlist, PR #226 | `495b156a4` |
-| Typed readiness pilot, PR #227 | `1123730d6` |
-| Build harness, PR #228 | `657a99afd` |
-| Placement menu, PR #229 | `e3b1f5520` |
-| Original glass/chrome work | `5feb130a4` |
-| Frozen resize single-capture repair | `bac14f5be` |
-| Context card, PR #231 | `3b9eef52b` |
-| Glass contract follow-up | `7d60cd99c` |
-| Agent readable-height repair | `ec605c02f` |
+| Input                               | Included revision                    |
+| ----------------------------------- | ------------------------------------ |
+| Historical global-tip integration   | `029fa0142`, followed by `890c04d3d` |
+| Bar series, PR #225                 | `8b29ff161`                          |
+| Untranslated-key allowlist, PR #226 | `495b156a4`                          |
+| Typed readiness pilot, PR #227      | `1123730d6`                          |
+| Build harness, PR #228              | `657a99afd`                          |
+| Placement menu, PR #229             | `e3b1f5520`                          |
+| Original glass/chrome work          | `5feb130a4`                          |
+| Frozen resize single-capture repair | `bac14f5be`                          |
+| Context card, PR #231               | `3b9eef52b`                          |
+| Glass contract follow-up            | `7d60cd99c`                          |
+| Agent readable-height repair        | `ec605c02f`                          |
 
 At this checkpoint, `develop` was `7fa1d42c9` and was **not** an ancestor.
 Its later merge commits for #226/#227/#228 were not silently integrated. The
