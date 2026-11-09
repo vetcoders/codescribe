@@ -103,18 +103,6 @@ final class ChatLayoutPolicyTests: XCTestCase {
   @MainActor
   func testNativeSidebarItemEnforcesBoundsAfterWindowAttachment() throws {
     final class LayoutEngine: ChatEngineFixture {}
-    // The window floor below is the closed-panel floor; an open context panel
-    // raises it (AgentWindowChromeTests covers that path).
-    let panelKey = AgentContextPanelPreference.defaultsKey
-    let previousPanel = UserDefaults.standard.object(forKey: panelKey)
-    UserDefaults.standard.set(false, forKey: panelKey)
-    defer {
-      if let previousPanel {
-        UserDefaults.standard.set(previousPanel, forKey: panelKey)
-      } else {
-        UserDefaults.standard.removeObject(forKey: panelKey)
-      }
-    }
     let store = AgentChatStore(
       engine: LayoutEngine(),
       threads: [

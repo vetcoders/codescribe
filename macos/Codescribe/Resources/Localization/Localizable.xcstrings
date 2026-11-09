@@ -2942,17 +2942,6 @@
         }
       }
     },
-    "Agent context" : {
-      "comment" : "Title of the Agent window's context panel",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Kontekst Agenta"
-          }
-        }
-      }
-    },
     "Agent delivery is no longer available" : {
       "localizations" : {
         "pl" : {

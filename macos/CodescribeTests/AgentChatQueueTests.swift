@@ -392,17 +392,18 @@ extension AgentChatQueueTests {
     let panel = try String(
       contentsOf: screens.appendingPathComponent("AgentContextPanel.swift"), encoding: .utf8)
     let context = try XCTUnwrap(
-      panel.components(separatedBy: "struct AgentContextPanel: View").last)
+      panel.components(separatedBy: "struct AgentContextCard: View").last?
+        .components(separatedBy: "struct AgentContextCardLayer: View").first)
     XCTAssertTrue(context.contains("@ObservedObject var store: AgentChatStore"))
     XCTAssertTrue(context.contains("if let thread = store.currentThread"))
-    XCTAssertTrue(
-      context.contains("AgentLiveStatusPill(activity: store.headerActivity(in: thread.id))"))
-    XCTAssertTrue(context.contains("store.modelIdentity(for: thread)"))
     XCTAssertTrue(context.contains("store.queuedTurns(in: thread.id).count"))
+    // Live activity and the model belong to the header; the card repeats neither.
+    XCTAssertFalse(context.contains("AgentLiveStatusPill"))
+    XCTAssertFalse(context.contains("modelIdentity"))
     XCTAssertFalse(context.contains("Self.model(of:"), "no independent historical model formatter")
     let view = try String(
       contentsOf: screens.appendingPathComponent("AgentChatView.swift"), encoding: .utf8)
-    XCTAssertTrue(view.contains("AgentContextPanel(\n            store: store,"))
+    XCTAssertTrue(view.contains("AgentContextCardLayer(\n          store: store,"))
   }
 
   func testIndependentABStopWaitsForItsTerminalAndPreservesOtherThreadAndFIFO() async throws {

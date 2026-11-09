@@ -133,12 +133,19 @@ external attached agent also has its own client's configuration.
 ### Conversation window context
 
 The **Context** button in the separate Agent conversation window opens a
-fixed-width panel beside the conversation. One continuous native glass surface
-contains its heading, conversation facts and tool-settings action below the
-existing window header. The conversation retains a neutral reading canvas;
-that canvas does not extend behind either side panel. Reduce Transparency or
-Increase Contrast replaces the context glass with the opaque reading surface.
-Opening or closing Context keeps the current conversation and draft.
+small card under the window header, at the right edge of the conversation. It
+shows how many messages the conversation has, when it last changed, how many
+turns are queued (only while there are any) and **Tool settings**, which opens
+Settings › Agent › Tools. The title, the model and the Agent's live status stay
+in the window header, and the card controls no running work.
+
+The card floats over the conversation: the conversation keeps its full width
+and the window never resizes when the card opens. It narrows to fit a narrow
+window. Click **Context** again, press Escape or click anywhere else to close
+it; that click still does what it was aimed at. The card follows the selected
+conversation, starts closed every time the Agent window is shown again, and
+opening or closing it keeps the current conversation, draft and scroll
+position.
 
 ### AI models
 
