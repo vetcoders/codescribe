@@ -10,7 +10,12 @@ alternative arrangements; this document does not select one as the final UI.
 ### Resize feedback and performance boundary (2026-11-08)
 
 Expanded resize keeps the source window's frame fixed until release. The
-lightweight `OverlayResizePreview` captures header and foreground content once.
+lightweight `OverlayResizePreview` captures the source in one AppKit render per
+gesture, then splits its frozen pixels into header and foreground regions at
+the backing-pixel boundary. Capturing the two regions separately replays the
+same layer tree and its CPU blur work twice at the start of a gesture. Region
+images retain their original point size and orientation for flipped and
+unflipped source views; pointer updates never capture either region again.
 `OverlayCanvasBackdropView` owns both the system material and the reading veil;
 capture temporarily hides that owner and restores its original visibility, so
 the bitmap cannot retain an old-sized canvas and its rounded corners. A separate

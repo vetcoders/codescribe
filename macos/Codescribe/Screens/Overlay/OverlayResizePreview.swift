@@ -68,28 +68,43 @@ final class OverlayResizePreview {
         x: view.bounds.minX,
         y: view.isFlipped ? view.bounds.minY : view.bounds.maxY - height,
         width: view.bounds.width, height: height)
+      let captureRect = capturesContent ? view.bounds : rect
       guard !rect.isEmpty,
-        let bitmap = view.bitmapImageRepForCachingDisplay(in: rect)
+        let bitmap = view.bitmapImageRepForCachingDisplay(in: captureRect)
       else { return nil }
-      view.cacheDisplay(in: rect, to: bitmap)
-      guard let image = bitmap.cgImage else { return nil }
+      // Replaying the layer tree separately for header and body also repeats
+      // its CPU blur work. Capture once, then split the frozen pixels.
+      view.cacheDisplay(in: captureRect, to: bitmap)
+      guard let capturedImage = bitmap.cgImage else { return nil }
+      let image: CGImage
+      var frozenContent: NSImage?
+      if capturesContent {
+        let headerPixels = min(
+          capturedImage.height,
+          max(1, Int((CGFloat(capturedImage.height) * height / captureRect.height).rounded())))
+        guard
+          let header = capturedImage.cropping(
+            to: CGRect(
+              x: 0, y: 0, width: CGFloat(capturedImage.width), height: CGFloat(headerPixels)))
+        else { return nil }
+        image = header
+        let bodyHeight = max(0, captureRect.height - height)
+        if bodyHeight > 0,
+          let body = capturedImage.cropping(
+            to: CGRect(
+              x: 0, y: CGFloat(headerPixels), width: CGFloat(capturedImage.width),
+              height: CGFloat(capturedImage.height - headerPixels)))
+        {
+          frozenContent = NSImage(
+            cgImage: body, size: NSSize(width: captureRect.width, height: bodyHeight))
+        }
+      } else {
+        image = capturedImage
+      }
       let anchor = OverlayResizeAnchorView.find(in: view)
       // The one-point cut is in the existing gap after the name/spacer, so
       // only empty chrome stretches; labels and right controls stay 1:1.
       let splitX = anchor.map { $0.convert($0.bounds, to: view).maxX - rect.minX + 1 }
-      var frozenContent: NSImage?
-      if capturesContent {
-        let body = NSRect(
-          x: view.bounds.minX,
-          y: view.isFlipped ? rect.maxY : view.bounds.minY,
-          width: view.bounds.width, height: max(0, view.bounds.height - height))
-        if !body.isEmpty, let bitmap = view.bitmapImageRepForCachingDisplay(in: body) {
-          view.cacheDisplay(in: body, to: bitmap)
-          if let image = bitmap.cgImage {
-            frozenContent = NSImage(cgImage: image, size: body.size)
-          }
-        }
-      }
       return OverlayResizePreviewView.Header(
         image: NSImage(cgImage: image, size: rect.size),
         splitX: min(rect.width, max(0, splitX ?? rect.width)), content: frozenContent)
