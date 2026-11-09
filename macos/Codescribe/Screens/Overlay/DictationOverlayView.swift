@@ -2395,11 +2395,14 @@ private struct OverlayAgentDrawerDivider: View {
 
 /// The fade both panes wear while the agents divider is dragged. One state
 /// flip applies it, one removes it; nothing here is recomputed per move.
+/// The flag also reaches the panes' control glass (composer, navigation
+/// label, pinned card), which the opacity and blur alone would miss.
 private struct OverlayDividerDragDim: ViewModifier {
   let active: Bool
 
   func body(content: Content) -> some View {
     content
+      .environment(\.overlayDividerDragging, active)
       .opacity(active ? OverlayAgentDrawerLayout.dragDimOpacity : 1)
       .blur(radius: active ? OverlayAgentDrawerLayout.dragBlurRadius : 0)
       .allowsHitTesting(!active)

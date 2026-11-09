@@ -154,6 +154,16 @@ final class OverlayDesktopEffectView: NSVisualEffectView {
   override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
+extension EnvironmentValues {
+  /// True while the agents divider is dragged, set by the fade both panes
+  /// wear. System glass composites outside its parent's opacity and blur, so
+  /// the composer, the conversation's navigation label and the pinned card
+  /// would stay sharp over a faded pane; under this flag their control glass
+  /// gives way to its own veil, which the fade reaches (Maciej, 2026-11-09
+  /// 07:32Z: the whole view blurs and freezes while the divider moves).
+  @Entry var overlayDividerDragging = false
+}
+
 /// Header and composer use the same system-owned control surface.
 ///
 /// A surface flush with the window's own edges must carry the window's corner,
@@ -164,6 +174,7 @@ final class OverlayDesktopEffectView: NSVisualEffectView {
 /// the same as the editor grows. Both surfaces use the canvas's continuous style.
 struct OverlayControlGlass: ViewModifier {
   @Environment(\.colorScheme) private var colorScheme
+  @Environment(\.overlayDividerDragging) private var dividerDragging
   var cornerRadius: CGFloat = CSRadius.window
   var isEnabled = true
   var role: OverlayGlassRole = .readingCanvas
@@ -187,6 +198,10 @@ struct OverlayControlGlass: ViewModifier {
       colorScheme == .dark
       ? Color(red: 0.08, green: 0.08, blue: 0.09).opacity(0.76)
       : Color(red: 0.97, green: 0.96, blue: 0.94).opacity(0.82)
+    // A divider drag freezes the glass into its veil for the drag only: two
+    // flips per drag, and no backdrop is re-sampled while the panes resize.
+    let frozen = isEnabled && dividerDragging
+    let glass = isEnabled && !dividerDragging
     Group {
       if #available(macOS 26.0, *) {
         // Control glass does not dim with the window (Maciej, 2026-11-01).
@@ -194,13 +209,17 @@ struct OverlayControlGlass: ViewModifier {
         // than colliding line-for-line with the foreground labels.
         content
           .background {
-            if isEnabled && role == .readingCanvas { shape.fill(veilColor) }
+            if frozen || (glass && role == .readingCanvas) { shape.fill(veilColor) }
           }
-          .glassEffect(isEnabled ? material : .identity, in: shape)
+          .glassEffect(glass ? material : .identity, in: shape)
           .environment(\.controlActiveState, .key)
       } else {
         content.background {
-          if isEnabled { shape.fill(.regularMaterial) }
+          if frozen {
+            shape.fill(veilColor)
+          } else if glass {
+            shape.fill(.regularMaterial)
+          }
         }
       }
     }
