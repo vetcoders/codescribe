@@ -6,7 +6,7 @@
    [website](https://codescribe.vetcoders.io/) or
    [GitHub Releases](https://github.com/vetcoders/codescribe/releases).
 2. Open the DMG and drag **Codescribe.app** to **Applications**.
-3. Launch Codescribe from Finder or Spotlight. Complete the setup checklist in
+3. Launch x9bus from Finder or Spotlight. Complete the setup checklist in
    **Settings → Creator**.
 4. Check **Settings → User** for the installed version and build.
 
@@ -19,7 +19,7 @@ A packaged app does not require Rust, Cargo or Xcode. For development, use the
 
 ## Permissions
 
-Codescribe shows its permission checklist in **Settings → Creator**. macOS
+x9bus shows its permission checklist in **Settings → Creator**. macOS
 controls the grants in **System Settings → Privacy & Security**.
 
 | Permission         | What it enables                                             |
@@ -60,7 +60,7 @@ settings. Basic local recognition does not require an AI-provider key.
 ## Configuration
 
 Use Settings for normal setup. Preferences are stored in `settings.json` under
-Codescribe's Application Support directory; provider credentials are stored in
+`~/Library/Application Support/Codescribe`; provider credentials are stored in
 macOS Keychain. An optional `~/.codescribe/.env` is available for advanced
 configuration. You do not need to create it for a normal GUI installation.
 
@@ -84,7 +84,7 @@ recording to make an update complete.
 
 ## Remove the app or reset data
 
-Quit Codescribe when idle, then move its app bundle to Trash in Finder.
+Quit x9bus when idle, then move its app bundle to Trash in Finder.
 Removing the app does not by itself erase your transcripts, recordings or
 provider credentials.
 

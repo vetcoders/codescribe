@@ -1,6 +1,6 @@
-# Codescribe User Guide
+# x9bus User Guide
 
-Codescribe is a native macOS app for dictation and conversations with agents.
+x9bus is a native macOS app for dictation and conversations with agents.
 Use it to turn speech into text, work with the built-in Agent, or talk to an
 existing agent session through a named channel.
 
@@ -11,7 +11,7 @@ consent. AI formatting and spoken replies are separate choices. See
 
 ## Start here
 
-1. [Install and launch Codescribe](installation.md).
+1. [Install and launch x9bus](installation.md).
 2. [Make your first recording](QUICKSTART.md).
 3. [Choose dictation, formatting or an agent conversation](modes.md).
 4. [Navigate channels, use Sync and attach files](chat-overlay.md).
@@ -34,7 +34,7 @@ consent. AI formatting and spoken replies are separate choices. See
 workspace and tools. Open it with **Show Agent**.
 
 **Connected agents** are conversations running in another client, such as Codex
-or Claude Code. Codescribe connects them through channels **1–9** and delivers
+or Claude Code. x9bus connects them through channels **1–9** and delivers
 speech and written messages to their existing sessions. Installing a plugin
 alone does not connect a session.
 

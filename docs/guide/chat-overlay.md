@@ -1,9 +1,9 @@
 # Chat & Overlay
 
-Codescribe has two conversation surfaces:
+x9bus has two conversation surfaces:
 
 - The **dictation overlay** displays your transcript and conversations with
-  external agents connected to Codescribe channels.
+  external agents connected to x9bus channels.
 - **Show Agent** opens the **built-in Agent**, with its own history, model,
   workspace, tools and composer. It is not the external-agent roster.
 
@@ -192,7 +192,7 @@ are not automatically the user's personal messages.
 
 ## Built-in Agent window
 
-Choose **Show Agent** to open Codescribe's own assistant. Its provider, models,
+Choose **Show Agent** to open x9bus's own assistant. Its provider, models,
 workspace and tool permissions are configured in **Settings → Agent** and
 **Providers**. Its conversation sidebar is separate from the numbered channel
 roster described above.

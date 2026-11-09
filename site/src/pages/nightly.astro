@@ -4,11 +4,11 @@ import { page } from '../lib/asset';
 import nightly from '../data/nightly.json';
 ---
 
-<Layout title="Codescribe Nightly — latest macOS build" description="Try the latest signed and notarized Codescribe Nightly for Apple Silicon. Download the DMG and check its version, source commit and SHA-256." path="nightly">
+<Layout title="x9bus Nightly — latest macOS build" description="Try the latest signed and notarized x9bus Nightly for Apple Silicon. Download the DMG and check its version, source commit and SHA-256." path="nightly">
   <main id="main" class="container nightly">
-    <a class="back" href={page('')}>← Codescribe</a>
+    <a class="back" href={page('')}>← x9bus</a>
     <p class="eyebrow">NIGHTLY · APPLE SILICON</p>
-    <h1>Try the latest Codescribe.</h1>
+    <h1>Try the latest x9bus.</h1>
     <p class="intro">The latest changes, ahead of the next stable release.</p>
     <p>This download lane currently offers the signed Slim build. The application identifies its build channel as <code>{nightly.buildChannel}</code>; the stable download and update feed are unchanged.</p>
     <div class="download">
@@ -31,7 +31,7 @@ import nightly from '../data/nightly.json';
     </section>
     <section aria-labelledby="install-title">
       <h2 id="install-title">Install</h2>
-      <p>Open the DMG and drag Codescribe into Applications. Close the running app before opening the new copy.</p>
+      <p>Open the DMG and drag x9bus into Applications. Close the running app before opening the new copy.</p>
       <p>Speech recognition setup and agent connections are explained in the <a href={page('guide')}>user guide</a>. Prefer the stable version? <a href={page('') + '#install'}>Download the stable release</a>.</p>
     </section>
     <section class="provenance" aria-labelledby="build-title">

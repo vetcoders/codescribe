@@ -59,7 +59,7 @@ conflicts before using the same gesture in another application.
 
 ## Built-in Agent / Assistive mode
 
-**Show Agent** opens Codescribe's own assistant conversation. Configure its
+**Show Agent** opens x9bus's own assistant conversation. Configure its
 provider/model, workspace and tools in **Settings → Agent**. You can type,
 attach context or speak a request, then explicitly send it.
 
@@ -74,7 +74,7 @@ frontmost app. Use a new conversation when you want a new context.
 
 ## Connected agents and continuous voice
 
-A channel connects an existing external agent session to Codescribe. Start its
+A channel connects an existing external agent session to x9bus. Start its
 microphone control to speak to that channel, or use **0 · All** for the shared
 audience. Viewing a channel, choosing written recipients and changing the voice
 destination are separate actions.

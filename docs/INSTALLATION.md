@@ -1,4 +1,4 @@
-# Codescribe Installation and Launch Guide
+# x9bus Installation and Launch Guide
 
 This document describes the installation methods, configuration paths, and how the application locates its resources.
 
@@ -402,8 +402,8 @@ The nine-step Setup Wizard exposes the bridge on the **Agent** step (shown on
 the **Dictation + AI agent** path). It
 does not write to the home directory merely because the step is shown,
 refreshed, skipped, or left with Back. The user selects any of Codex, Claude
-Code and Other agents; each card reads **Install the Codescribe skill**, or
-**Codescribe skill installed** when that client's managed skill is healthy.
+Code and Other agents; each card reads **Install the x9bus skill**, or
+**x9bus skill installed** when that client's managed skill is healthy.
 Selecting a card connects nothing: Continue installs or updates the selected managed skills
 when that selection differs from the installer receipt or a selected client's
 managed receipt/folder/file evidence needs repair. A healthy unchanged selection

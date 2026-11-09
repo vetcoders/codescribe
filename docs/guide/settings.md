@@ -1,6 +1,6 @@
 # Settings
 
-Open the native Settings window from Codescribe's menu. Search matches section
+Open the native Settings window from x9bus's menu. Search matches section
 names and the tabs inside them, so a term such as “microphone”, “Whisper” or
 “MCP” can reveal the relevant page.
 
@@ -10,11 +10,11 @@ developer mode is enabled. Interface translations can use different labels.
 
 ## Where configuration lives
 
-Normal preferences are saved in `settings.json` in Codescribe's Application
-Support directory. Provider credentials are stored in macOS Keychain. Advanced
-configuration can also use `~/.codescribe/.env`; it is not required for normal
-GUI setup, and retired environment names are not interchangeable with current
-settings.
+Normal preferences are saved in `settings.json` in
+`~/Library/Application Support/Codescribe`. Provider credentials are stored in
+macOS Keychain. Advanced configuration can also use `~/.codescribe/.env`; it is
+not required for normal GUI setup, and retired environment names are not
+interchangeable with current settings.
 
 Native presentation preferences, including interface language and appearance,
 use macOS preferences rather than every value living in settings.json. The
@@ -121,7 +121,7 @@ an API key. A previously successful test is evidence of that test, not a
 permanent guarantee of service availability.
 
 Custom services use the endpoint and transport you configure. Their data policy
-and retention are not set by Codescribe. Workspace path validation does not
+and retention are not set by x9bus. Workspace path validation does not
 sandbox a provider process or an external service.
 
 ## Agent
@@ -174,12 +174,12 @@ acoustic evidence that was never recognized or make an unavailable tool work.
 
 ### Workspace
 
-Select the folders available to Codescribe's own file/terminal tools and the
+Select the folders available to x9bus's own file/terminal tools and the
 MCP calls whose paths it can validate. Use **Save** to commit the folder list.
 
 This list is **not an operating-system sandbox**. Child processes and MCP
 servers have their own permissions; not every third-party tool exposes a path
-Codescribe can validate. Choose tool permissions as well as workspace roots.
+x9bus can validate. Choose tool permissions as well as workspace roots.
 
 ### Diagnostics
 
@@ -291,7 +291,7 @@ immediate global rewrite.
 
 Lab is a developer-only surface. Experiments, timing controls and evidence
 views can change the recognition path or its diagnostics. They are not
-prerequisites for using Codescribe and should not be enabled simply to complete
+prerequisites for using x9bus and should not be enabled simply to complete
 setup. Preserve a known configuration when comparing recordings.
 
 ### Glass tuning

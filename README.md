@@ -1,4 +1,4 @@
-# ⌜ Codescribe ⌟
+# ⌜ x9bus ⌟
 
 [![Source version](https://img.shields.io/badge/version-0.18.0-6a9bcc)](Cargo.toml)
 [![Latest release](https://img.shields.io/github/v/release/vetcoders/codescribe?label=release&color=788c5d)](https://github.com/vetcoders/codescribe/releases/latest)
@@ -17,13 +17,13 @@
 [Online guide](https://codescribe.vetcoders.io/guide/) ·
 [Releases](https://github.com/vetcoders/codescribe/releases)
 
-Codescribe turns speech into text, displays it in a floating overlay and delivers
+x9bus turns speech into text, displays it in a floating overlay and delivers
 it to the destination you select. It also connects existing coding-agent
 conversations to numbered channels, with written messages, attachments and
 spoken replies. A separate built-in Agent provides its own model, history and
 tools.
 
-## Start using Codescribe
+## Start using x9bus
 
 1. Download a package from the website or GitHub Releases, copy the app to
    Applications and launch it from Finder or Spotlight.
@@ -61,11 +61,11 @@ quiet audio; AI formatting does not replace comparison with the original take.
 
 ## Conversations and channels
 
-**Show Agent** opens Codescribe's built-in assistant. Configure its model,
+**Show Agent** opens x9bus's built-in assistant. Configure its model,
 workspace and tool permissions in **Settings → Agent**, and accounts/keys in
 **Providers**.
 
-For an existing external session, connect its Codescribe integration under a
+For an existing external session, connect its x9bus integration under a
 name and channel **1–9**. The main roster, compact navigation and floating agent
 cards are views of those same conversations. The numbered rail remains an
 entry point when the sidebar is narrow. A detached agent retains its roster
@@ -88,7 +88,7 @@ release can have an earlier interface.
 
 ### Connect an external agent
 
-Use the matching Codescribe BUS/plugin package and the client's setup flow.
+Use the matching x9bus bus plugin package and the client's setup flow.
 Installation alone does not attach a conversation or prove that a running client
 loaded the update. Keep the session's identity, lease, channel and preferences
 when reconnecting it.
@@ -179,7 +179,7 @@ loaded runtime.
 
 ## License
 
-Codescribe is licensed under the Functional Source License 1.1, ALv2 Future
+x9bus is licensed under the Functional Source License 1.1, ALv2 Future
 License (FSL-1.1-ALv2).
 
 This is a Fair Source / source-available license while the current FSL terms

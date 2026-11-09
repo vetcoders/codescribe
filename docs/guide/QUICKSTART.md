@@ -2,7 +2,7 @@
 
 ## 1. Install and open the app
 
-Download Codescribe from the [website](https://codescribe.vetcoders.io/) or
+Download x9bus from the [website](https://codescribe.vetcoders.io/) or
 [GitHub Releases](https://github.com/vetcoders/codescribe/releases). Open the DMG,
 copy the app into **Applications**, then launch it from Finder or Spotlight.
 You do not need Rust or Xcode to use a packaged app.
@@ -58,9 +58,9 @@ spoken word correctly.
 
 Choose the surface you need:
 
-- **Show Agent** opens Codescribe's built-in Agent. Configure its provider,
+- **Show Agent** opens x9bus's built-in Agent. Configure its provider,
   model and tool permissions before sending a request.
-- To talk to an existing coding-agent session, install the Codescribe integration
+- To talk to an existing coding-agent session, install the x9bus integration
   for that client and ask the session to connect under a name and channel.
   Check that the roster shows it as connected.
 

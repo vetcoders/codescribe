@@ -1,6 +1,6 @@
 # Privacy & Security
 
-Codescribe supports local speech recognition and optional configured services.
+x9bus supports local speech recognition and optional configured services.
 This document describes the data boundaries implemented in the app and website;
 see the [public privacy page](https://codescribe.vetcoders.io/privacy/).
 
@@ -33,7 +33,7 @@ are separate network operations.
 
 Built-in remote providers use HTTPS. A custom endpoint uses the transport the
 user configures. Data retention depends on the selected service and account
-contract; Codescribe does not promise one retention period for all providers.
+contract; x9bus does not promise one retention period for all providers.
 Choosing a local AI endpoint keeps that inference on the selected local service,
 but does not disable update checks or other independently configured services.
 
@@ -97,7 +97,7 @@ erase their records.
 
 ## Source availability
 
-Codescribe is source-available under FSL-1.1-ALv2. The
+x9bus is source-available under FSL-1.1-ALv2. The
 [repository](https://github.com/vetcoders/codescribe) contains the implementation;
 source availability does not by itself certify an installed artifact or a
 provider's behavior.
