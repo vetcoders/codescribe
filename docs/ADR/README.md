@@ -86,6 +86,9 @@ rules that keep agents from re-proposing rejected designs. Every record states
 - [Glass contract: native materials, chrome and reading surfaces](2026-11-08-WINDOW_GLASS_OWNERSHIP.md):
   accepted product requirements, ownership, STOP rule, current construction,
   optical/performance evidence and open acceptance checks.
+- [Glass integration checkpoint — 2026-11-09](../GLASS_INTEGRATION_HANDOFF.md):
+  dated source lineage, accepted Agent repair, verification limits and
+  continuation handoff; the glass contract above remains authoritative.
 
 | ADR                                                                                                    | Status                                      | Summary                                                                                                                             | Revisit if                                                                             |
 | ------------------------------------------------------------------------------------------------------ | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
