@@ -267,75 +267,23 @@ final class OverlayResizePreviewTests: XCTestCase {
     XCTAssertEqual(resizedBacking.configuration, backing.configuration)
     XCTAssertTrue(
       resizedBacking.configuration.opaque, "Respect the source override, not desktop defaults")
-    let bitmap = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: root.bounds))
-    let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
-    root.displayIfNeeded()
-    let beforeLayers = root.layer?.sublayers?.count ?? 0
+    // Verify the complete native backdrop owner. A flattened render of the
+    // whole AppKit tree replays foreground drawing into a shared export context;
+    // it is not a WindowServer-composition oracle. Foreground alpha/painting
+    // has separate regression cases, and the real gesture has GUI acceptance.
     root.window?.displayIfNeeded()
     CATransaction.flush()
-    // Composite the native layers as the window does. Recursive cacheDisplay
-    // flattens a transparent child's clear into its siblings' drawing context.
-    let layer = try XCTUnwrap(root.layer)
-    print(
-      "RESIZE_OPAQUE_DIAGNOSTIC layersBefore=\(beforeLayers) layersAfter=\(layer.sublayers?.count ?? 0)"
-    )
+    let bitmap = try XCTUnwrap(
+      resizedBacking.bitmapImageRepForCachingDisplay(in: resizedBacking.bounds))
+    let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
+    let layer = try XCTUnwrap(resizedBacking.layer)
+    XCTAssertNotNil(drawing.layer)
+    XCTAssertFalse(drawing.layer === layer, "Foreground clearing owns a separate backing store")
     let clip = context.cgContext.boundingBoxOfClipPath
     context.cgContext.scaleBy(
-      x: clip.width / root.bounds.width, y: clip.height / root.bounds.height)
+      x: clip.width / resizedBacking.bounds.width, y: clip.height / resizedBacking.bounds.height)
     layer.render(in: context.cgContext)
     context.flushGraphics()
-    func describe(_ view: NSView) -> String {
-      "\(type(of: view)) frame=\(view.frame) hidden=\(view.isHidden) alpha=\(view.alphaValue) "
-        + "layerFrame=\(String(describing: view.layer?.frame)) "
-        + "layerBounds=\(String(describing: view.layer?.bounds)) "
-        + "opacity=\(String(describing: view.layer?.opacity)) "
-        + "background=\(String(describing: view.layer?.backgroundColor))"
-    }
-    print("RESIZE_OPAQUE_DIAGNOSTIC clip=\(clip) bitmap=\(bitmap.pixelsWide)x\(bitmap.pixelsHigh)")
-    for item in descendants(root) { print("RESIZE_OPAQUE_DIAGNOSTIC \(describe(item))") }
-    context.cgContext.setFillColor(NSColor.red.cgColor)
-    context.cgContext.fill(NSRect(x: 1, y: 1, width: 2, height: 2))
-    context.flushGraphics()
-    print(
-      "RESIZE_OPAQUE_DIAGNOSTIC writerControl=\(String(describing: bitmap.colorAt(x: 2, y: 2)))")
-    func renderControl(_ paint: (CGContext) -> Void) throws -> CGFloat {
-      let target = try XCTUnwrap(
-        NSBitmapImageRep(
-          bitmapDataPlanes: nil, pixelsWide: 500, pixelsHigh: 360,
-          bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-          colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
-      let graphics = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: target))
-      graphics.cgContext.clear(CGRect(x: 0, y: 0, width: 500, height: 360))
-      paint(graphics.cgContext)
-      graphics.flushGraphics()
-      return try XCTUnwrap(target.colorAt(x: 400, y: 180)).alphaComponent
-    }
-    let writer = try renderControl {
-      $0.setFillColor(NSColor.red.cgColor)
-      $0.fill(CGRect(x: 0, y: 0, width: 500, height: 360))
-    }
-    let veilLayer = try XCTUnwrap(resizedBacking.subviews.last?.layer)
-    let veilAlpha = try renderControl { veilLayer.render(in: $0) }
-    let rootAlpha = try renderControl { layer.render(in: $0) }
-    let backgroundLayer = try XCTUnwrap(resizedBacking.layer)
-    let backgroundAlpha = try renderControl { backgroundLayer.render(in: $0) }
-    let drawingWasHidden = drawing.isHidden
-    drawing.isHidden = true
-    CATransaction.flush()
-    let rootWithoutForeground = try renderControl { layer.render(in: $0) }
-    drawing.isHidden = drawingWasHidden
-    CATransaction.flush()
-    print(
-      "RESIZE_OPAQUE_DIAGNOSTIC backgroundOwner=\(backgroundAlpha) rootWithoutForeground=\(rootWithoutForeground)"
-    )
-    print("RESIZE_OPAQUE_DIAGNOSTIC samePoint writer=\(writer) veil=\(veilAlpha) root=\(rootAlpha)")
-    func layers(_ layer: CALayer, depth: Int = 0) {
-      print(
-        "RESIZE_OPAQUE_DIAGNOSTIC layer depth=\(depth) type=\(type(of: layer)) frame=\(layer.frame) hidden=\(layer.isHidden) children=\(layer.sublayers?.count ?? 0)"
-      )
-      for child in layer.sublayers ?? [] { layers(child, depth: depth + 1) }
-    }
-    layers(layer)
     let addedArea = try XCTUnwrap(
       bitmap.colorAt(
         x: bitmap.pixelsWide * 4 / 5, y: bitmap.pixelsHigh / 2))

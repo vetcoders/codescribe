@@ -70,7 +70,7 @@ struct OverlayCanvasBackdrop: View {
   /// 2026-10-14 still took the page's brightness; the macOS Liquid Glass slider
   /// does not darken it.
   ///
-  /// The veil is a SwiftUI layer above the glass, not the glass's `tintColor`:
+  /// The veil is a separate layer owned with the glass, not its `tintColor`:
   /// Liquid Glass drops its tint and brightens when the window is not key, so a
   /// tinted sheet read #09 active and #50 inactive on the same wizard (Maciej's
   /// screenshots, 2026-10-15 17:36). A layer above the glass keeps 84 % of the
