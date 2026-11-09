@@ -75,7 +75,8 @@ final class AgentContextCardFollowUpTests: XCTestCase {
     // where the unclipped content would continue) closes it.
     let number = window.windowNumber
     XCTAssertTrue(
-      card.handle(.init(windowNumber: number, kind: .click(NSPoint(x: visible.midX, y: visible.midY))))
+      card.handle(
+        .init(windowNumber: number, kind: .click(NSPoint(x: visible.midX, y: visible.midY))))
     )
     XCTAssertTrue(card.isOpen)
     let below = NSPoint(x: visible.midX, y: max(1, visible.minY - 4))
@@ -127,7 +128,8 @@ final class AgentContextCardFollowUpTests: XCTestCase {
   func testContextButtonKeepsAVisibleFocusRing() throws {
     let source = try productionSource("Screens/AgentChat/AgentContextPanel.swift")
     let start = try XCTUnwrap(source.range(of: "struct AgentContextToggle: View {"))
-    let end = try XCTUnwrap(source.range(of: "// MARK: - Context card", range: start.upperBound..<source.endIndex))
+    let end = try XCTUnwrap(
+      source.range(of: "// MARK: - Context card", range: start.upperBound..<source.endIndex))
     let toggle = String(source[start.lowerBound..<end.lowerBound])
     XCTAssertTrue(toggle.contains(".csFocusRing(cornerRadius: CSRadius.window)"))
     XCTAssertFalse(toggle.contains(".buttonStyle(.borderless)"), "no style shadows the ring")
@@ -138,7 +140,8 @@ final class AgentContextCardFollowUpTests: XCTestCase {
     let source = try productionSource("Screens/AgentChat/AgentContextPanel.swift")
     XCTAssertTrue(source.contains(".allowsHitTesting(presenter.isOpen)"))
     XCTAssertTrue(source.contains(".accessibilityHidden(!presenter.isOpen)"))
-    XCTAssertTrue(source.contains(".accessibilityAction(.escape) { presenter.close(.accessibility) }"))
+    XCTAssertTrue(
+      source.contains(".accessibilityAction(.escape) { presenter.close(.accessibility) }"))
   }
 
   // MARK: - Fixtures

@@ -16,8 +16,9 @@ final class PermissionPresentationTests: XCTestCase {
       XCTAssertEqual(kind.statusLabel(for: .denied, locale: en), "No access", "\(kind)")
       XCTAssertEqual(kind.statusLabel(for: .denied, locale: pl), "Brak dostępu", "\(kind)")
     }
-    for kind in [PermissionKind.microphone, .speechRecognition, .inputMonitoring, .spotifyAutomation]
-    {
+    for kind in [
+      PermissionKind.microphone, .speechRecognition, .inputMonitoring, .spotifyAutomation,
+    ] {
       XCTAssertEqual(kind.statusLabel(for: .denied, locale: en), "Denied", "\(kind)")
       XCTAssertEqual(kind.statusLabel(for: .denied, locale: pl), "Odmówiono", "\(kind)")
     }

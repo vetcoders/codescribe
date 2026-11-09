@@ -491,7 +491,8 @@ private struct OnboardingPermissionRow: View {
       localized: LocalizedStringResource(
         "Open System Settings for \(kind.displayName(locale: model.interfaceLocale))",
         locale: model.interfaceLocale,
-        comment: "VoiceOver label of the row's System Settings action; the placeholder is a macOS privacy scope"
+        comment:
+          "VoiceOver label of the row's System Settings action; the placeholder is a macOS privacy scope"
       ))
   }
 

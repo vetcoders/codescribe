@@ -151,7 +151,8 @@ final class PermissionAndContextCardEvidenceTests: XCTestCase {
       window.close()
     }
     let host = NSHostingView(
-      rootView: root
+      rootView:
+        root
         .environment(\.colorScheme, dark ? .dark : .light)
         .transaction { $0.disablesAnimations = true }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
