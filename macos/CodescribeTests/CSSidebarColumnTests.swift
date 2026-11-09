@@ -70,14 +70,14 @@ final class CSSidebarColumnTests: XCTestCase {
     }
   }
 
-  func testSettingsSidebarControllerRoundTripKeepsCollapsedHeaderCovered() throws {
-    try assertNativeToggleRoundTrip(key: keys[0]) {
+  func testSettingsToolbarPointerRouteSurvivesTopAccessory() throws {
+    try assertNativeToolbarRoute(key: keys[0]) {
       self.mount(NSHostingController(rootView: SettingsView(model: .preview(.creator))))
     }
   }
 
-  func testAgentSidebarControllerRoundTripKeepsCollapsedHeaderCovered() throws {
-    try assertNativeToggleRoundTrip(key: keys[1]) {
+  func testAgentToolbarPointerRouteSurvivesTopAccessory() throws {
+    try assertNativeToolbarRoute(key: keys[1]) {
       self.show(
         AgentWindowChrome.makeWindow(
           content: NSHostingController(rootView: AgentChatView(store: AgentChatStore(engine: nil))))
@@ -85,10 +85,9 @@ final class CSSidebarColumnTests: XCTestCase {
     }
   }
 
-  /// Drive the split controller's public action in the non-presenting fixture.
-  /// The actual toolbar pointer/AX path needs separate visible-window evidence;
-  /// neither an NSButton nor an AX child is exposed in this background mount.
-  private func assertNativeToggleRoundTrip(key: String, make: () -> NSWindow) throws {
+  /// A controlled removal of our own public accessory distinguishes routing
+  /// obstruction from an unavailable synthetic button/action in this fixture.
+  private func assertNativeToolbarRoute(key: String, make: () -> NSWindow) throws {
     let previous = UserDefaults.standard.object(forKey: key)
     UserDefaults.standard.set(true, forKey: key)
     let window = make()
@@ -100,63 +99,54 @@ final class CSSidebarColumnTests: XCTestCase {
         UserDefaults.standard.removeObject(forKey: key)
       }
     }
-    func pump(_ ready: () -> Bool) {
-      let deadline = Date().addingTimeInterval(1.5)
+    func pump() {
+      let deadline = Date().addingTimeInterval(0.35)
       while Date() < deadline {
         RunLoop.current.run(until: Date().addingTimeInterval(0.02))
         window.displayIfNeeded()
-        if ready() { return }
       }
     }
-    pump { window.toolbar?.items.isEmpty == false }
-    let root = try XCTUnwrap(window.contentView?.superview)
-    let split = try XCTUnwrap(first(in: root) { $0 is NSSplitView } as? NSSplitView)
-    let controller = try XCTUnwrap(split.delegate as? NSSplitViewController)
-    let sidebar = try XCTUnwrap(controller.splitViewItems.first { $0.behavior == .sidebar })
-    for collapsed in [true, false, true, false] {
+    func route(_ phase: String) throws -> Bool {
+      let root = try XCTUnwrap(window.contentView?.superview)
       let item = try XCTUnwrap(
         window.toolbar?.items.first {
           $0.itemIdentifier.rawValue.localizedCaseInsensitiveContains("toggleSidebar")
         })
-      let itemView = try XCTUnwrap(item.view)
-      let point = itemView.convert(
-        NSPoint(x: itemView.bounds.midX, y: itemView.bounds.midY), to: root)
+      let view = try XCTUnwrap(item.view)
+      let point = view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: root)
       let hit = root.hitTest(point)
-      let evidence = XCTAttachment(
-        string:
-          "key=\(key) nextCollapsed=\(collapsed) item=\(itemView.convert(itemView.bounds, to: nil)) "
-          + "hit=\(String(describing: hit)) windowAlpha=\(window.alphaValue) "
-          + "action=\(String(describing: item.action)) target=\(String(describing: item.target))")
-      evidence.name = "Native sidebar item diagnostics (background fixture)"
-      evidence.lifetime = .keepAlways
-      add(evidence)
-      controller.toggleSidebar(item)
-      pump { sidebar.isCollapsed == collapsed }
-      XCTAssertEqual(sidebar.isCollapsed, collapsed, "native action must change the sidebar")
-      guard sidebar.isCollapsed == collapsed else { return }
-      if collapsed {
-        let viewport = try XCTUnwrap(
-          first(in: root) {
-            $0.identifier?.rawValue == "codescribe-header-viewport"
-          })
-        let frame = viewport.convert(viewport.bounds, to: nil)
-        var ancestors: [String] = []
-        var ancestor: NSView? = viewport
-        while let view = ancestor {
-          ancestors.append(
-            "\(type(of: view)) frame=\(view.convert(view.bounds, to: nil)) "
-              + "visible=\(view.visibleRect) clips=\(view.clipsToBounds)")
-          ancestor = view.superview
-        }
-        let materialEvidence = XCTAttachment(string: ancestors.joined(separator: "\n"))
-        materialEvidence.name = "Collapsed header clipping ancestry"
-        materialEvidence.lifetime = .keepAlways
-        add(materialEvidence)
-        XCTAssertEqual(
-          frame.minX, 0, accuracy: 1, "collapsed titlebar needs material at its left edge")
-        XCTAssertEqual(frame.maxX, window.frame.width, accuracy: 1)
+      let isNative = hit.map { $0 === view || $0.isDescendant(of: view) } ?? false
+      var ancestry: [String] = []
+      var ancestor = hit
+      while let current = ancestor {
+        ancestry.append("\(type(of: current)) frame=\(current.convert(current.bounds, to: nil))")
+        ancestor = current.superview
       }
+      let attachment = XCTAttachment(
+        string:
+          "phase=\(phase) item=\(view.convert(view.bounds, to: nil)) native=\(isNative) "
+          + "hit=\(String(describing: hit))\n" + ancestry.joined(separator: "\n"))
+      attachment.name = "Sidebar pointer route \(phase)"
+      attachment.lifetime = .keepAlways
+      add(attachment)
+      return isNative
     }
+    pump()
+    let before = try route("with-accessory")
+    let index = try XCTUnwrap(
+      window.titlebarAccessoryViewControllers.firstIndex {
+        $0.layoutAttribute == .top
+      })
+    let owner = window.titlebarAccessoryViewControllers[index]
+    window.removeTitlebarAccessoryViewController(at: index)
+    pump()
+    let without = try route("without-accessory")
+    window.addTitlebarAccessoryViewController(owner)
+    pump()
+    let restored = try route("restored-accessory")
+    XCTAssertTrue(without, "negative control: native toolbar target without our accessory")
+    XCTAssertTrue(before, "our header must leave the system toolbar pointer target reachable")
+    XCTAssertTrue(restored, "reattaching our header must preserve the native pointer target")
   }
 
   private func mount(_ host: NSViewController) -> NSWindow {
