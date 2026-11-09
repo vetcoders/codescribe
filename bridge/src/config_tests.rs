@@ -1418,9 +1418,9 @@ mod settings_snapshot_tests {
         );
         let env_path = Config::env_path();
         if env_path.exists() {
-            let legacy = Config::parse_env_file(&env_path).expect("parse optional env file");
+            let dotenv = Config::parse_env_file(&env_path).expect("parse optional env file");
             assert!(
-                !legacy.contains_key("AGENT_WORKSPACE_ROOTS"),
+                !dotenv.contains_key("AGENT_WORKSPACE_ROOTS"),
                 "promoted roots must not be rewritten to the reinstall-fragile .env store"
             );
         }
@@ -1604,7 +1604,7 @@ mod runtime_snapshot_cache_tests {
                             // Pin the .env path to a nonexistent file inside the
                             // sandbox. Removing the key instead would let loads
                             // fall back to the real ~/.codescribe/.env, whose
-                            // legacy keys (e.g. AGENT_WORKSPACE_ROOTS) make any
+                            // retired keys (e.g. AGENT_WORKSPACE_ROOTS) make any
                             // concurrent non-serial config load run migration
                             // writes against whatever settings.json
                             // CODESCRIBE_DATA_DIR currently names — ours

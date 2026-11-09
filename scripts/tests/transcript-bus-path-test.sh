@@ -103,11 +103,11 @@ assert_path \
   XDG_STATE_HOME="$TEST_ROOT/state-root" \
   CODESCRIBE_TRANSCRIPT_BUS_PATH="~/direct/transcript.jsonl"
 
-# The legacy alias is deliberately ignored because the Rust runtime never
+# The retired alias is deliberately ignored because the Rust runtime never
 # reads it. Accepting it in a guard would inspect a different authority file.
 assert_path \
   "$TEST_HOME/.codescribe/transcript-events.jsonl" \
-  CODESCRIBE_TRANSCRIPT_BUS="$TEST_ROOT/legacy.jsonl"
+  CODESCRIBE_TRANSCRIPT_BUS="$TEST_ROOT/retired.jsonl"
 
 # Runtime bootstrap reads the optional dotenv before resolving the Bus. These
 # keys are env-managed (not promoted settings), so the guard must see them too.
@@ -385,7 +385,7 @@ assert_reads_idle "closed" CODESCRIBE_TRANSCRIPT_BUS_PATH="$CLOSED_BUS"
 
 # With no canonical Bus the predicate reads idle. A live file reachable only
 # through the retired alias must not redirect it.
-cp "$OPEN_BUS" "$TEST_ROOT/legacy.jsonl"
-assert_reads_idle "retired-alias" CODESCRIBE_TRANSCRIPT_BUS="$TEST_ROOT/legacy.jsonl"
+cp "$OPEN_BUS" "$TEST_ROOT/retired.jsonl"
+assert_reads_idle "retired-alias" CODESCRIBE_TRANSCRIPT_BUS="$TEST_ROOT/retired.jsonl"
 
 echo "transcript-bus-path: ok"

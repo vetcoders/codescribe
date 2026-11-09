@@ -65,7 +65,7 @@ final class OverlayLayoutContractTests: XCTestCase {
     XCTAssertTrue(OverlayIntercomPresentationMode.vertical.contract is FiszkiLayoutContract)
   }
 
-  /// The contract mirrors the legacy `enabled` + `layout` pair exactly, for
+  /// The contract mirrors the stored `enabled` + `layout` pair exactly, for
   /// every combination the preference can store.
   func testContractMatchesLegacyPreferenceSemantics() {
     for (enabled, layout) in [(false, OverlayIntercomLayout.horizontal), (false, .vertical),

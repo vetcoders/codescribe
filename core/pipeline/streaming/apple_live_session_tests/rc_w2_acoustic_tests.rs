@@ -2069,7 +2069,7 @@ fn a_sealed_occurrence_refuses_a_later_machine_observation() {
 /// carry it, not through the receipt struct alone.
 #[test]
 fn a_legacy_skip_verdict_still_reaches_ledger_admission() {
-    let mut state = measured_state_for("rc-w2-legacy-skip", 2.0);
+    let mut state = measured_state_for("rc-w2-skip-observation", 2.0);
     let (tx, _rx) = mpsc::unbounded_channel();
     let occurrence =
         OccurrenceIdentity::new(state.session_id.clone(), state.capture_epoch, 0, at(1.0));
@@ -2205,7 +2205,7 @@ fn a_legacy_skip_verdict_still_reaches_ledger_admission() {
             .text_of(&occurrence)
             .map(str::to_owned),
         Some("odzysk".to_string()),
-        "the payload a legacy skip 'rejected' is the one the ledger admitted"
+        "the skipped payload is the one the ledger admitted"
     );
     assert_eq!(state.tail_patch_jobs_applied, 1);
     assert_eq!(state.tail_patch_jobs_skipped, 0);
@@ -2356,7 +2356,7 @@ fn epoch_gate_sleeps_after_threshold_silence_and_wakes_with_preroll() {
     );
 }
 
-/// `utterance_silence_sec: None` is the legacy contract: one stream for the
+/// `utterance_silence_sec: None` keeps one stream for the
 /// whole take, no epoch decisions at all.
 #[test]
 fn epoch_gate_disarmed_never_sleeps_or_wakes() {
@@ -2393,7 +2393,7 @@ fn epoch_gate_without_speech_edges_falls_back_to_one_stream() {
     assert!(EpochGate::for_session(RATE, Some(5.0), true).is_armed());
     assert!(
         !EpochGate::for_session(RATE, None, true).is_armed(),
-        "no hands-free silence setting is still the legacy single stream"
+        "no hands-free silence setting keeps one continuous stream"
     );
 }
 
@@ -2421,7 +2421,7 @@ fn epoch_shift_lifts_segment_times_onto_the_session_pcm_clock() {
     );
     let LiveStreamEvent::PhraseFinal { segments, .. } = &shifted[0] else {
         panic!(
-            "the shim must preserve the event kind, got {:?}",
+            "time translation must preserve the event kind, got {:?}",
             shifted[0]
         );
     };
@@ -2436,8 +2436,8 @@ fn epoch_shift_lifts_segment_times_onto_the_session_pcm_clock() {
 
 /// Ported from the parked `mod tests`
 /// (`epoch_shift_at_base_zero_is_identity`): the first epoch is based at 0,
-/// so the shim is the identity there. This is what keeps a single-epoch
-/// take bit-identical to the legacy one-stream lane.
+/// so time translation is the identity there. This keeps a single-epoch
+/// take bit-identical to one continuous stream.
 #[test]
 fn epoch_shift_at_base_zero_is_identity() {
     let shifted = shift_events(
@@ -2467,14 +2467,14 @@ fn epoch_shift_at_base_zero_is_identity() {
     );
     let LiveStreamEvent::Partial { segments, .. } = &shifted[0] else {
         panic!(
-            "the shim must preserve the event kind, got {:?}",
+            "time translation must preserve the event kind, got {:?}",
             shifted[0]
         );
     };
     assert_eq!((segments[0].start_ts, segments[0].end_ts), (0.5, 2.0));
     let LiveStreamEvent::Summary { segments, .. } = &shifted[1] else {
         panic!(
-            "the shim must preserve the event kind, got {:?}",
+            "time translation must preserve the event kind, got {:?}",
             shifted[1]
         );
     };
