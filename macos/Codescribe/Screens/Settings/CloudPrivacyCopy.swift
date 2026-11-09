@@ -109,7 +109,7 @@ enum CloudPrivacyCopy {
   /// recognition, so the refusal does not trade one cloud for another.
   static let withoutConsent = String(
     localized:
-      "Without your consent Codescribe does not use the cloud and keeps dictating with Apple on-device; no local model is loaded in its place."
+      "Without your consent x9bus does not use the cloud and keeps dictating with Apple on-device; no local model is loaded in its place."
   )
 
   /// Choosing a mode is not an install.

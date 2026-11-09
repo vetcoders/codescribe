@@ -1,74 +1,110 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
-    "NSAppleEventsUsageDescription" : {
-      "comment" : "System permission prompt: why Codescribe sends Apple Events to other apps.",
+    "CFBundleDisplayName" : {
+      "comment" : "Product name shown by Finder, Dock, Launchpad and System Settings. Identical in every language.",
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Codescribe uses Apple Events to deliver transcribed text and lower Spotify's volume during recording, then restore it."
+            "value" : "x9bus"
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Codescribe używa Apple Events do wstawiania transkrybowanego tekstu oraz ściszania Spotify podczas nagrywania i przywracania jego głośności."
+            "value" : "x9bus"
+          }
+        }
+      }
+    },
+    "CFBundleName" : {
+      "comment" : "Product name in the app menu, About panel and standard menu items. Identical in every language.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "x9bus"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "x9bus"
+          }
+        }
+      }
+    },
+    "NSAppleEventsUsageDescription" : {
+      "comment" : "System permission prompt: why x9bus sends Apple Events to other apps.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "x9bus uses Apple Events to deliver transcribed text and lower Spotify's volume during recording, then restore it."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "x9bus używa Apple Events do wstawiania transkrybowanego tekstu oraz ściszania Spotify podczas nagrywania i przywracania jego głośności."
           }
         }
       }
     },
     "NSMicrophoneUsageDescription" : {
-      "comment" : "System permission prompt: why Codescribe needs the microphone.",
+      "comment" : "System permission prompt: why x9bus needs the microphone.",
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Codescribe transcribes your speech locally with on-device Whisper."
+            "value" : "x9bus transcribes your speech locally with on-device Whisper."
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Codescribe transkrybuje Twoją mowę lokalnie za pomocą modelu Whisper działającego na tym Macu."
+            "value" : "x9bus transkrybuje Twoją mowę lokalnie za pomocą modelu Whisper działającego na tym Macu."
           }
         }
       }
     },
     "NSScreenCaptureUsageDescription" : {
-      "comment" : "System permission prompt: why Codescribe captures the screen.",
+      "comment" : "System permission prompt: why x9bus captures the screen.",
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Codescribe captures the screen when you ask the assistant to look at what is currently on screen."
+            "value" : "x9bus captures the screen when you ask the assistant to look at what is currently on screen."
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Codescribe przechwytuje obraz ekranu tylko wtedy, gdy poprosisz Agenta, aby sprawdził, co jest na ekranie."
+            "value" : "x9bus przechwytuje obraz ekranu tylko wtedy, gdy poprosisz Agenta, aby sprawdził, co jest na ekranie."
           }
         }
       }
     },
     "NSSpeechRecognitionUsageDescription" : {
-      "comment" : "System permission prompt: why Codescribe uses on-device speech recognition.",
+      "comment" : "System permission prompt: why x9bus uses on-device speech recognition.",
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Codescribe uses on-device speech recognition (including Polish) to turn your dictation into text without sending audio to the cloud."
+            "value" : "x9bus uses on-device speech recognition (including Polish) to turn your dictation into text without sending audio to the cloud."
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Codescribe korzysta z rozpoznawania mowy na urządzeniu, także w języku polskim, aby zamieniać dyktowanie na tekst bez wysyłania nagrań do chmury."
+            "value" : "x9bus korzysta z rozpoznawania mowy na urządzeniu, także w języku polskim, aby zamieniać dyktowanie na tekst bez wysyłania nagrań do chmury."
           }
         }
       }

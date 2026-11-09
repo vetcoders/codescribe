@@ -113,7 +113,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
       String(
         localized: "Transcript display pace", comment: "Settings tab blurb: Dictation › Preview")
     case .dictationPrivacy:
-      String(localized: "See when Codescribe uses online services.")
+      String(localized: "See when x9bus uses online services.")
     }
   }
 

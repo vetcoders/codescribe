@@ -48,10 +48,10 @@ final class AboutPanelPresentationTests: XCTestCase {
     XCTAssertEqual(items.count, 1)
     XCTAssertEqual(item.key, "CODESCRIBE_STT_ENGINE")
     XCTAssertEqual(
-      item.impact, "Codescribe does not read this entry in ~/.codescribe/.env, so it has no effect.")
+      item.impact, "x9bus does not read this entry in ~/.codescribe/.env, so it has no effect.")
     XCTAssertEqual(
       item.action,
-      "No action is required. To clear this notice, delete or correct the line, then restart Codescribe."
+      "No action is required. To clear this notice, delete or correct the line, then restart x9bus."
     )
     XCTAssertEqual(notice.raw, raw, "the original line survives for diagnostics")
   }
@@ -80,7 +80,7 @@ final class AboutPanelPresentationTests: XCTestCase {
     )
     XCTAssertEqual(
       item.action,
-      "To use the level from Settings, remove FORMATTING_LEVEL from the launch environment or from ~/.codescribe/.env, then restart Codescribe."
+      "To use the level from Settings, remove FORMATTING_LEVEL from the launch environment or from ~/.codescribe/.env, then restart x9bus."
     )
   }
 
@@ -101,7 +101,7 @@ final class AboutPanelPresentationTests: XCTestCase {
     XCTAssertEqual(refused.subtitle, "See what to correct")
     XCTAssertEqual(
       refused.outcomeLine,
-      "Codescribe left the file unchanged. Correct the file named in the record below, then restart Codescribe."
+      "x9bus left the file unchanged. Correct the file named in the record below, then restart x9bus."
     )
   }
 

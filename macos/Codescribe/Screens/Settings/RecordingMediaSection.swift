@@ -61,7 +61,7 @@ struct RecordingMediaSection: View {
     case .manualOverride:
       "Your manual Spotify volume change takes priority."
     case .permissionRequired:
-      "Allow Codescribe to control Spotify in Privacy & Security > Automation."
+      "Allow x9bus to control Spotify in Privacy & Security > Automation."
     case .unavailable:
       "Spotify volume could not be adjusted. Recording continues."
     }

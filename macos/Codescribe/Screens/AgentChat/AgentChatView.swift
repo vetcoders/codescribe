@@ -831,7 +831,7 @@ enum ThreadExportOutcome: Equatable {
           comment: "Placeholders: file name, then folder path")
     case .failed(let threadTitle, _):
       return Text(
-        "Codescribe couldn't write the Markdown file for “\(threadTitle)”. Check the Transcripts folder shown under Settings › User › Local data, then try again.",
+        "x9bus couldn't write the Markdown file for “\(threadTitle)”. Check the Transcripts folder shown under Settings › User › Local data, then try again.",
         comment: "The placeholder is the thread title")
     }
   }

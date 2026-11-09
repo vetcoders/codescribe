@@ -2439,7 +2439,7 @@ final class SettingsViewModel: ObservableObject {
         localized: "API keys will also be removed from Keychain and are not recoverable from Trash."
       )
     }
-    return message + " " + String(localized: "Codescribe will relaunch as a fresh install.")
+    return message + " " + String(localized: "x9bus will relaunch as a fresh install.")
   }
 
   /// Move all local app data to Trash through the Rust bridge, clear the app's
@@ -2875,7 +2875,7 @@ final class SettingsViewModel: ObservableObject {
   var interfaceLanguageRestartExplanation: String {
     String(
       localized: LocalizedStringResource(
-        "Codescribe will restart in this language. Your recording must finish first.",
+        "x9bus will restart in this language. Your recording must finish first.",
         locale: interfaceLanguage.locale,
         comment: "Interface language restart explanation in Settings"))
   }

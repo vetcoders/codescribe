@@ -25,7 +25,10 @@
 %@ · %@ / %@ MB
 
 # Product, vendor and tool names.
-Codescribe - %@
+# InfoPlist.xcstrings: the localized bundle names carry the product name x9bus.
+CFBundleDisplayName
+CFBundleName
+x9bus - %@
 AICX MCP
 Loctree MCP
 

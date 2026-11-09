@@ -245,7 +245,7 @@ extension CsCapabilityRow {
   var localizedHeadline: String {
     switch (tier.lowercased(), provider.lowercased()) {
     case ("native", _):
-      return String(localized: "Built-in Codescribe tool")
+      return String(localized: "Built-in x9bus tool")
     case ("enhanced", "loctree"):
       return String(localized: "Built-in tool, enriched by Loctree while it is healthy")
     case ("enhanced", "intellij"):
@@ -488,7 +488,7 @@ struct AgentStatusSummary: Equatable {
       facts.append(
         String(
           localized: "\(Int(tools)) built-in tools",
-          comment: "Plural: how many tools are compiled into Codescribe"))
+          comment: "Plural: how many tools are compiled into x9bus"))
     }
     if let roots = row(.workspaceRoots)?.count {
       facts.append(

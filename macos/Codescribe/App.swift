@@ -412,7 +412,7 @@ enum InterfaceLanguageRestartError: Error, Equatable {
     case .unavailable:
       return String(
         localized: LocalizedStringResource(
-          "Codescribe could not restart. Your language choice is saved; quit and reopen the app to apply it.",
+          "x9bus could not restart. Your language choice is saved; quit and reopen the app to apply it.",
           locale: locale, comment: "Language restart unavailable; saved preference remains valid"))
     }
   }
@@ -827,6 +827,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
         .foregroundColor: NSColor.secondaryLabelColor,
       ]
+      let tagline =
+        String(
+          localized: "Voice orchestration for your agent fleet.",
+          comment: "About panel: the product descriptor under the name x9bus") + "\n\n"
       let provenance =
         String(
           localized: "Commit: \(commit)",
@@ -836,7 +840,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
           localized: "Built: \(builtAt)",
           comment: "About panel provenance line; %@ is the build timestamp"
         ) + "\n\n"
-      let credits = NSMutableAttributedString(string: provenance, attributes: mono)
+      let credits = NSMutableAttributedString(
+        string: tagline,
+        attributes: [
+          .font: NSFont.systemFont(ofSize: 12, weight: .medium),
+          .foregroundColor: NSColor.labelColor,
+        ])
+      credits.append(NSAttributedString(string: provenance, attributes: mono))
       let privacy = NSAttributedString(
         string: String(
           localized: "Privacy Policy",

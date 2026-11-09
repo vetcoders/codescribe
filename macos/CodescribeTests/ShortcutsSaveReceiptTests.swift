@@ -239,7 +239,7 @@ final class ShortcutsSaveReceiptTests: XCTestCase {
     let note = CsHotkeyConflict(
       gestureLabel: "Hold Fn/Globe",
       message:
-        "Fn/Globe tap is configured by macOS. Codescribe Hold Fn may intercept that tap while dictation is active; this is informational, not a shortcut conflict.",
+        "Fn/Globe tap is configured by macOS. x9bus Hold Fn may intercept that tap while dictation is active; this is informational, not a shortcut conflict.",
       blocking: false
     )
 
@@ -322,7 +322,7 @@ final class ShortcutsSaveReceiptTests: XCTestCase {
     let fnNote = CsHotkeyConflict(
       gestureLabel: "Hold Fn/Globe",
       message:
-        "Fn/Globe tap is configured by macOS. Codescribe Hold Fn may intercept that tap while dictation is active; this is informational, not a shortcut conflict.",
+        "Fn/Globe tap is configured by macOS. x9bus Hold Fn may intercept that tap while dictation is active; this is informational, not a shortcut conflict.",
       blocking: false)
     let engine = RecordingHotkeysEngine(conflicts: { candidate in
       let formatting = candidate.first { $0.mode == .formatting }?.binding

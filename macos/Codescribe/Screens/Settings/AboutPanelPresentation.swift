@@ -93,10 +93,10 @@ struct ConfigRepairNotice: Equatable {
     reviewKeys.count == 1
       ? String(
         localized: "Stale configuration entry — does not affect operation",
-        comment: "About panel: one .env entry Codescribe does not read")
+        comment: "About panel: one .env entry x9bus does not read")
       : String(
         localized: "Stale configuration entries — do not affect operation",
-        comment: "About panel: several .env entries Codescribe does not read")
+        comment: "About panel: several .env entries x9bus does not read")
   }
 
   /// The collapsed row: what happened.
@@ -152,18 +152,18 @@ struct ConfigRepairNotice: Equatable {
             comment: "About panel: FORMATTING_LEVEL override differs from the saved level"),
           action: String(
             localized:
-              "To use the level from Settings, remove \(key) from the launch environment or from \(envFile), then restart Codescribe.",
+              "To use the level from Settings, remove \(key) from the launch environment or from \(envFile), then restart x9bus.",
             comment:
               "About panel: how to drop the override; the key and the file path stay verbatim"))
       }
       return ReviewItem(
         key: key,
         impact: String(
-          localized: "Codescribe does not read this entry in \(envFile), so it has no effect.",
+          localized: "x9bus does not read this entry in \(envFile), so it has no effect.",
           comment: "About panel: an unknown or retired .env key; the file path stays verbatim"),
         action: String(
           localized:
-            "No action is required. To clear this notice, delete or correct the line, then restart Codescribe.",
+            "No action is required. To clear this notice, delete or correct the line, then restart x9bus.",
           comment: "About panel: what to do about an unread .env key"))
     }
   }
@@ -176,12 +176,12 @@ struct ConfigRepairNotice: Equatable {
     case .repaired:
       return String(
         localized:
-          "Codescribe corrected settings.json when it started. The record below names the number of changes and any backup it kept.",
+          "x9bus corrected settings.json when it started. The record below names the number of changes and any backup it kept.",
         comment: "About panel: a completed launch repair; settings.json stays verbatim")
     case .unresolved:
       return String(
         localized:
-          "Codescribe left the file unchanged. Correct the file named in the record below, then restart Codescribe.",
+          "x9bus left the file unchanged. Correct the file named in the record below, then restart x9bus.",
         comment: "About panel: a refused launch repair")
     }
   }

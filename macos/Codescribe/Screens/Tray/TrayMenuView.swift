@@ -41,7 +41,7 @@ struct TrayMenuView: View {
         }
       }
       TrayRow(icon: .help, title: String(localized: "Help")) { viewModel.onHelp() }
-      TrayRow(icon: .info, title: String(localized: "About codescribe")) { viewModel.onAbout() }
+      TrayRow(icon: .info, title: String(localized: "About x9bus")) { viewModel.onAbout() }
 
       TrayDivider()
       TrayRow(

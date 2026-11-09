@@ -209,12 +209,12 @@ final class SettingsInterfaceLanguageTests: XCTestCase {
       english.selectInterfaceLanguage(.polish)
       XCTAssertEqual(english.interfaceLanguageRestartTitle, "Uruchom ponownie")
       XCTAssertTrue(
-        english.interfaceLanguageRestartExplanation.hasPrefix("Codescribe uruchomi się"))
+        english.interfaceLanguageRestartExplanation.hasPrefix("x9bus uruchomi się"))
 
       let polish = model(preferences: preferences, processLanguage: .polish)
       polish.selectInterfaceLanguage(.english)
       XCTAssertEqual(polish.interfaceLanguageRestartTitle, "Restart now")
-      XCTAssertTrue(polish.interfaceLanguageRestartExplanation.hasPrefix("Codescribe will restart"))
+      XCTAssertTrue(polish.interfaceLanguageRestartExplanation.hasPrefix("x9bus will restart"))
     }
   }
 

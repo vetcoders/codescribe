@@ -186,14 +186,14 @@ func audioReadinessSteps(
       tone: .fallback,
       title: String(localized: "Allow microphone access"),
       detail: String(
-        localized: "macOS has not granted Codescribe access to the selected input yet.")
+        localized: "macOS has not granted x9bus access to the selected input yet.")
     )
   case .denied:
     microphone = AudioInputDisplayState(
       tone: .unavailable,
       title: String(localized: "Microphone access is off"),
       detail: String(
-        localized: "Enable Codescribe in System Settings › Privacy & Security › Microphone.")
+        localized: "Enable x9bus in System Settings › Privacy & Security › Microphone.")
     )
   }
 
@@ -214,7 +214,7 @@ func audioReadinessSteps(
         tone: .healthy,
         title: String(localized: "Microphone calibrated"),
         detail: String(
-          localized: "Codescribe has measured how loudly you speak into this microphone.")
+          localized: "x9bus has measured how loudly you speak into this microphone.")
       )
     } else if admission.ready {
       calibration = AudioReadinessStep(
@@ -719,7 +719,7 @@ func audioInputDisplayState(_ snapshot: CsAudioInputSnapshot) -> AudioInputDispl
         comment: "The placeholder is an input device name"),
       detail: String(
         localized:
-          "Saved: \(saved). The launch environment pins AUDIO_INPUT_DEVICE to another input, which stays active until Codescribe starts without that override.",
+          "Saved: \(saved). The launch environment pins AUDIO_INPUT_DEVICE to another input, which stays active until x9bus starts without that override.",
         comment: "The placeholder is the saved input device name")
     )
   }
@@ -744,7 +744,7 @@ func audioInputDisplayState(_ snapshot: CsAudioInputSnapshot) -> AudioInputDispl
         localized: "System default: \(runtimeDevice)",
         comment: "The placeholder is an input device name"),
       detail: String(
-        localized: "Codescribe records on whichever microphone macOS currently uses.")
+        localized: "x9bus records on whichever microphone macOS currently uses.")
     )
   }
 
@@ -1083,7 +1083,7 @@ struct AudioPanel: View {
           .font(SettingsScale.controlLabel)
           .foregroundStyle(Color.primary)
       }
-      .accessibilityHint("Grants Codescribe access to the microphone selected above")
+      .accessibilityHint("Grants x9bus access to the microphone selected above")
     case .calibrate:
       SettingsChipButton(
         model.calibrationPending ? "Measuring…" : "Calibrate",

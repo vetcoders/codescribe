@@ -626,7 +626,7 @@
         }
       }
     },
-    "%lld archived recordings share this exact transcript, so Codescribe cannot tell which one is this take." : {
+    "%lld archived recordings share this exact transcript, so x9bus cannot tell which one is this take." : {
       "comment" : "Dictionary: why Retranscribe and playback are disabled; plural",
       "localizations" : {
         "en" : {
@@ -635,13 +635,13 @@
               "one" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "%lld archived recording shares this exact transcript, so Codescribe cannot tell which one is this take."
+                  "value" : "%lld archived recording shares this exact transcript, so x9bus cannot tell which one is this take."
                 }
               },
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "%lld archived recordings share this exact transcript, so Codescribe cannot tell which one is this take."
+                  "value" : "%lld archived recordings share this exact transcript, so x9bus cannot tell which one is this take."
                 }
               }
             }
@@ -653,25 +653,25 @@
               "few" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "%lld archiwalne nagrania mają dokładnie taką transkrypcję, więc Codescribe nie wie, które z nich jest tym nagraniem."
+                  "value" : "%lld archiwalne nagrania mają dokładnie taką transkrypcję, więc x9bus nie wie, które z nich jest tym nagraniem."
                 }
               },
               "many" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "%lld archiwalnych nagrań ma dokładnie taką transkrypcję, więc Codescribe nie wie, które z nich jest tym nagraniem."
+                  "value" : "%lld archiwalnych nagrań ma dokładnie taką transkrypcję, więc x9bus nie wie, które z nich jest tym nagraniem."
                 }
               },
               "one" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "%lld archiwalne nagranie ma dokładnie taką transkrypcję, więc Codescribe nie wie, które z nich jest tym nagraniem."
+                  "value" : "%lld archiwalne nagranie ma dokładnie taką transkrypcję, więc x9bus nie wie, które z nich jest tym nagraniem."
                 }
               },
               "other" : {
                 "stringUnit" : {
                   "state" : "translated",
-                  "value" : "%lld archiwalnego nagrania ma dokładnie taką transkrypcję, więc Codescribe nie wie, które z nich jest tym nagraniem."
+                  "value" : "%lld archiwalnego nagrania ma dokładnie taką transkrypcję, więc x9bus nie wie, które z nich jest tym nagraniem."
                 }
               }
             }
@@ -732,7 +732,7 @@
       }
     },
     "%lld built-in tools" : {
-      "comment" : "Plural: how many tools are compiled into Codescribe",
+      "comment" : "Plural: how many tools are compiled into x9bus",
       "localizations" : {
         "pl" : {
           "variations" : {
@@ -2255,12 +2255,12 @@
         }
       }
     },
-    "About codescribe" : {
+    "About x9bus" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "O codescribe"
+            "value" : "O x9bus"
           }
         }
       }
@@ -3261,23 +3261,6 @@
         }
       }
     },
-    "Allow Codescribe to control Spotify in Privacy & Security > Automation." : {
-      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Allow Codescribe to control Spotify in Privacy & Security > Automation."
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pozwól Codescribe sterować Spotify w ustawieniach Prywatność i ochrona > Automatyzacja."
-          }
-        }
-      }
-    },
     "Allow Spotify control" : {
       "comment" : "Explicit action that asks macOS for Spotify Automation access without changing volume",
       "localizations" : {
@@ -3326,6 +3309,23 @@
         }
       }
     },
+    "Allow x9bus to control Spotify in Privacy & Security > Automation." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allow x9bus to control Spotify in Privacy & Security > Automation."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pozwól x9bus sterować Spotify w ustawieniach Prywatność i ochrona > Automatyzacja."
+          }
+        }
+      }
+    },
     "Allowed folders" : {
       "localizations" : {
         "pl" : {
@@ -3360,13 +3360,13 @@
         }
       }
     },
-    "Already turned on? macOS may apply it only after you quit and reopen Codescribe." : {
+    "Already turned on? macOS may apply it only after you quit and reopen x9bus." : {
       "comment" : "Permission still missing after a request; macOS may need the app to restart",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Już włączone? macOS może to uwzględnić dopiero po zamknięciu i ponownym otwarciu Codescribe."
+            "value" : "Już włączone? macOS może to uwzględnić dopiero po zamknięciu i ponownym otwarciu x9bus."
           }
         }
       }
@@ -4109,12 +4109,12 @@
       }
     },
     "Backend unavailable!" : {
-      "comment" : "Menu bar tooltip: the Codescribe core is not running",
+      "comment" : "Menu bar tooltip: the x9bus core is not running",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Główny moduł Codescribe jest niedostępny."
+            "value" : "Główny moduł x9bus jest niedostępny."
           }
         }
       }
@@ -4280,16 +4280,6 @@
         }
       }
     },
-    "Built-in Codescribe tool" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wbudowane narzędzie Codescribe"
-          }
-        }
-      }
-    },
     "Built-in rule" : {
       "comment" : "The tool's own rule turned its category's Allow into Ask",
       "localizations" : {
@@ -4328,6 +4318,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Narzędzie wbudowane, wzbogacane przez Loctree, gdy działa"
+          }
+        }
+      }
+    },
+    "Built-in x9bus tool" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wbudowane narzędzie x9bus"
           }
         }
       }
@@ -5743,285 +5743,6 @@
         }
       }
     },
-    "Codescribe - %@" : {
-      "comment" : "Menu bar tooltip; Codescribe is the product name, %@ is a status phrase",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Codescribe - %@"
-          }
-        }
-      }
-    },
-    "Codescribe also refreshes its own commands in ~/.local/bin; a command it did not install is never overwritten. No listener is started." : {
-      "comment" : "Install confirmation; ~/.local/bin is a folder path — keep it verbatim",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Codescribe odświeża też własne polecenia w ~/.local/bin; polecenia, którego nie zainstalował, nigdy nie nadpisuje. Nasłuch nie jest uruchamiany."
-          }
-        }
-      }
-    },
-    "Codescribe corrected settings.json when it started. The record below names the number of changes and any backup it kept." : {
-      "comment" : "About panel: a completed launch repair; settings.json stays verbatim",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Codescribe poprawił plik settings.json przy uruchomieniu. Zapis poniżej podaje liczbę zmian i ewentualną kopię zapasową."
-          }
-        }
-      }
-    },
-    "Codescribe could not restart. Your language choice is saved; quit and reopen the app to apply it." : {
-      "comment" : "Language restart unavailable; saved preference remains valid",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Nie udało się ponownie uruchomić Codescribe. Wybrany język został zapisany. Zamknij aplikację i otwórz ją ponownie, aby go zastosować."
-          }
-        }
-      }
-    },
-    "Codescribe couldn't write the Markdown file for “%@”. Check the Transcripts folder shown under Settings › User › Local data, then try again." : {
-      "comment" : "The placeholder is the thread title",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nie udało się zapisać pliku Markdown dla „%@”. Sprawdź wskazany w ustawieniach folder Transkrypcje i spróbuj ponownie."
-          }
-        }
-      }
-    },
-    "Codescribe does not read this entry in %@, so it has no effect." : {
-      "comment" : "About panel: an unknown or retired .env key; the file path stays verbatim",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Codescribe nie odczytuje tego wpisu z pliku %@, więc nie ma on żadnego wpływu."
-          }
-        }
-      }
-    },
-    "Codescribe goes back to Basic mode and Agent mode stops working. The key is deleted from this Mac's Keychain. To activate again you will need the key itself, which Codescribe cannot show, or a new key from the license page." : {
-      "comment" : "License card: what removing the key does, in the confirmation",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Codescribe wróci do trybu podstawowego, a tryb agentowy przestanie działać. Klucz zostanie usunięty z Pęku kluczy na tym Macu. Żeby znów aktywować licencję, potrzebny będzie sam klucz (Codescribe go nie pokaże) albo nowy klucz ze strony licencji."
-          }
-        }
-      }
-    },
-    "Codescribe has measured how loudly you speak into this microphone." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Poziom Twojej mowy na tym mikrofonie został już zmierzony."
-          }
-        }
-      }
-    },
-    "Codescribe is not ready yet." : {
-      "comment" : "Setup chapter heading when something required for transcription is missing",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Codescribe nie jest jeszcze gotowy."
-          }
-        }
-      }
-    },
-    "Codescribe is ready." : {
-      "comment" : "Setup chapter heading",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Codescribe jest gotowy."
-          }
-        }
-      }
-    },
-    "Codescribe left the file unchanged. Correct the file named in the record below, then restart Codescribe." : {
-      "comment" : "About panel: a refused launch repair",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Codescribe nie zmienił pliku. Popraw plik wskazany w zapisie poniżej i uruchom Codescribe ponownie."
-          }
-        }
-      }
-    },
-    "Codescribe license key" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Klucz licencyjny Codescribe"
-          }
-        }
-      }
-    },
-    "Codescribe menu" : {
-      "comment" : "Accessibility title of the menu bar panel; Codescribe is the product name",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Menu Codescribe"
-          }
-        }
-      }
-    },
-    "Codescribe quit while this message was being sent. It may already have reached the agent; check before sending it again." : {
-      "comment" : "A held message returned to the composer after a crash during its handoff",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Codescribe zamknął się w trakcie wysyłania tej wiadomości. Mogła już dotrzeć do agenta; sprawdź, zanim wyślesz ją ponownie."
-          }
-        }
-      }
-    },
-    "Codescribe records on whichever microphone macOS currently uses." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Codescribe nagrywa z mikrofonu aktualnie używanego przez macOS."
-          }
-        }
-      }
-    },
-    "Codescribe reviews all %lld saved corrections and the suggested rules, then adds the new vocabulary rules it can derive to Dictionary rules. Existing rules, corrections and their history stay as they are." : {
-      "comment" : "Dictionary: confirmation before Learn from corrections; plural",
-      "localizations" : {
-        "pl" : {
-          "variations" : {
-            "plural" : {
-              "few" : {
-                "stringUnit" : {
-                  "state" : "needs_review",
-                  "value" : "Codescribe przegląda wszystkie %lld zapisane poprawki oraz proponowane reguły i dodaje do Reguł słownika nowe reguły słownictwa, które potrafi z nich wyprowadzić. Istniejące reguły, poprawki i ich historia pozostają bez zmian."
-                }
-              },
-              "many" : {
-                "stringUnit" : {
-                  "state" : "needs_review",
-                  "value" : "Codescribe przegląda wszystkie %lld zapisanych poprawek oraz proponowane reguły i dodaje do Reguł słownika nowe reguły słownictwa, które potrafi z nich wyprowadzić. Istniejące reguły, poprawki i ich historia pozostają bez zmian."
-                }
-              },
-              "one" : {
-                "stringUnit" : {
-                  "state" : "needs_review",
-                  "value" : "Codescribe przegląda %lld zapisaną poprawkę oraz proponowane reguły i dodaje do Reguł słownika nowe reguły słownictwa, które potrafi z nich wyprowadzić. Istniejące reguły, poprawki i ich historia pozostają bez zmian."
-                }
-              },
-              "other" : {
-                "stringUnit" : {
-                  "state" : "needs_review",
-                  "value" : "Codescribe przegląda wszystkie %lld zapisane poprawki oraz proponowane reguły i dodaje do Reguł słownika nowe reguły słownictwa, które potrafi z nich wyprowadzić. Istniejące reguły, poprawki i ich historia pozostają bez zmian."
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "Codescribe skill installed" : {
-      "comment" : "Detail under a coding-agent card: the Codescribe skill is in this client's skills folder",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Skill Codescribe zainstalowany"
-          }
-        }
-      }
-    },
-    "Codescribe will add the codescribe skill bundled in this app to %@. Nothing is replaced: if that folder already exists and Codescribe did not install it, installation stops without changing it." : {
-      "comment" : "Install confirmation; the placeholder is a folder path such as ~/.codex/skills/codescribe. 'codescribe' is the skill's name — keep it verbatim",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Codescribe doda skill codescribe dołączony do tej aplikacji do %@. Nic nie zostanie zastąpione: jeśli ten folder już istnieje, a nie zainstalował go Codescribe, instalacja zatrzyma się bez zmian."
-          }
-        }
-      }
-    },
-    "Codescribe will not overwrite %@: %@" : {
-      "comment" : "First placeholder is a file path, second a technical diagnostic",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Codescribe will not overwrite %1$@: %2$@"
-          }
-        },
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Codescribe nie nadpisze %1$@: %2$@"
-          }
-        }
-      }
-    },
-    "Codescribe will relaunch as a fresh install." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Codescribe uruchomi się ponownie jak po pierwszej instalacji."
-          }
-        }
-      }
-    },
-    "Codescribe will replace the skill folder it installed at %@ with the codescribe skill bundled in this app. Changes made inside that folder are not kept." : {
-      "comment" : "Update confirmation; the placeholder is a folder path such as ~/.codex/skills/codescribe. 'codescribe' is the skill's name — keep it verbatim",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Codescribe zastąpi zainstalowany przez siebie folder skilla w %@ skillem codescribe dołączonym do tej aplikacji. Zmiany wprowadzone w tym folderze nie zostaną zachowane."
-          }
-        }
-      }
-    },
-    "Codescribe will restart in this language and resume setup." : {
-      "comment" : "Whole-app language application explanation",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Codescribe uruchomi się ponownie w wybranym języku i wznowi konfigurację."
-          }
-        }
-      }
-    },
-    "Codescribe will restart in this language. Your recording must finish first." : {
-      "comment" : "Interface language restart explanation in Settings",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Codescribe uruchomi się ponownie w tym języku. Najpierw zakończ nagrywanie."
-          }
-        }
-      }
-    },
     "Codex Cloud thread: open it in ChatGPT" : {
       "comment" : "Codex focus button help: a Codex Cloud thread the desktop app cannot open",
       "localizations" : {
@@ -6408,7 +6129,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Połącz Codescribe z agentem"
+            "value" : "Połącz x9bus z agentem"
           }
         }
       }
@@ -8530,22 +8251,22 @@
         }
       }
     },
-    "Enable Codescribe in System Settings › Privacy & Security › Microphone." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Włącz Codescribe w Ustawieniach systemowych › Prywatność i ochrona › Mikrofon."
-          }
-        }
-      }
-    },
     "Enable this server" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Włącz ten serwer"
+          }
+        }
+      }
+    },
+    "Enable x9bus in System Settings › Privacy & Security › Microphone." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Włącz x9bus w Ustawieniach systemowych › Prywatność i ochrona › Mikrofon."
           }
         }
       }
@@ -9153,13 +8874,13 @@
         }
       }
     },
-    "Follow macOS, or keep Codescribe light or dark on its own." : {
+    "Follow macOS, or keep x9bus light or dark on its own." : {
       "comment" : "Appearance row explanation",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Podążaj za macOS albo trzymaj Codescribe na stałe w jasnym lub ciemnym."
+            "value" : "Podążaj za macOS albo trzymaj x9bus na stałe w jasnym lub ciemnym."
           }
         }
       }
@@ -9648,12 +9369,12 @@
         }
       }
     },
-    "Grants Codescribe access to the microphone selected above" : {
+    "Grants x9bus access to the microphone selected above" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Przyznaje Codescribe dostęp do mikrofonu wybranego powyżej"
+            "value" : "Przyznaje x9bus dostęp do mikrofonu wybranego powyżej"
           }
         }
       }
@@ -9789,12 +9510,12 @@
         }
       }
     },
-    "Hold before sending to Codescribe Bus" : {
+    "Hold before sending to x9bus" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Czas na korektę przed wysłaniem (Codescribe Bus)"
+            "value" : "Czas na korektę przed wysłaniem (x9bus)"
           }
         }
       }
@@ -10039,28 +9760,6 @@
         }
       }
     },
-    "Install the Codescribe skill" : {
-      "comment" : "Detail under a coding-agent card: Continue installs the Codescribe skill for this client",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zainstaluj skill Codescribe"
-          }
-        }
-      }
-    },
-    "Install the Codescribe skill for %@?" : {
-      "comment" : "Confirmation title; the placeholder is a coding-agent client such as Codex",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zainstalować skill Codescribe dla %@?"
-          }
-        }
-      }
-    },
     "Install the agent bridge to attach files." : {
       "localizations" : {
         "pl" : {
@@ -10117,6 +9816,28 @@
         }
       }
     },
+    "Install the x9bus skill" : {
+      "comment" : "Detail under a coding-agent card: Continue installs the x9bus skill for this client",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zainstaluj skill x9bus"
+          }
+        }
+      }
+    },
+    "Install the x9bus skill for %@?" : {
+      "comment" : "Confirmation title; the placeholder is a coding-agent client such as Codex",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zainstalować skill x9bus dla %@?"
+          }
+        }
+      }
+    },
     "Installed" : {
       "comment" : "Whisper tab status: on disk, not in memory yet\nWhisper weights are available locally",
       "localizations" : {
@@ -10134,7 +9855,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zainstalowano z Codescribe. Oryginalny folder zachowano tutaj:\n%@\nOdśwież skille w swojej aplikacji agenta, a następnie wywołaj /codescribe. Przekazywanie głosu nie zostało jeszcze zweryfikowane."
+            "value" : "Zainstalowano z aplikacji x9bus. Oryginalny folder zachowano tutaj:\n%@\nOdśwież skille w swojej aplikacji agenta, a następnie wywołaj /codescribe. Przekazywanie głosu nie zostało jeszcze zweryfikowane."
           }
         }
       }
@@ -10794,19 +10515,19 @@
         }
       }
     },
-    "Let Codescribe lower Spotify by 70 percent for the whole recording and restore it afterwards. Dictation works without this permission." : {
+    "Let x9bus lower Spotify by 70 percent for the whole recording and restore it afterwards. Dictation works without this permission." : {
       "comment" : "Optional Automation grant for Spotify volume control, without pausing playback",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Let Codescribe lower Spotify by 70 percent for the whole recording and restore it afterwards. Dictation works without this permission."
+            "value" : "Let x9bus lower Spotify by 70 percent for the whole recording and restore it afterwards. Dictation works without this permission."
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Codescribe ścisza Spotify o 70% na cały czas nagrania, a potem przywraca głośność. Dyktowanie działa także bez tego uprawnienia."
+            "value" : "x9bus ścisza Spotify o 70% na cały czas nagrania, a potem przywraca głośność. Dyktowanie działa także bez tego uprawnienia."
           }
         }
       }
@@ -11588,12 +11309,12 @@
         }
       }
     },
-    "Microphone access is off for Codescribe. Enable it in System Settings › Privacy & Security › Microphone." : {
+    "Microphone access is off for x9bus. Enable it in System Settings › Privacy & Security › Microphone." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Codescribe nie ma dostępu do mikrofonu. Włącz go w Ustawieniach systemowych › Prywatność i ochrona › Mikrofon."
+            "value" : "x9bus nie ma dostępu do mikrofonu. Włącz go w Ustawieniach systemowych › Prywatność i ochrona › Mikrofon."
           }
         }
       }
@@ -12277,12 +11998,12 @@
         }
       }
     },
-    "Native capabilities are served by Codescribe's built-in tools." : {
+    "Native capabilities are served by x9bus's built-in tools." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Możliwości natywne obsługują wbudowane narzędzia Codescribe."
+            "value" : "Możliwości natywne obsługują wbudowane narzędzia x9bus."
           }
         }
       }
@@ -12549,13 +12270,13 @@
         }
       }
     },
-    "No action is required. To clear this notice, delete or correct the line, then restart Codescribe." : {
+    "No action is required. To clear this notice, delete or correct the line, then restart x9bus." : {
       "comment" : "About panel: what to do about an unread .env key",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Nie musisz nic robić. Aby usunąć to ostrzeżenie, usuń lub popraw ten wiersz i uruchom Codescribe ponownie."
+            "value" : "Nie musisz nic robić. Aby usunąć to ostrzeżenie, usuń lub popraw ten wiersz i uruchom x9bus ponownie."
           }
         }
       }
@@ -12582,12 +12303,12 @@
         }
       }
     },
-    "No agents connected. To connect an agent to Codescribe, run the `codescribe` skill in its session." : {
+    "No agents connected. To connect an agent to x9bus, run the `codescribe` skill in its session." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Brak podłączonych agentów. Aby połączyć agenta z Codescribe, uruchom skill `codescribe` w jego sesji."
+            "value" : "Brak podłączonych agentów. Aby połączyć agenta z x9bus, uruchom skill `codescribe` w jego sesji."
           }
         }
       }
@@ -14014,19 +13735,19 @@
         }
       }
     },
-    "Open Spotify, then allow Codescribe to lower its volume while recording. If access was denied, enable Spotify under Codescribe in Privacy & Security > Automation." : {
+    "Open Spotify, then allow x9bus to lower its volume while recording. If access was denied, enable Spotify under x9bus in Privacy & Security > Automation." : {
       "comment" : "Optional Spotify control permission; Spotify must be running to ask macOS",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Open Spotify, then allow Codescribe to lower its volume while recording. If access was denied, enable Spotify under Codescribe in Privacy & Security > Automation."
+            "value" : "Open Spotify, then allow x9bus to lower its volume while recording. If access was denied, enable Spotify under x9bus in Privacy & Security > Automation."
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Otwórz Spotify, a następnie zezwól Codescribe na ściszanie muzyki podczas nagrywania. Jeśli odmówiono dostępu, włącz Spotify dla Codescribe w Ustawieniach systemowych → Prywatność i ochrona → Automatyzacja."
+            "value" : "Otwórz Spotify, a następnie zezwól x9bus na ściszanie muzyki podczas nagrywania. Jeśli odmówiono dostępu, włącz Spotify dla x9bus w Ustawieniach systemowych → Prywatność i ochrona → Automatyzacja."
           }
         }
       }
@@ -15572,7 +15293,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Sprawdzanie ustawienia Codescribe i ewentualnego wymuszenia z konfiguracji zaawansowanej…"
+            "value" : "Sprawdzanie ustawienia x9bus i ewentualnego wymuszenia z konfiguracji zaawansowanej…"
           }
         }
       }
@@ -16523,12 +16244,12 @@
         }
       }
     },
-    "Replace a manually installed Codescribe skill?" : {
+    "Replace a manually installed x9bus skill?" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zastąpić ręcznie zainstalowany skill Codescribe?"
+            "value" : "Zastąpić ręcznie zainstalowany skill x9bus?"
           }
         }
       }
@@ -16669,7 +16390,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Wymagane do zatwierdzania wypowiedzi. Zapisywane w ustawieniach Codescribe."
+            "value" : "Wymagane do zatwierdzania wypowiedzi. Zapisywane w ustawieniach x9bus."
           }
         }
       }
@@ -17537,13 +17258,13 @@
         }
       }
     },
-    "Saved: %@. The launch environment pins AUDIO_INPUT_DEVICE to another input, which stays active until Codescribe starts without that override." : {
+    "Saved: %@. The launch environment pins AUDIO_INPUT_DEVICE to another input, which stays active until x9bus starts without that override." : {
       "comment" : "The placeholder is the saved input device name",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zapisano: %@.\n\nŚrodowisko uruchomienia ustawia AUDIO_INPUT_DEVICE na inne urządzenie. Pozostaje ono aktywne, dopóki Codescribe nie zostanie uruchomiony bez tego nadpisania."
+            "value" : "Zapisano: %@.\n\nŚrodowisko uruchomienia ustawia AUDIO_INPUT_DEVICE na inne urządzenie. Pozostaje ono aktywne, dopóki x9bus nie zostanie uruchomiony bez tego nadpisania."
           }
         }
       }
@@ -17716,12 +17437,12 @@
         }
       }
     },
-    "See when Codescribe uses online services." : {
+    "See when x9bus uses online services." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Sprawdź, kiedy Codescribe korzysta z usług online."
+            "value" : "Sprawdź, kiedy x9bus korzysta z usług online."
           }
         }
       }
@@ -18972,13 +18693,13 @@
     "Speak in. Code out." : {
       "shouldTranslate" : false
     },
-    "Speak normally for about ten seconds while Codescribe measures your microphone. The audio is not kept." : {
+    "Speak normally for about ten seconds while x9bus measures your microphone. The audio is not kept." : {
       "comment" : "Setup calibration instruction shown with the Calibrate microphone button",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Mów normalnie przez około dziesięć sekund, a Codescribe zmierzy Twój mikrofon. Nagranie nie jest zachowywane."
+            "value" : "Mów normalnie przez około dziesięć sekund, a x9bus zmierzy Twój mikrofon. Nagranie nie jest zachowywane."
           }
         }
       }
@@ -19073,12 +18794,12 @@
         }
       }
     },
-    "Speech Recognition is off for Codescribe — enable it in System Settings › Privacy & Security › Speech Recognition" : {
+    "Speech Recognition is off for x9bus — enable it in System Settings › Privacy & Security › Speech Recognition" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Codescribe nie ma uprawnienia „Rozpoznanie mowy” — włącz je w Ustawieniach systemowych › Prywatność i ochrona › Rozpoznanie mowy"
+            "value" : "x9bus nie ma uprawnienia „Rozpoznanie mowy” — włącz je w Ustawieniach systemowych › Prywatność i ochrona › Rozpoznanie mowy"
           }
         }
       }
@@ -19467,7 +19188,7 @@
       }
     },
     "Stale configuration entries — do not affect operation" : {
-      "comment" : "About panel: several .env entries Codescribe does not read",
+      "comment" : "About panel: several .env entries x9bus does not read",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -19478,7 +19199,7 @@
       }
     },
     "Stale configuration entry — does not affect operation" : {
-      "comment" : "About panel: one .env entry Codescribe does not read",
+      "comment" : "About panel: one .env entry x9bus does not read",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -20588,27 +20309,6 @@
         }
       }
     },
-    "The Codescribe skill folder for %@ will be moved to a retained backup beside it, then replaced with the copy bundled in this app. Your other skills and agent configuration are not changed. No listener will be started." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Obecny skill Codescribe dla %@ zostanie zachowany jako kopia zapasowa, a następnie zastąpiony wersją dołączoną do tej aplikacji.\nPozostałe skille i ustawienia agenta pozostaną bez zmian. Instalacja nie uruchomi nasłuchiwania."
-          }
-        }
-      }
-    },
-    "The Codescribe skill lets your coding agent work with Codescribe. Once it is installed, the agent can join the Codescribe Bus under a name of its own, receive what you dictate or type to it, and answer in text or out loud. Installing only adds the skill; a conversation connects when you invoke /codescribe in it." : {
-      "comment" : "Description at the top of the coding-agent card in Settings › Creator. Codescribe Bus is a product name; /codescribe is a command the user types — keep both verbatim",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Skill Codescribe pozwala agentowi do kodowania pracować z Codescribe. Po instalacji agent może dołączyć do Codescribe Bus pod własną nazwą, odbierać to, co do niego dyktujesz lub piszesz, i odpowiadać tekstem albo głosem. Instalacja tylko dodaje skill; rozmowa łączy się, gdy wywołasz w niej /codescribe."
-          }
-        }
-      }
-    },
     "The LOCAL_MODEL environment variable overrides the selected model." : {
       "comment" : "Whisper model picker: an environment variable shadows the saved selection",
       "localizations" : {
@@ -20636,12 +20336,12 @@
         }
       }
     },
-    "The app bundle does not contain the Codescribe agent bridge payload." : {
+    "The app bundle does not contain the x9bus agent bridge payload." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Aplikacja Codescribe nie zawiera komponentu Agent Bridge."
+            "value" : "Aplikacja x9bus nie zawiera komponentu Agent Bridge."
           }
         }
       }
@@ -21112,7 +20812,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ta wersja Codescribe nie zawiera komponentu Agent Bridge."
+            "value" : "Ta wersja x9bus nie zawiera komponentu Agent Bridge."
           }
         }
       }
@@ -21163,6 +20863,27 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Dźwięk widocznego nagrania jest niedostępny"
+          }
+        }
+      }
+    },
+    "The x9bus skill folder for %@ will be moved to a retained backup beside it, then replaced with the copy bundled in this app. Your other skills and agent configuration are not changed. No listener will be started." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Obecny skill x9bus dla %@ zostanie zachowany jako kopia zapasowa, a następnie zastąpiony wersją dołączoną do tej aplikacji.\nPozostałe skille i ustawienia agenta pozostaną bez zmian. Instalacja nie uruchomi nasłuchiwania."
+          }
+        }
+      }
+    },
+    "The x9bus skill lets your coding agent work with x9bus. Once it is installed, the agent can join x9bus under a name of its own, receive what you dictate or type to it, and answer in text or out loud. Installing only adds the skill; a conversation connects when you invoke /codescribe in it." : {
+      "comment" : "Description at the top of the coding-agent card in Settings › Creator. x9bus is a product name; /codescribe is a command the user types — keep both verbatim",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skill x9bus pozwala agentowi do kodowania pracować z x9bus. Po instalacji agent może dołączyć do x9bus pod własną nazwą, odbierać to, co do niego dyktujesz lub piszesz, i odpowiadać tekstem albo głosem. Instalacja tylko dodaje skill; rozmowa łączy się, gdy wywołasz w niej /codescribe."
           }
         }
       }
@@ -21423,12 +21144,12 @@
         }
       }
     },
-    "This turn was restored from history. Codescribe kept the filename but not the bytes or path on disk." : {
+    "This turn was restored from history. x9bus kept the filename but not the bytes or path on disk." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ta wypowiedź została przywrócona z historii. Codescribe zachował nazwę pliku, ale nie jego zawartość ani ścieżkę na dysku."
+            "value" : "Ta wypowiedź została przywrócona z historii. x9bus zachował nazwę pliku, ale nie jego zawartość ani ścieżkę na dysku."
           }
         }
       }
@@ -21438,7 +21159,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Tego typu pliku nie można wyświetlić w Codescribe. Użyj „Otwórz”, aby przekazać plik domyślnej aplikacji systemowej."
+            "value" : "Tego typu pliku nie można wyświetlić w x9bus. Użyj „Otwórz”, aby przekazać plik domyślnej aplikacji systemowej."
           }
         }
       }
@@ -21465,19 +21186,19 @@
         }
       }
     },
-    "To use the level from Settings, remove %@ from the launch environment or from %@, then restart Codescribe." : {
+    "To use the level from Settings, remove %@ from the launch environment or from %@, then restart x9bus." : {
       "comment" : "About panel: how to drop the override; the key and the file path stay verbatim",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "To use the level from Settings, remove %1$@ from the launch environment or from %2$@, then restart Codescribe."
+            "value" : "To use the level from Settings, remove %1$@ from the launch environment or from %2$@, then restart x9bus."
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Aby używać poziomu z Ustawień, usuń %@ ze środowiska uruchomieniowego lub z pliku %@ i uruchom Codescribe ponownie."
+            "value" : "Aby używać poziomu z Ustawień, usuń %@ ze środowiska uruchomieniowego lub z pliku %@ i uruchom x9bus ponownie."
           }
         }
       }
@@ -22203,13 +21924,13 @@
         }
       }
     },
-    "Update the Codescribe skill for %@?" : {
+    "Update the x9bus skill for %@?" : {
       "comment" : "Confirmation title; the placeholder is a coding-agent client such as Codex",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Zaktualizować skill Codescribe dla %@?"
+            "value" : "Zaktualizować skill x9bus dla %@?"
           }
         }
       }
@@ -22567,12 +22288,23 @@
       }
     },
     "Voice conversation with an agent" : {
-      "comment" : "AI models section: how a spoken Codescribe Bus channel session behaves",
+      "comment" : "AI models section: how a spoken x9bus channel session behaves",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Rozmowa głosowa z agentem"
+          }
+        }
+      }
+    },
+    "Voice orchestration for your agent fleet." : {
+      "comment" : "About panel: the product descriptor under the name x9bus",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Głosowa orkiestracja Twojej floty agentów."
           }
         }
       }
@@ -22926,19 +22658,19 @@
         }
       }
     },
-    "What language should Codescribe use?" : {
+    "What language should x9bus use?" : {
       "comment" : "First setup step heading",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "What language should Codescribe use?"
+            "value" : "What language should x9bus use?"
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "W jakim języku chcesz korzystać z Codescribe?"
+            "value" : "W jakim języku chcesz korzystać z x9bus?"
           }
         }
       }
@@ -23116,12 +22848,12 @@
         }
       }
     },
-    "Without your consent Codescribe does not use the cloud and keeps dictating with Apple on-device; no local model is loaded in its place." : {
+    "Without your consent x9bus does not use the cloud and keeps dictating with Apple on-device; no local model is loaded in its place." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Bez Twojej zgody Codescribe nie korzysta z chmury i kontynuuje dyktowanie przez Apple na urządzeniu, bez uruchamiania lokalnego modelu."
+            "value" : "Bez Twojej zgody x9bus nie korzysta z chmury i kontynuuje dyktowanie przez Apple na urządzeniu, bez uruchamiania lokalnego modelu."
           }
         }
       }
@@ -23340,13 +23072,13 @@
         }
       }
     },
-    "You can close this window. Setup resumes here the next time Codescribe starts." : {
+    "You can close this window. Setup resumes here the next time x9bus starts." : {
       "comment" : "Setup Done chapter while not ready: closing keeps setup unfinished",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Możesz zamknąć to okno. Konfiguracja wznowi się tutaj przy następnym uruchomieniu Codescribe."
+            "value" : "Możesz zamknąć to okno. Konfiguracja wznowi się tutaj przy następnym uruchomieniu x9bus."
           }
         }
       }
@@ -23373,13 +23105,13 @@
         }
       }
     },
-    "You speak, Codescribe turns it into text." : {
+    "You speak, x9bus turns it into text." : {
       "comment" : "Operating lane choice detail",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Mówisz, a Codescribe zamienia Twoją wypowiedź w tekst."
+            "value" : "Mówisz, a x9bus zamienia Twoją wypowiedź w tekst."
           }
         }
       }
@@ -23449,13 +23181,13 @@
         }
       }
     },
-    "Your license, Codescribe version, local data and privacy." : {
+    "Your license, x9bus version, local data and privacy." : {
       "comment" : "User panel blurb",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Twoja licencja, wersja Codescribe, lokalne dane i prywatność."
+            "value" : "Twoja licencja, wersja x9bus, lokalne dane i prywatność."
           }
         }
       }
@@ -24141,7 +23873,7 @@
       }
     },
     "creator.agentBridge.confirmInstall" : {
-      "comment" : "Confirms installing the Codescribe skill for one coding-agent client",
+      "comment" : "Confirms installing the x9bus skill for one coding-agent client",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
@@ -24159,7 +23891,7 @@
       }
     },
     "creator.agentBridge.confirmUpdate" : {
-      "comment" : "Confirms updating the Codescribe skill for one coding-agent client",
+      "comment" : "Confirms updating the x9bus skill for one coding-agent client",
       "extractionState" : "extracted_with_value",
       "localizations" : {
         "en" : {
@@ -25054,23 +24786,23 @@
         }
       }
     },
-    "macOS has not granted Codescribe access to the selected input yet." : {
+    "macOS has not granted x9bus access to the selected input yet." : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "macOS nie przyznał jeszcze Codescribe dostępu do wybranego wejścia."
+            "value" : "macOS nie przyznał jeszcze x9bus dostępu do wybranego wejścia."
           }
         }
       }
     },
-    "macOS will not ask again. Turn on Codescribe in System Settings." : {
+    "macOS will not ask again. Turn on x9bus in System Settings." : {
       "comment" : "Denied Microphone or Speech Recognition; System Settings is the macOS app",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "macOS nie zapyta ponownie. Włącz Codescribe w Ustawieniach systemowych."
+            "value" : "macOS nie zapyta ponownie. Włącz x9bus w Ustawieniach systemowych."
           }
         }
       }
@@ -25081,7 +24813,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Znaleziono folder zarządzany przez Codescribe, ale dane instalacji są inne. Po wybraniu „Zaktualizuj skill” folder zostanie ponownie powiązany z instalacją."
+            "value" : "Znaleziono folder zarządzany przez x9bus, ale dane instalacji są inne. Po wybraniu „Zaktualizuj skill” folder zostanie ponownie powiązany z instalacją."
           }
         }
       }
@@ -25092,7 +24824,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Znaleziono folder zarządzany przez Codescribe, ale brakuje danych instalacji lub nie można ich odczytać. Po wybraniu „Zaktualizuj skill” folder zostanie ponownie powiązany z instalacją."
+            "value" : "Znaleziono folder zarządzany przez x9bus, ale brakuje danych instalacji lub nie można ich odczytać. Po wybraniu „Zaktualizuj skill” folder zostanie ponownie powiązany z instalacją."
           }
         }
       }
@@ -25103,7 +24835,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ręczne przejęcie wymaga zwykłego folderu skilla z plikiem SKILL.md, bez znacznika zarządzania przez Codescribe."
+            "value" : "Ręczne przejęcie wymaga zwykłego folderu skilla z plikiem SKILL.md, bez znacznika zarządzania przez x9bus."
           }
         }
       }
@@ -26194,7 +25926,7 @@
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "znaleziono dane instalacji i folder zarządzany przez Codescribe."
+            "value" : "znaleziono dane instalacji i folder zarządzany przez x9bus."
           }
         }
       }
@@ -27369,13 +27101,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "A short Fn press opens the macOS emoji picker or its dictation. Codescribe takes that press first, so the macOS one may not open."
+            "value" : "A short Fn press opens the macOS emoji picker or its dictation. x9bus takes that press first, so the macOS one may not open."
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "Krótkie naciśnięcie Fn otwiera w macOS wybór emoji lub dyktowanie. Codescribe przechwytuje je pierwszy, więc funkcja macOS może się nie uruchomić."
+            "value" : "Krótkie naciśnięcie Fn otwiera w macOS wybór emoji lub dyktowanie. x9bus przechwytuje je pierwszy, więc funkcja macOS może się nie uruchomić."
           }
         }
       }
@@ -28401,6 +28133,285 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "zapis plików"
+          }
+        }
+      }
+    },
+    "x9bus - %@" : {
+      "comment" : "Menu bar tooltip; x9bus is the product name, %@ is a status phrase",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "x9bus - %@"
+          }
+        }
+      }
+    },
+    "x9bus also refreshes its own commands in ~/.local/bin; a command it did not install is never overwritten. No listener is started." : {
+      "comment" : "Install confirmation; ~/.local/bin is a folder path — keep it verbatim",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "x9bus odświeża też własne polecenia w ~/.local/bin; polecenia, którego nie zainstalował, nigdy nie nadpisuje. Nasłuch nie jest uruchamiany."
+          }
+        }
+      }
+    },
+    "x9bus corrected settings.json when it started. The record below names the number of changes and any backup it kept." : {
+      "comment" : "About panel: a completed launch repair; settings.json stays verbatim",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "x9bus poprawił plik settings.json przy uruchomieniu. Zapis poniżej podaje liczbę zmian i ewentualną kopię zapasową."
+          }
+        }
+      }
+    },
+    "x9bus could not restart. Your language choice is saved; quit and reopen the app to apply it." : {
+      "comment" : "Language restart unavailable; saved preference remains valid",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie udało się ponownie uruchomić x9bus. Wybrany język został zapisany. Zamknij aplikację i otwórz ją ponownie, aby go zastosować."
+          }
+        }
+      }
+    },
+    "x9bus couldn't write the Markdown file for “%@”. Check the Transcripts folder shown under Settings › User › Local data, then try again." : {
+      "comment" : "The placeholder is the thread title",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się zapisać pliku Markdown dla „%@”. Sprawdź wskazany w ustawieniach folder Transkrypcje i spróbuj ponownie."
+          }
+        }
+      }
+    },
+    "x9bus does not read this entry in %@, so it has no effect." : {
+      "comment" : "About panel: an unknown or retired .env key; the file path stays verbatim",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "x9bus nie odczytuje tego wpisu z pliku %@, więc nie ma on żadnego wpływu."
+          }
+        }
+      }
+    },
+    "x9bus goes back to Basic mode and Agent mode stops working. The key is deleted from this Mac's Keychain. To activate again you will need the key itself, which x9bus cannot show, or a new key from the license page." : {
+      "comment" : "License card: what removing the key does, in the confirmation",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "x9bus wróci do trybu podstawowego, a tryb agentowy przestanie działać. Klucz zostanie usunięty z Pęku kluczy na tym Macu. Żeby znów aktywować licencję, potrzebny będzie sam klucz (x9bus go nie pokaże) albo nowy klucz ze strony licencji."
+          }
+        }
+      }
+    },
+    "x9bus has measured how loudly you speak into this microphone." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poziom Twojej mowy na tym mikrofonie został już zmierzony."
+          }
+        }
+      }
+    },
+    "x9bus is not ready yet." : {
+      "comment" : "Setup chapter heading when something required for transcription is missing",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "x9bus nie jest jeszcze gotowy."
+          }
+        }
+      }
+    },
+    "x9bus is ready." : {
+      "comment" : "Setup chapter heading",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "x9bus jest gotowy."
+          }
+        }
+      }
+    },
+    "x9bus left the file unchanged. Correct the file named in the record below, then restart x9bus." : {
+      "comment" : "About panel: a refused launch repair",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "x9bus nie zmienił pliku. Popraw plik wskazany w zapisie poniżej i uruchom x9bus ponownie."
+          }
+        }
+      }
+    },
+    "x9bus license key" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klucz licencyjny x9bus"
+          }
+        }
+      }
+    },
+    "x9bus menu" : {
+      "comment" : "Accessibility title of the menu bar panel; x9bus is the product name",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Menu x9bus"
+          }
+        }
+      }
+    },
+    "x9bus quit while this message was being sent. It may already have reached the agent; check before sending it again." : {
+      "comment" : "A held message returned to the composer after a crash during its handoff",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "x9bus zamknął się w trakcie wysyłania tej wiadomości. Mogła już dotrzeć do agenta; sprawdź, zanim wyślesz ją ponownie."
+          }
+        }
+      }
+    },
+    "x9bus records on whichever microphone macOS currently uses." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "x9bus nagrywa z mikrofonu aktualnie używanego przez macOS."
+          }
+        }
+      }
+    },
+    "x9bus reviews all %lld saved corrections and the suggested rules, then adds the new vocabulary rules it can derive to Dictionary rules. Existing rules, corrections and their history stay as they are." : {
+      "comment" : "Dictionary: confirmation before Learn from corrections; plural",
+      "localizations" : {
+        "pl" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "needs_review",
+                  "value" : "x9bus przegląda wszystkie %lld zapisane poprawki oraz proponowane reguły i dodaje do Reguł słownika nowe reguły słownictwa, które potrafi z nich wyprowadzić. Istniejące reguły, poprawki i ich historia pozostają bez zmian."
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "needs_review",
+                  "value" : "x9bus przegląda wszystkie %lld zapisanych poprawek oraz proponowane reguły i dodaje do Reguł słownika nowe reguły słownictwa, które potrafi z nich wyprowadzić. Istniejące reguły, poprawki i ich historia pozostają bez zmian."
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "needs_review",
+                  "value" : "x9bus przegląda %lld zapisaną poprawkę oraz proponowane reguły i dodaje do Reguł słownika nowe reguły słownictwa, które potrafi z nich wyprowadzić. Istniejące reguły, poprawki i ich historia pozostają bez zmian."
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "needs_review",
+                  "value" : "x9bus przegląda wszystkie %lld zapisane poprawki oraz proponowane reguły i dodaje do Reguł słownika nowe reguły słownictwa, które potrafi z nich wyprowadzić. Istniejące reguły, poprawki i ich historia pozostają bez zmian."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "x9bus skill installed" : {
+      "comment" : "Detail under a coding-agent card: the x9bus skill is in this client's skills folder",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skill x9bus zainstalowany"
+          }
+        }
+      }
+    },
+    "x9bus will add the codescribe skill bundled in this app to %@. Nothing is replaced: if that folder already exists and x9bus did not install it, installation stops without changing it." : {
+      "comment" : "Install confirmation; the placeholder is a folder path such as ~/.codex/skills/codescribe. 'codescribe' is the skill's name — keep it verbatim",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "x9bus doda skill codescribe dołączony do tej aplikacji do %@. Nic nie zostanie zastąpione: jeśli ten folder już istnieje, a nie zainstalował go x9bus, instalacja zatrzyma się bez zmian."
+          }
+        }
+      }
+    },
+    "x9bus will not overwrite %@: %@" : {
+      "comment" : "First placeholder is a file path, second a technical diagnostic",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "x9bus will not overwrite %1$@: %2$@"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "x9bus nie nadpisze %1$@: %2$@"
+          }
+        }
+      }
+    },
+    "x9bus will relaunch as a fresh install." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "x9bus uruchomi się ponownie jak po pierwszej instalacji."
+          }
+        }
+      }
+    },
+    "x9bus will replace the skill folder it installed at %@ with the codescribe skill bundled in this app. Changes made inside that folder are not kept." : {
+      "comment" : "Update confirmation; the placeholder is a folder path such as ~/.codex/skills/codescribe. 'codescribe' is the skill's name — keep it verbatim",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "x9bus zastąpi zainstalowany przez siebie folder skilla w %@ skillem codescribe dołączonym do tej aplikacji. Zmiany wprowadzone w tym folderze nie zostaną zachowane."
+          }
+        }
+      }
+    },
+    "x9bus will restart in this language and resume setup." : {
+      "comment" : "Whole-app language application explanation",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "x9bus uruchomi się ponownie w wybranym języku i wznowi konfigurację."
+          }
+        }
+      }
+    },
+    "x9bus will restart in this language. Your recording must finish first." : {
+      "comment" : "Interface language restart explanation in Settings",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "x9bus uruchomi się ponownie w tym języku. Najpierw zakończ nagrywanie."
           }
         }
       }

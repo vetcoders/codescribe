@@ -176,7 +176,7 @@ final class AudioPanelTests: XCTestCase {
         tone: .fallback,
         title: "Currently using: MacBook Pro Microphone",
         detail:
-          "Saved: USB Studio Mic. The launch environment pins AUDIO_INPUT_DEVICE to another input, which stays active until Codescribe starts without that override."
+          "Saved: USB Studio Mic. The launch environment pins AUDIO_INPUT_DEVICE to another input, which stays active until x9bus starts without that override."
       )
     )
   }

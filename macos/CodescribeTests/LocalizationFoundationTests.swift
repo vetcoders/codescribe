@@ -35,6 +35,18 @@ final class LocalizationFoundationTests: XCTestCase {
     }
   }
 
+  /// The product is x9bus on every system surface, while the bundle keeps its
+  /// technical name: LaunchServices shows the localized display name only
+  /// while the raw CFBundleDisplayName equals the bundle's file name.
+  func testProductNameIsLocalizedOverTheTechnicalBundleName() throws {
+    let localized = try XCTUnwrap(app.localizedInfoDictionary)
+    XCTAssertEqual(localized["CFBundleDisplayName"] as? String, "x9bus")
+    XCTAssertEqual(localized["CFBundleName"] as? String, "x9bus")
+    XCTAssertEqual(app.infoDictionary?["CFBundleDisplayName"] as? String, "Codescribe")
+    XCTAssertEqual(app.infoDictionary?["CFBundleName"] as? String, "Codescribe")
+    XCTAssertEqual(app.infoDictionary?["LSHasLocalizedDisplayName"] as? Bool, true)
+  }
+
   /// Counted phrases pick their noun in the catalog, never in code (R4).
   func testPluralVariationsSelectTheNoun() {
     // "%lld tools" is the Tools tab counter; the earlier sample key

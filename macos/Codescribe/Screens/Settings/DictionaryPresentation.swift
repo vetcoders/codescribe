@@ -243,7 +243,7 @@ func retranscribeUnavailableReason(
   case .ambiguous(let count):
     return String(
       localized:
-        "\(count) archived recordings share this exact transcript, so Codescribe cannot tell which one is this take.",
+        "\(count) archived recordings share this exact transcript, so x9bus cannot tell which one is this take.",
       comment: "Dictionary: why Retranscribe and playback are disabled; plural")
   }
 }
@@ -254,7 +254,7 @@ func retranscribeUnavailableReason(
 func learnScopeMessage(corrections: Int) -> String {
   String(
     localized:
-      "Codescribe reviews all \(corrections) saved corrections and the suggested rules, then adds the new vocabulary rules it can derive to Dictionary rules. Existing rules, corrections and their history stay as they are.",
+      "x9bus reviews all \(corrections) saved corrections and the suggested rules, then adds the new vocabulary rules it can derive to Dictionary rules. Existing rules, corrections and their history stay as they are.",
     comment: "Dictionary: confirmation before Learn from corrections; plural")
 }
 

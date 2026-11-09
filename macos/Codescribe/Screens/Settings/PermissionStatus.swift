@@ -86,20 +86,20 @@ enum PermissionKind: String, CaseIterable, Identifiable {
     if self == .spotifyAutomation {
       return String(
         localized: LocalizedStringResource(
-          "Open Spotify, then allow Codescribe to lower its volume while recording. If access was denied, enable Spotify under Codescribe in Privacy & Security > Automation.",
+          "Open Spotify, then allow x9bus to lower its volume while recording. If access was denied, enable Spotify under x9bus in Privacy & Security > Automation.",
           locale: locale,
           comment: "Optional Spotify control permission; Spotify must be running to ask macOS"))
     }
     if state == .denied, self == .microphone || self == .speechRecognition {
       return String(
         localized: LocalizedStringResource(
-          "macOS will not ask again. Turn on Codescribe in System Settings.", locale: locale,
+          "macOS will not ask again. Turn on x9bus in System Settings.", locale: locale,
           comment: "Denied Microphone or Speech Recognition; System Settings is the macOS app"))
     }
     if requested, grantMayNeedReopen {
       return String(
         localized: LocalizedStringResource(
-          "Already turned on? macOS may apply it only after you quit and reopen Codescribe.",
+          "Already turned on? macOS may apply it only after you quit and reopen x9bus.",
           locale: locale,
           comment: "Permission still missing after a request; macOS may need the app to restart"))
     }

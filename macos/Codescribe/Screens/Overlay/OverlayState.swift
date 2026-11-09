@@ -3333,7 +3333,7 @@ final class OverlayState {
       if send.phase == .dispatching {
         textMessageErrors[send.conversationID] = String(
           localized:
-            "Codescribe quit while this message was being sent. It may already have reached the agent; check before sending it again."
+            "x9bus quit while this message was being sent. It may already have reached the agent; check before sending it again."
         )
       }
       if let existing = unadoptedComposerDrafts[send.conversationID] {
@@ -5172,7 +5172,7 @@ final class OverlayState {
       presentTerminalError(
         message: String(
           localized:
-            "Microphone access is off for Codescribe. Enable it in System Settings › Privacy & Security › Microphone."
+            "Microphone access is off for x9bus. Enable it in System Settings › Privacy & Security › Microphone."
         ),
         toast: String(localized: "Microphone access denied")
       )
@@ -6622,7 +6622,7 @@ final class OverlayState {
     if message.contains("speech_auth_denied") || message.contains("speech_auth_restricted") {
       return String(
         localized:
-          "Speech Recognition is off for Codescribe — enable it in System Settings › Privacy & Security › Speech Recognition"
+          "Speech Recognition is off for x9bus — enable it in System Settings › Privacy & Security › Speech Recognition"
       )
     }
     return String(

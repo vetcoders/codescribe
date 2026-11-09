@@ -1774,7 +1774,7 @@ final class SettingsTruthTests: XCTestCase {
       "Moves 5,000 recordings from 42 days, 17 conversations (512.0 MB) to Trash. "
         + "Your assistive.txt, formatting.txt, formatting-smart.txt and formatting-max.txt "
         + "prompts will be preserved. "
-        + "Codescribe will relaunch as a fresh install."
+        + "x9bus will relaunch as a fresh install."
     )
     XCTAssertTrue(resetConfirmationMatches("RESET"))
     XCTAssertFalse(resetConfirmationMatches("reset"))
@@ -1883,7 +1883,7 @@ final class SettingsTruthTests: XCTestCase {
 
     let rows = CsCapabilityRow.sampleMatrix
     XCTAssertEqual(rows[0].localizedTier, "Native")
-    XCTAssertEqual(rows[0].localizedHeadline, "Built-in Codescribe tool")
+    XCTAssertEqual(rows[0].localizedHeadline, "Built-in x9bus tool")
     XCTAssertEqual(rows[0].localizedDetail, "tool: list_directory · source: native")
     XCTAssertEqual(
       rows[1].localizedHeadline, "Built-in tool, enriched by Loctree while it is healthy")
