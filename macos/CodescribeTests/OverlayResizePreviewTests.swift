@@ -272,6 +272,9 @@ final class OverlayResizePreviewTests: XCTestCase {
     // Composite the native layers as the window does. Recursive cacheDisplay
     // flattens a transparent child's clear into its siblings' drawing context.
     let layer = try XCTUnwrap(root.layer)
+    let clip = context.cgContext.boundingBoxOfClipPath
+    context.cgContext.scaleBy(
+      x: clip.width / root.bounds.width, y: clip.height / root.bounds.height)
     layer.render(in: context.cgContext)
     let addedArea = try XCTUnwrap(
       bitmap.colorAt(
