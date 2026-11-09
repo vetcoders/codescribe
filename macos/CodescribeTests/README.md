@@ -14,6 +14,12 @@ real drag; the recorded desktop gesture remains a separate acceptance check.
 The production owner supplies required width and height minima on the public
 hosting content view; it does not restore automatic SwiftUI sizing.
 
+The header frame-mutation diagnostic watches only app-owned material and
+foreground views. It checks repeated native window-update notifications and
+same-screen moves, including fractional origins, with production hosting sizing
+disabled. A pass rules out only frame churn in those probes; it does not prove
+that hover drawing, live resize or the compositor is free of optical artifacts.
+
 ```bash
 make test-swift                                    # whole suite
 make test-swift SWIFT_TEST_ARGS='-only-testing:CodescribeTests/OverlayStateTests'

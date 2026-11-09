@@ -12,6 +12,81 @@ import XCTest
 final class AgentWindowChromeTests: XCTestCase {
   private let sidebarKey = "AgentChat.sidebarExpanded.v1"
 
+  @MainActor
+  private final class FrameMutationProbe: NSObject {
+    var events: [String] = []
+
+    @objc func changed(_ notification: Notification) {
+      guard let view = notification.object as? NSView else { return }
+      events.append("\(view.identifier?.rawValue ?? "unidentified")=\(view.frame)")
+    }
+  }
+
+  /// Bounds stability only. A pass cannot certify compositor pixels or
+  /// pointer-hover drawing; a failure identifies avoidable app-owned churn.
+  func testHeaderFramesStayStableAcrossUpdatesAndWindowMoves() throws {
+    let previous = UserDefaults.standard.object(forKey: sidebarKey)
+    defer { restoreSidebarDefault(previous) }
+    var evidence: [String] = []
+    for expanded in [true, false] {
+      UserDefaults.standard.set(expanded, forKey: sidebarKey)
+      let scale = TextScaleController(key: "AgentWindowChromeTests.frameProbeScale")
+      let root = TextScaleRoot(controller: scale) {
+        AgentChatView(store: AgentChatStore(engine: nil))
+          .environment(\.csReduceTransparencyOverride, false)
+          .environment(\.csContrastOverride, .standard)
+      }
+      let hosting = NSHostingController(rootView: root)
+      hosting.sizingOptions = []
+      let window = AgentWindowChrome.makeWindow(content: hosting)
+      defer {
+        window.orderOut(nil)
+        window.close()
+      }
+      BackgroundTestWindow.present(window)
+      pump(window) {
+        let split = self.splitView(in: window)?.delegate as? NSSplitViewController
+        return split?.splitViewItems.first?.isCollapsed == !expanded
+          && self.rectangularHeaderGlass(in: window) != nil
+      }
+      let theme = try XCTUnwrap(window.contentView?.superview)
+      theme.layoutSubtreeIfNeeded()
+      NotificationCenter.default.post(name: NSWindow.didUpdateNotification, object: window)
+      let probe = FrameMutationProbe()
+      let identifiers = [
+        "codescribe-header-material-host", "codescribe-header-viewport",
+        "codescribe-header-glass", "codescribe-header-content",
+        "codescribe-window-top-header",
+      ]
+      for identifier in identifiers {
+        let view = try XCTUnwrap(first(in: theme) { $0.identifier?.rawValue == identifier })
+        view.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(
+          probe, selector: #selector(FrameMutationProbe.changed(_:)),
+          name: NSView.frameDidChangeNotification, object: view)
+      }
+      defer { NotificationCenter.default.removeObserver(probe) }
+      for _ in 0..<50 {
+        NotificationCenter.default.post(name: NSWindow.didUpdateNotification, object: window)
+      }
+      let idleEvents = probe.events
+      probe.events.removeAll()
+      let origin = window.frame.origin
+      for delta in [0.125, 0.25, 0.5, 1.0, 7.0, 31.0] {
+        window.setFrameOrigin(NSPoint(x: origin.x + delta, y: origin.y + delta))
+        NotificationCenter.default.post(name: NSWindow.didUpdateNotification, object: window)
+      }
+      evidence.append(
+        "expanded=\(expanded) repeatedUpdateEvents=\(idleEvents) moveEvents=\(probe.events)")
+      XCTAssertTrue(idleEvents.isEmpty, "stable window updates must not mutate header frames")
+      XCTAssertTrue(probe.events.isEmpty, "moving the window preserves local header geometry")
+    }
+    let attachment = XCTAttachment(string: evidence.joined(separator: "\n"))
+    attachment.name = "App-owned header frame mutation probe"
+    attachment.lifetime = .keepAlways
+    add(attachment)
+  }
+
   func testHeaderAttachmentRetriesWithoutReplacingAnotherOwner() throws {
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
