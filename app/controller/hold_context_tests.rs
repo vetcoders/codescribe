@@ -214,8 +214,10 @@ mod terminal_delivery_target_falsifiers {
 
     /// A start that never became a take has no terminal canvas and therefore
     /// must not leave a target behind for an unrelated later Insert click.
-    /// Its cleanup also writes the process-wide tray/badge projection.
+    /// Its cleanup also writes the process-wide tray/badge projection, so it
+    /// runs serially with the tests that assert that projection.
     #[tokio::test]
+    #[serial_test::serial]
     async fn failed_start_clears_target_latch() {
         let controller = RecordingController::new_without_keychain();
         *controller.pre_overlay_frontmost_app.write().await = Some("Ghostty".to_string());
@@ -3840,7 +3842,10 @@ mod admission_presentation_status_falsifiers {
 
     /// W3-T11 baseline witness: a deterministic refusal must leave the engine
     /// warning side-channel and travel as a typed presentation projection.
+    /// The refusal settles the process-wide tray to Idle, so this runs
+    /// serially with the tests that assert that projection.
     #[test]
+    #[serial_test::serial]
     fn acoustic_admission_refusal_uses_presentation_projection_event() {
         let (events, mut receiver) = broadcast::channel(2);
         let blocker = admission::AdmissionBlocker::CalibrationUnusable {
