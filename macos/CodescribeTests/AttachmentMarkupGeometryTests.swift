@@ -55,11 +55,57 @@ final class AttachmentMarkupGeometryTests: XCTestCase {
 
     let fixture = try sourceImage(scale: 2)
     let session = try XCTUnwrap(AttachmentMarkupSession(url: fixture.url))
+    XCTAssertTrue(session.paper.delegate === session)
     XCTAssertLessThanOrEqual(session.paper.zoomRange.lowerBound, 0.05)
     session.fitCanvasToViewport(viewport)
     XCTAssertEqual(
       session.paper.zoomRange,
-      AttachmentMarkupGeometry.fittedZoomRange(canvas: session.canvas.size, viewport: viewport))
+      AttachmentMarkupGeometry.fittedZoomRange(
+        canvas: session.canvas.size,
+        pointSize: session.pointSize,
+        viewport: viewport))
+  }
+
+  func testFittedScaleAndVisibleFrameNormalizeRetinaAndFitProportionally() {
+    // Large 2x Retina capture (2992x1934 px, 1496x967 pt) in a 536x418 pt viewport:
+    // logical size exceeds viewport, so it scales down proportionally to fit viewport width.
+    let largeCanvas = CGRect(x: 0, y: 0, width: 2992, height: 1934)
+    let largePointSize = CGSize(width: 1496, height: 967)
+    let viewport = CGSize(width: 536, height: 418)
+    let largeScale = AttachmentMarkupGeometry.fittedScale(
+      canvas: largeCanvas.size, pointSize: largePointSize, viewport: viewport)
+    XCTAssertEqual(largeScale, 536.0 / 2992.0, accuracy: 0.0001)
+
+    let largeVisible = AttachmentMarkupGeometry.fittedVisibleFrame(
+      canvas: largeCanvas, pointSize: largePointSize, viewport: viewport)
+    XCTAssertEqual(largeVisible.midX, largeCanvas.midX, accuracy: 0.001)
+    XCTAssertEqual(largeVisible.midY, largeCanvas.midY, accuracy: 0.001)
+    XCTAssertEqual(largeVisible.width, 2992.0, accuracy: 0.01)
+    let sxLarge = viewport.width / largeVisible.width
+    let syLarge = viewport.height / largeVisible.height
+    XCTAssertEqual(sxLarge, syLarge, accuracy: 0.0001, "Horizontal and vertical scale must be uniform")
+    XCTAssertEqual(sxLarge, largeScale, accuracy: 0.0001)
+
+    // Small 2x Retina capture (672x516 px, 336x258 pt) in a 536x350 pt viewport:
+    // logical size fits inside viewport, so it normalizes to 100% logical points (0.5x pixel scale)
+    // instead of blowing up to 2x pixel size or stretching to fill the viewport.
+    let smallCanvas = CGRect(x: 0, y: 0, width: 672, height: 516)
+    let smallPointSize = CGSize(width: 336, height: 258)
+    let smallViewport = CGSize(width: 536, height: 350)
+    let smallScale = AttachmentMarkupGeometry.fittedScale(
+      canvas: smallCanvas.size, pointSize: smallPointSize, viewport: smallViewport)
+    XCTAssertEqual(smallScale, 0.5, accuracy: 0.0001)
+
+    let smallVisible = AttachmentMarkupGeometry.fittedVisibleFrame(
+      canvas: smallCanvas, pointSize: smallPointSize, viewport: smallViewport)
+    XCTAssertEqual(smallVisible.midX, smallCanvas.midX, accuracy: 0.001)
+    XCTAssertEqual(smallVisible.midY, smallCanvas.midY, accuracy: 0.001)
+    XCTAssertEqual(smallVisible.width, smallViewport.width / 0.5, accuracy: 0.001)
+    XCTAssertEqual(smallVisible.height, smallViewport.height / 0.5, accuracy: 0.001)
+    XCTAssertTrue(AttachmentMarkupGeometry.visibleFrameMatches(smallVisible, target: smallVisible))
+    XCTAssertFalse(
+      AttachmentMarkupGeometry.visibleFrameMatches(
+        CGRect(origin: .zero, size: smallViewport), target: smallVisible))
   }
 
   func testDefaultShapeConfigurationIsUnfilledWithVisibleStroke() {

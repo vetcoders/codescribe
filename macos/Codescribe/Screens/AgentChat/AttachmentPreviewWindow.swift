@@ -160,15 +160,75 @@ final class AttachmentPreviewWindowController: NSObject, NSWindowDelegate {
 // MARK: - Markup
 
 enum AttachmentMarkupGeometry {
+  /// Computes the proportional pixel-to-viewport scale that both normalizes
+  /// Retina (`2x`/`3x`) captures to their logical point dimensions and fits
+  /// images larger than the editor into `viewport`.
+  static func fittedScale(
+    canvas: CGSize,
+    pointSize: CGSize = .zero,
+    viewport: CGSize
+  ) -> CGFloat {
+    let resolvedPointWidth = pointSize.width > 0 ? pointSize.width : canvas.width
+    let resolvedPointHeight = pointSize.height > 0 ? pointSize.height : canvas.height
+    let naturalScale = min(
+      1.0,
+      min(
+        resolvedPointWidth / max(canvas.width, 1),
+        resolvedPointHeight / max(canvas.height, 1)))
+    let viewportFit = min(
+      viewport.width / max(canvas.width, 1),
+      viewport.height / max(canvas.height, 1))
+    return max(0.02, min(naturalScale, viewportFit))
+  }
+
+  /// Computes the canvas-space visible rectangle that `PaperMarkupViewController`
+  /// maps onto `viewport` so the Retina-normalized image fits proportionally and
+  /// stays centered with uniform horizontal and vertical scale (`sx == sy`).
+  static func fittedVisibleFrame(
+    canvas: CGRect,
+    pointSize: CGSize = .zero,
+    viewport: CGSize
+  ) -> CGRect {
+    guard viewport.width > 1, viewport.height > 1,
+      canvas.width > 0, canvas.height > 0
+    else { return canvas }
+    let scale = fittedScale(canvas: canvas.size, pointSize: pointSize, viewport: viewport)
+    let visibleWidth = viewport.width / scale
+    let visibleHeight = viewport.height / scale
+    return CGRect(
+      x: canvas.midX - visibleWidth / 2,
+      y: canvas.midY - visibleHeight / 2,
+      width: visibleWidth,
+      height: visibleHeight)
+  }
+
   /// Computes a zoom range for `PaperMarkupViewController` that allows fitting
   /// high-DPI pixel canvases inside a point-sized viewport without locking the
   /// minimum zoom to 100% pixel scale.
-  static func fittedZoomRange(canvas: CGSize, viewport: CGSize) -> ClosedRange<CGFloat> {
-    let rawFit = min(
-      viewport.width / max(canvas.width, 1),
-      viewport.height / max(canvas.height, 1))
-    let fit = max(0.02, min(1.0, rawFit))
+  static func fittedZoomRange(
+    canvas: CGSize,
+    pointSize: CGSize = .zero,
+    viewport: CGSize
+  ) -> ClosedRange<CGFloat> {
+    let fit = fittedScale(canvas: canvas, pointSize: pointSize, viewport: viewport)
     return min(0.05, fit * 0.5)...max(4.0, fit * 4.0)
+  }
+
+  /// Returns whether `PaperMarkupViewController.contentVisibleFrame` has converged
+  /// to the target fitted visible frame within PaperKit's XPC rounding tolerance.
+  static func visibleFrameMatches(_ actual: CGRect, target: CGRect) -> Bool {
+    guard !actual.isNull, !actual.isEmpty, !actual.isInfinite,
+      actual.width > 0, actual.height > 0,
+      target.width > 0, target.height > 0
+    else { return false }
+    let widthError = abs(actual.width - target.width) / target.width
+    let heightError = abs(actual.height - target.height) / target.height
+    let midXError = abs(actual.midX - target.midX)
+    let midYError = abs(actual.midY - target.midY)
+    return widthError <= 0.03
+      && heightError <= 0.03
+      && midXError <= max(2.0, target.width * 0.03)
+      && midYError <= max(2.0, target.height * 0.03)
   }
 
   /// Default stroke width scaled to the pixel canvas so inserted shapes remain
@@ -225,6 +285,9 @@ final class AttachmentMarkupSession {
   let paper: PaperMarkupViewController
   let toolbar: MarkupToolbarViewController
   private let initialMarkup: PaperMarkup
+  private var lastFittedViewportSize: CGSize = .zero
+  private var pendingViewportFit = true
+  private var fitAttemptsForViewport = 0
 
   init?(url: URL) {
     guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
@@ -255,6 +318,7 @@ final class AttachmentMarkupSession {
     self.initialMarkup = initialMarkup
     self.paper = paper
     self.toolbar = toolbar
+    paper.delegate = self
     toolbar.delegate = self
 
     // The original sits under the markup as content, not as a markup
@@ -269,9 +333,24 @@ final class AttachmentMarkupSession {
 
   func fitCanvasToViewport(_ viewportSize: CGSize) {
     guard viewportSize.width > 1, viewportSize.height > 1 else { return }
+    if viewportSize != lastFittedViewportSize {
+      lastFittedViewportSize = viewportSize
+      pendingViewportFit = true
+      fitAttemptsForViewport = 0
+    }
+    applyViewportFit(viewportSize)
+  }
+
+  private func applyViewportFit(_ viewportSize: CGSize) {
+    guard viewportSize.width > 1, viewportSize.height > 1 else { return }
+    let target = AttachmentMarkupGeometry.fittedVisibleFrame(
+      canvas: canvas, pointSize: pointSize, viewport: viewportSize)
     paper.zoomRange = AttachmentMarkupGeometry.fittedZoomRange(
-      canvas: canvas.size, viewport: viewportSize)
-    paper.setContentVisibleFrame(canvas, animated: false)
+      canvas: canvas.size, pointSize: pointSize, viewport: viewportSize)
+    // PaperKit's out-of-process LinkedNotesUIService requires a two-step
+    // setContentVisibleFrame pass when transitioning zoom scale across zoomRange updates.
+    paper.setContentVisibleFrame(target, animated: false)
+    paper.setContentVisibleFrame(target, animated: false)
   }
 
   var hasChanges: Bool {
@@ -366,6 +445,51 @@ extension AttachmentMarkupSession: @preconcurrency MarkupToolbarViewController.D
     _ toolbar: MarkupToolbarViewController
   ) {
     paper.markupToolbarViewControllerSelectedDrawingToolChanged(toolbar)
+  }
+}
+
+extension AttachmentMarkupSession: @preconcurrency PaperMarkupViewController.Delegate {
+  func paperMarkupViewControllerDidChangeMarkup(
+    _ paperMarkupViewController: PaperMarkupViewController
+  ) {}
+
+  func paperMarkupViewControllerDidChangeSelection(
+    _ paperMarkupViewController: PaperMarkupViewController
+  ) {}
+
+  func paperMarkupViewControllerDidChangeContentVisibleFrame(
+    _ paperMarkupViewController: PaperMarkupViewController
+  ) {
+    let liveViewport = paperMarkupViewController.view.bounds.size
+    if liveViewport.width > 1, liveViewport.height > 1,
+      liveViewport != lastFittedViewportSize
+    {
+      lastFittedViewportSize = liveViewport
+      pendingViewportFit = true
+      fitAttemptsForViewport = 0
+    }
+    let viewport = lastFittedViewportSize
+    guard pendingViewportFit, viewport.width > 1, viewport.height > 1 else { return }
+    let target = AttachmentMarkupGeometry.fittedVisibleFrame(
+      canvas: canvas, pointSize: pointSize, viewport: viewport)
+    if AttachmentMarkupGeometry.visibleFrameMatches(
+      paperMarkupViewController.contentVisibleFrame, target: target)
+    {
+      pendingViewportFit = false
+      return
+    }
+    guard fitAttemptsForViewport < 8 else {
+      pendingViewportFit = false
+      return
+    }
+    fitAttemptsForViewport += 1
+    applyViewportFit(viewport)
+  }
+
+  func paperMarkupViewControllerDidBeginDrawing(
+    _ paperMarkupViewController: PaperMarkupViewController
+  ) {
+    pendingViewportFit = false
   }
 }
 
