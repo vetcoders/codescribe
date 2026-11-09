@@ -11,7 +11,7 @@ letting evaluation rewrite production settings automatically.
 
 ```mermaid
 flowchart TD
-    A[Audio and adjacent human reference] --> B[codescribe-corpus census]
+    A[Audio and adjacent human reference] --> B[codescribe corpus census]
     B --> C[Explicit profile in isolated process]
     C --> D[Production PCM session replay]
     D --> E[Acoustic qualification and ledger]
@@ -20,22 +20,22 @@ flowchart TD
     D --> X[Retained failure report]
     G --> H[Execution completion status]
     X --> H
-    H --> I[codescribe-corpus compare: descriptive deltas]
+    H --> I[codescribe corpus compare: descriptive deltas]
     I --> R[Calibrated release acceptance: not proven]
-    J[qube-report file Whisper evaluation] --> K[qube-daemon baseline and history]
+    J[codescribe report: file Whisper evaluation] --> K[codescribe daemon: baseline and history]
     K --> Q[Qube analysis: separate report format and scope]
 ```
 
-`qube-daemon` contains baseline selection, regression analysis, tuning proposals
+`codescribe daemon` contains baseline selection, regression analysis, tuning proposals
 and history. Its local arm runs file Whisper; its scores do not certify the live
-Apple/controller path. `codescribe-teacher compare` compares supplied texts, not
-two versioned production runs. `codescribe-corpus` records audio/reference hashes,
+Apple/controller path. `codescribe teach compare` compares supplied texts, not
+two versioned production runs. `codescribe corpus` records audio/reference hashes,
 explicit profiles and per-execution outcomes. Its `compare` command matches
 complete profile reports by audio hash, reference hash and run number. Seal Atlas
 makes PCM evidence visible; it does not turn missing
 measurements into proof or certify lexical accuracy by itself.
 
-Qube reports are not inputs to `codescribe-corpus compare`. These are separate
+Qube reports are not inputs to `codescribe corpus compare`. These are separate
 executable paths, not connected stages of one acceptance pipeline. Selected Qube
 baselines now fail on read/parse errors, unavailable targets or a canonical path
 equal to the current report. Qube still matches entry IDs rather than binding
@@ -122,7 +122,7 @@ this investigation does not start the microphone automatically.
 ## Compare retained profile reports
 
 ```sh
-cargo run --bin codescribe-corpus -- compare \
+cargo run --bin codescribe -- corpus compare \
   --baseline /path/to/baseline/profile-apple-layer0.json \
   --candidate /path/to/candidate/profile-apple-layer0.json
 ```

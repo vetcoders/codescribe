@@ -5,9 +5,6 @@ use serde_json::{Value, json};
 use super::AcpError;
 use crate::agent::redaction::{REDACTED, redact_command_line, redacted_arguments};
 
-/// ACP's supported major protocol version.
-pub const PROTOCOL_VERSION: u64 = 1;
-
 /// Construct a client request.
 pub fn request(id: u64, method: &str, params: Value) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})

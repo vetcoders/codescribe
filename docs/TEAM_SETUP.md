@@ -115,8 +115,8 @@ codescribe --help          # transcribe · bus · lexicon · report · daemon ·
 
 `codescribe <subcommand>` is the single authoritative surface for these jobs.
 The four standalone binaries (`qube-report`, `qube-daemon`,
-`codescribe-teacher`, `codescribe-corpus`) run the same functions but are
-slated for removal under the one-throne rule — write nothing new against them.
+`codescribe-teacher`, `codescribe-corpus`) have been removed. Use `codescribe
+report`, `codescribe daemon`, `codescribe teach` and `codescribe corpus`.
 
 ## Quality & Tools
 

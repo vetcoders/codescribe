@@ -1,7 +1,6 @@
 //! Self-improving loop runner.
 //!
-//! Reached as `codescribe daemon` and, for compatibility, as the standalone
-//! `qube-daemon` binary.
+//! Reached as `codescribe daemon`.
 //!
 //! Usage:
 //!   codescribe daemon --date 2026-01-17 --apply
