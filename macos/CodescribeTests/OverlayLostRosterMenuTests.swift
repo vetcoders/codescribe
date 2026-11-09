@@ -12,10 +12,12 @@ final class OverlayLostRosterMenuTests: XCTestCase {
       OverlayLostBehaviorSource.overlay("OverlayChannelStatusView.swift"),
       from: "func channelRow(", to: "private func rosterRowLabel(")
     try OverlayLostBehaviorSource.ordered(
-      ["HStack(alignment: .top, spacing: 6) {", "VStack(alignment: .leading, spacing: 2) {",
+      [
+        "HStack(alignment: .top, spacing: 6) {", "VStack(alignment: .leading, spacing: 2) {",
         "contentOnly: true", "rosterRowState(channel, receiptText: receiptText)",
         "} .frame(maxWidth: .infinity, alignment: .leading)",
-        "compactAgentActions(for: channel)"], in: row)
+        "compactAgentActions(for: channel)",
+      ], in: row)
     // The audio pair has its own column, so nothing covers the preview and
     // no fade hides the text it used to sit on.
     XCTAssertFalse(row.contains("ZStack(alignment: .topTrailing)"))
@@ -30,15 +32,19 @@ final class OverlayLostRosterMenuTests: XCTestCase {
     let controls = try OverlayLostBehaviorSource.section(
       source, from: "func compactAgentActions(", to: "func panelControl(")
     try OverlayLostBehaviorSource.ordered(
-      ["HStack(spacing: 6)", "OverlayAgentAudioControls(",
-        "EmptyView().modifier(", "cardAgentMenu(for: channel.channel, showsButton: true)"],
+      [
+        "HStack(spacing: 6)", "OverlayAgentAudioControls(",
+        "EmptyView().modifier(", "cardAgentMenu(for: channel.channel, showsButton: true)",
+      ],
       in: controls)
     let marks = try OverlayLostBehaviorSource.section(
       source, from: "func rowMarks(", to: "func compactAgentActions(")
     try OverlayLostBehaviorSource.ordered(
-      ["if showsChain, let conversation", "onToggleDraftSync?(conversation.id)",
+      [
+        "if showsChain, let conversation", "onToggleDraftSync?(conversation.id)",
         "overlay-agent-sync-", "if showsFocus", "focusAgentPanel(channel)",
-        "overlay-agent-focus-"], in: marks)
+        "overlay-agent-focus-",
+      ], in: marks)
     let row = try OverlayLostBehaviorSource.section(
       source, from: "func channelRow(", to: "private func rosterRowLabel(")
     XCTAssertTrue(row.contains("rosterRowState(channel, receiptText: receiptText)"))
@@ -55,39 +61,45 @@ final class OverlayLostRosterMenuTests: XCTestCase {
       "identity.provider == owner.provider", "identity.session == owner.providerSessionID",
       "identity.leaseID == owner.leaseID",
     ] {
-      XCTAssertTrue(OverlayLostBehaviorSource.compact(resolver).contains(guardExpression),
+      XCTAssertTrue(
+        OverlayLostBehaviorSource.compact(resolver).contains(guardExpression),
         "A digit reused by a different provider, session or lease must refuse the old title")
     }
     let menu = try OverlayLostBehaviorSource.section(
       source, from: "private func conversationHeaderMenu(",
       to: "private func conversationHeaderActions(")
     try OverlayLostBehaviorSource.ordered(
-      ["conversationHeaderChannel(conversation).map", "channelStatusView.agentPillMenu("],
+      ["conversationHeaderChannel(conversation, roster: roster).map", "roster.agentPillMenu("],
       in: menu)
-    XCTAssertTrue(source.contains("navigationMenu: conversationHeaderMenu(conversation)"))
+    XCTAssertTrue(
+      source.contains("navigationMenu: conversationHeaderMenu(conversation, roster: roster)"))
   }
 
   func testBothTitlePresentationsRefuseMenusWhenLiveActionsAreDisabled() throws {
     let source = try OverlayLostBehaviorSource.overlay("OverlayConversationView.swift")
     let titles = try OverlayLostBehaviorSource.section(
       source, from: "private var navigation:", to: "private var navigationLabelMenu:")
-    XCTAssertEqual(titles.components(separatedBy: ".modifier(navigationLabelMenu)").count - 1, 2,
+    XCTAssertEqual(
+      titles.components(separatedBy: ".modifier(navigationLabelMenu)").count - 1, 2,
       "Both the standard title and Intercom title must mount the guarded menu")
     let gate = try OverlayLostBehaviorSource.section(
       source, from: "private var navigationLabelMenu:",
       to: "private var conversationNamePill:")
     try OverlayLostBehaviorSource.ordered(
-      ["guard allowsLiveActions, let navigationMenu else",
+      [
+        "guard allowsLiveActions, let navigationMenu else",
         "OverlayBroadcastPolicyMenu(members: [], palette: palette, enabled: false)",
-        "return navigationMenu"], in: gate)
+        "return navigationMenu",
+      ], in: gate)
   }
 
   func testFullRowKeepsFullContextMenuWhileMoreKeepsItsSecondarySubset() throws {
     let source = try OverlayLostBehaviorSource.overlay("OverlayChannelStatusView.swift")
     let row = try OverlayLostBehaviorSource.section(
       source, from: "func channelRow(", to: "private func rosterRowLabel(")
-    XCTAssertTrue(OverlayLostBehaviorSource.compact(row).contains(
-      ".modifier(agentPillMenu(for: channel.channel, showsInlineError: false))"))
+    XCTAssertTrue(
+      OverlayLostBehaviorSource.compact(row).contains(
+        ".modifier(agentPillMenu(for: channel.channel, showsInlineError: false))"))
     let more = try OverlayLostBehaviorSource.section(
       source, from: "func cardAgentMenu(", to: "func agentMicrophoneEnabled(")
     XCTAssertTrue(OverlayLostBehaviorSource.compact(more).contains("secondaryActionsOnly: true"))

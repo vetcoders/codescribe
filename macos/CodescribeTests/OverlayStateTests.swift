@@ -3123,6 +3123,42 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertFalse(root.withLock { $0 }, "a live tick re-ran the root overlay body")
   }
 
+  func testRepeatedProjectionDoesNotInvalidateUnchangedChrome() {
+    let state = OverlayState()
+    projectText("Dzień", to: state, reducerRevision: 7)
+    let invalidated = OSAllocatedUnfairLock(initialState: false)
+    withObservationTracking {
+      _ = state.transcriptMode
+      _ = state.mode
+      _ = state.revision
+      _ = state.canPaste
+      _ = state.canCopy
+      _ = state.terminal
+    } onChange: {
+      invalidated.withLock { $0 = true }
+    }
+    projectText("Dzień dobry", to: state, reducerRevision: 7)
+    XCTAssertEqual(state.formattedText, "Dzień dobry")
+    XCTAssertFalse(invalidated.withLock { $0 }, "Unchanged chrome must not publish on a text tick")
+    projectText("Dzień dobry!", to: state, reducerRevision: 8)
+    XCTAssertTrue(invalidated.withLock { $0 }, "A real revision must still reach the chrome")
+  }
+
+  func testRepeatedIndicatorDoesNotInvalidateItsReaders() {
+    let state = OverlayState()
+    state.applyIndicatorMode(.assistive)
+    let invalidated = OSAllocatedUnfairLock(initialState: false)
+    withObservationTracking {
+      _ = state.indicatorMode
+    } onChange: {
+      invalidated.withLock { $0 = true }
+    }
+    state.applyIndicatorMode(.assistive)
+    XCTAssertFalse(invalidated.withLock { $0 })
+    state.applyIndicatorMode(.hold)
+    XCTAssertTrue(invalidated.withLock { $0 })
+  }
+
   // W2 contracts: synthetic projections enter the production boundary; unrun
   // until the integrator restores Swift gates and regenerates the bindings.
   // A6: a projection carrying one uncertain span surfaces it on OverlayState

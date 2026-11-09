@@ -71,6 +71,22 @@ final class OverlayRosterObservationTests: XCTestCase {
       ).map(\.id), [inbox.id, live.id, broadcast.id])
   }
 
+  func testMemoizedRosterRechecksChangedInputsAndCopiedViews() throws {
+    let first = try owner(lease: "a")
+    let state = OverlayState()
+    state.applyChannelRoster([roster()])
+    let view = OverlayChannelStatusView(
+      channels: [], unavailable: false, palette: .dark, animates: false,
+      hudStates: state.channelHudStates, conversations: [conversation(first)])
+    XCTAssertEqual(view.currentConversations.map(\.id), [first.id])
+    var copy = view
+    copy.archivedOwners = [first]
+    XCTAssertTrue(copy.currentConversations.isEmpty)
+    XCTAssertEqual(view.currentConversations.map(\.id), [first.id])
+    copy.archivedOwners = []
+    XCTAssertEqual(copy.currentConversations.map(\.id), [first.id])
+  }
+
   private func owner(lease: Character, session: String = "roster-session") throws
     -> OverlayConversationOwner
   {
@@ -88,6 +104,7 @@ final class OverlayRosterObservationTests: XCTestCase {
   private func roster(session: String = "roster-session") -> CsChannelRosterState {
     .init(
       channel: "4", audience: "agent", provider: "codex", providerSessionId: session,
-      open: false, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+      open: false, loud: false, autosealDeadlineUnixMs: nil, followerAlive: true,
+      unreadSinceUnixMs: nil)
   }
 }
