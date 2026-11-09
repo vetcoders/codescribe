@@ -15,9 +15,10 @@
 # is never a key, so `(empty string)` stands in for the one real key that is
 # itself empty (scripts/l10n-lint.py: EMPTY_KEY_MARKER). Listing a key here is
 # not a judgment that it should stay untranslated forever — it records
-# today's flag so the gate can see it. Monika's review of the full list (23
-# rows, with the English text and where each one is used) lives alongside the
-# brief that added this file: AI_artifacts/codescribe/2026-11-06_tlumaczenia/.
+# today's flag so the gate can see it. Each key below is its own English
+# text; every group states why it is flagged and, where a screen shows it,
+# which files. Which of them should translate after all is an open founder
+# decision, tracked in docs/LOCALIZATION_LEDGER.md.
 #
 # Format-only and empty keys — string interpolation produces these as a
 # literal key; there is no word in them to translate.
