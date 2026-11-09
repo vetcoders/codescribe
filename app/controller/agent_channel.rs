@@ -2756,8 +2756,7 @@ impl RecordingController {
             state.last_heartbeat = observation
                 .last_heartbeat
                 .map(|beat| SystemTime::UNIX_EPOCH + Duration::from_secs_f64(beat.max(0.0)));
-            let thread_key = (key.0.clone(), key.1.trim().to_string());
-            if let Some(thread) = codex_threads.get(&thread_key) {
+            if let Some(thread) = codex_threads.get(&key) {
                 state.codex_thread_url = Some(format!("codex://threads/{}", thread.thread_id));
                 state.codex_thread_local = Some(thread.rollout);
             }
