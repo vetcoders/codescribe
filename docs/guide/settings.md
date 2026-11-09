@@ -48,6 +48,12 @@ The setup checklist shows Microphone, Speech Recognition, Accessibility, Input
 Monitoring and Screen Recording. Use its links to open the appropriate macOS
 permission pane. The setup wizard can be reopened here.
 
+A missing permission shows its status beside the warning disc and its actions
+as chips: **Allow access** asks macOS from the app, **Open System Settings**
+opens the matching privacy pane. Setup uses the same words. The status words
+and the grey hint about reopening are explained in
+[Installation](installation.md#permissions).
+
 Setup completion and recording readiness are separate. Apple's path needs
 Speech Recognition; Local power needs a valid local model. Full Disk Access
 is optional, not a blanket prerequisite for ordinary dictation. See

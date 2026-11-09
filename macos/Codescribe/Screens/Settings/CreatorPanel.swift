@@ -258,7 +258,7 @@ struct CreatorPanel: View {
         kind: kind,
         state: model.permissions.state(kind),
         note: model.permissionRepairNote(for: kind),
-        noteIsAdvisory: kind.repairNoteIsAdvisory(
+        noteIsProblem: kind.repairNoteIsProblem(
           for: model.permissions.state(kind),
           requested: model.requestedPermissions.contains(kind)),
         onRequested: { model.notePermissionRequested(kind) },
@@ -856,8 +856,9 @@ private struct PermissionChecklistRow: View {
   let state: PermissionState
   /// Shown under the name when the row's own button cannot fix the scope.
   var note: String? = nil
-  /// The note is the reopen hint: neutral guidance, not a failure.
-  var noteIsAdvisory = false
+  /// The note reports a problem (`PermissionKind.repairNoteIsProblem`);
+  /// otherwise it is a hint: neutral guidance, not a failure.
+  var noteIsProblem = false
   /// Records that this scope was asked for, so a later miss can explain itself.
   var onRequested: (() -> Void)? = nil
   /// Re-probe after an in-app request (Speech Recognition dialog).
@@ -881,15 +882,18 @@ private struct PermissionChecklistRow: View {
             .foregroundStyle(CSColor.secondaryInk)
         }
         if let note {
-          let isProblem = kind.isRequiredForSetup && !noteIsAdvisory
+          // A problem keeps the danger rung behind the warning sign; a hint is
+          // secondary ink behind the info sign, so meaning never rests on
+          // colour alone.
+          let tint = noteIsProblem ? CSColor.dangerLight : CSColor.secondaryInk
           HStack(alignment: .firstTextBaseline, spacing: 4) {
-            if noteIsAdvisory {
-              CSIconView(icon: .info, size: 10, weight: .semibold, color: CSColor.secondaryInk)
-                .accessibilityHidden(true)
-            }
+            CSIconView(
+              icon: noteIsProblem ? .warning : .info, size: 10, weight: .semibold, color: tint
+            )
+            .accessibilityHidden(true)
             Text(note)
               .font(.caption)
-              .foregroundStyle(isProblem ? CSColor.dangerLight : CSColor.secondaryInk)
+              .foregroundStyle(tint)
               .fixedSize(horizontal: false, vertical: true)
           }
           .accessibilityElement(children: .combine)
@@ -907,6 +911,8 @@ private struct PermissionChecklistRow: View {
             .font(CSFont.ui(11, .medium))
             .foregroundStyle(CSColor.secondaryInk)
             .fixedSize()
+            // VoiceOver already hears the state as the name's value.
+            .accessibilityHidden(true)
         }
         let repair = kind.repair(for: state)
         // Repair actions read through their chip shape, not through bold text

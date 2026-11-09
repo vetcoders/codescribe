@@ -77,6 +77,26 @@ struct OnboardingProblemText: View {
   }
 }
 
+/// A hint line: information that helps with the next step but reports no
+/// fault (a grant macOS may apply only after a reopen). Secondary ink behind
+/// the info sign, so its shape — not only its colour — tells it apart from
+/// `OnboardingProblemText` (Founder, smoke review 2026-11-09).
+struct OnboardingHintText: View {
+  let text: String
+  var font: Font = CSFont.ui(12)
+
+  var body: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 5) {
+      CSIconView(icon: .info, size: 11, weight: .semibold, color: CSColor.secondaryInk)
+        .accessibilityHidden(true)
+      Text(text)
+        .font(font)
+        .foregroundStyle(CSColor.secondaryInk)
+    }
+    .accessibilityElement(children: .combine)
+  }
+}
+
 /// A single radio-style selectable card: title + optional subtitle. The
 /// selected one carries the system accent: a filled check, a wash and a
 /// one-point edge. Reused by every choice step.
@@ -410,6 +430,21 @@ struct PermissionsStepView: View {
         OnboardingPermissionRow(kind: kind, model: model)
         Divider()
       }
+      // What happens after a change in System Settings: the wizard re-reads
+      // every status when its window becomes key again
+      // (`OnboardingView` → `refreshForCurrentStep`).
+      Text(
+        String(
+          localized: LocalizedStringResource(
+            "Changed access in System Settings? The status updates when you return to this window.",
+            locale: model.interfaceLocale,
+            comment:
+              "Setup permissions step: statuses are re-read when the setup window becomes active again"
+          ))
+      )
+      .font(CSFont.ui(12))
+      .foregroundStyle(CSColor.secondaryInk)
+      .fixedSize(horizontal: false, vertical: true)
       Button(
         String(
           localized: LocalizedStringResource(
@@ -430,31 +465,25 @@ private struct OnboardingPermissionRow: View {
   var compact = false
   private var state: PermissionState { model.permissions.state(kind) }
 
+  /// VoiceOver label of the request action: the specific permission.
   private var actionTitle: String {
-    let repair = kind.repair(for: state)
-    if repair.requestsNatively {
-      return String(
-        localized: LocalizedStringResource(
-          "Allow \(kind.displayName(locale: model.interfaceLocale))", locale: model.interfaceLocale,
-          comment: "Permission row action; the placeholder is a macOS privacy scope"))
-    }
-    return String(
+    String(
       localized: LocalizedStringResource(
-        "Open System Settings", locale: model.interfaceLocale,
-        comment: "Open this permission's native macOS privacy pane"))
+        "Allow \(kind.displayName(locale: model.interfaceLocale))", locale: model.interfaceLocale,
+        comment: "Permission row action; the placeholder is a macOS privacy scope"))
   }
 
-  private var noteIsAdvisory: Bool {
-    kind.repairNoteIsAdvisory(
-      for: state, requested: model.requestedPermissions.contains(kind))
+  private var noteIsProblem: Bool {
+    kind.repairNoteIsProblem(for: state, requested: model.requestedPermissions.contains(kind))
   }
 
-  /// Visible label: the row already names the scope.
+  /// Visible label: the row already names the scope. The same words as the
+  /// Settings chip, so both surfaces offer one recognisable action.
   private var shortActionTitle: String {
     String(
       localized: LocalizedStringResource(
-        "Allow", locale: model.interfaceLocale,
-        comment: "Short permission row action; the row already names the macOS privacy scope"))
+        "Allow access", locale: model.interfaceLocale,
+        comment: "In-app permission repair action; the row title already names the permission"))
   }
 
   private var openSettingsAccessibilityTitle: String {
@@ -489,23 +518,14 @@ private struct OnboardingPermissionRow: View {
             .fixedSize(horizontal: false, vertical: true)
         }
         if let note = model.permissionRepairNote(for: kind) {
-          // A required grant blocks setup, so a failure note is a problem; the
-          // reopen hint is guidance, so it reads as neutral help with its own
-          // sign. An optional one only explains a choice left open.
+          // Only a required grant macOS will not ask about again is a problem;
+          // the reopen hint and optional guidance are information
+          // (`PermissionKind.repairNoteIsProblem`).
           Group {
-            if kind.isRequiredForSetup, !noteIsAdvisory {
+            if noteIsProblem {
               OnboardingProblemText(text: note)
             } else {
-              HStack(alignment: .firstTextBaseline, spacing: 5) {
-                if noteIsAdvisory {
-                  CSIconView(icon: .info, size: 11, weight: .semibold, color: CSColor.secondaryInk)
-                    .accessibilityHidden(true)
-                }
-                Text(note)
-                  .font(CSFont.ui(12))
-                  .foregroundStyle(CSColor.secondaryInk)
-              }
-              .accessibilityElement(children: .combine)
+              OnboardingHintText(text: note)
             }
           }
           .fixedSize(horizontal: false, vertical: true)
