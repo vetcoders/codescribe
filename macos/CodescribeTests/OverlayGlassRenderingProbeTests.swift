@@ -151,6 +151,147 @@ final class OverlayGlassRenderingProbeTests: XCTestCase {
   func testVisibleAppend() throws { try runWorkload(.append, visible: true) }
   func testVisiblePendingRevision() throws { try runWorkload(.pendingRevision, visible: true) }
 
+  func testFullExpandedFixed() throws { try runFullPanel(mini: false, append: false, bus: false) }
+  func testFullExpandedAppend() throws { try runFullPanel(mini: false, append: true, bus: false) }
+  func testFullExpandedFixedBus() throws { try runFullPanel(mini: false, append: false, bus: true) }
+  func testFullExpandedAppendBus() throws { try runFullPanel(mini: false, append: true, bus: true) }
+  func testFullMiniFixed() throws { try runFullPanel(mini: true, append: false, bus: false) }
+  func testFullMiniAppend() throws { try runFullPanel(mini: true, append: true, bus: false) }
+  func testFullMiniFixedBus() throws { try runFullPanel(mini: true, append: false, bus: true) }
+  func testFullMiniAppendBus() throws { try runFullPanel(mini: true, append: true, bus: true) }
+
+  /// Current production panel, header, mounted text and controller-owned growth.
+  /// Synthetic state-boundary input only: no engine, audio, file reader or tray.
+  /// The Bus factor repeats equal roster/history snapshots; it does not model
+  /// native observation, bridge I/O, playback-mute refresh or changing heartbeats.
+  private func runFullPanel(mini: Bool, append: Bool, bus: Bool) throws {
+    let suite = "CodescribeTests.full-glass-probe.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let state = OverlayState(
+      autoSendEnabled: { false }, micAccessProvider: { false },
+      autoCollapseScheduler: { _, _ in {} })
+    state.channelMapPreference = OverlayChannelMapPreference(defaults: defaults)
+    state.sharedChannelNameSetting = { "" }
+    state.agentChannelModifierSetting = { "control" }
+    // Lifecycle callbacks installed by OverlayController also drive the real
+    // AppModel/VoiceLab. Enter listening BEFORE constructing that controller.
+    state.handleRecordingPreparing()
+    state.handleRecordingStarted()
+    state.setPresentationMode(.expanded)
+    let scaleKey = suite + ".scale"
+    defer { UserDefaults.standard.removeObject(forKey: scaleKey) }
+    let panel = try XCTUnwrap(
+      DictationOverlayWindow.make(
+        state: state, textScale: TextScaleController(key: scaleKey), sizeDefaults: defaults)
+        as? FloatingOverlayPanel)
+    let controller = OverlayController(
+      state: state, intercomDesktopStore: OverlayIntercomDesktopStore(defaults: defaults),
+      overlayEnabledProvider: { true }, assistiveStatusProvider: { false },
+      panelFactory: { _, _ in panel }, orderPanelFront: { _ in }, orderPanelOut: { _ in })
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
+    controller.show()
+    if mini { state.setPresentationMode(.mini) }
+    panel.settleFrameTransition()
+    BackgroundTestWindow.present(panel)
+    settle(panel)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+    let initialHeight = panel.frame.height
+    XCTAssertEqual(state.presentationMode, mini ? .mini : .expanded)
+    XCTAssertFalse(panel.isFrameTransitioning)
+
+    let roster = (0..<10).map { digit in
+      CsChannelRosterState(
+        channel: String(digit), audience: "fixture-\(digit)", provider: "codex",
+        providerSessionId: "fixture-session-\(digit)", open: false, loud: false,
+        autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil)
+    }
+    let snapshot = OverlayChannelDeliverySnapshot(
+      deliveries: [],
+      conversations: (0..<10).map { digit in
+        OverlayConversation(
+          id: "fixture-conversation-\(digit)", channel: String(digit), name: "fixture-\(digit)",
+          owner: nil,
+          messages: (0..<40).map { row in
+            OverlayConversationMessage(
+              id: "fixture-\(digit)-\(row)", kind: .reply,
+              text: String(repeating: "Synthetic retained message. ", count: 8),
+              order: UInt64(row), emittedAt: "2026-11-09T00:00:00Z", owner: nil,
+              recipients: [], deliveryID: nil, replyTo: nil, unsolicited: true,
+              playback: nil, busPath: "", sourceChannel: String(digit))
+          })
+      })
+    // Baseline history outside the timed section; no fresh-reply admission.
+    state.applyChannelRoster(roster)
+    state.applyConversationSnapshot(snapshot)
+    let session = "full-glass-fixture"
+    let corpus = String(
+      repeating: "A recorded phrase grows without changing earlier words. ", count: 160)
+    let ticks = 16
+    let inputs = (1...ticks).map { tick in
+      String(corpus.prefix(append ? 400 + 7600 * tick / ticks : 400))
+    }
+    settle(panel)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+    let before = cpuSeconds()
+    let started = CACurrentMediaTime()
+    let wallStarted = Date().timeIntervalSince1970
+    var latencies: [Double] = []
+    for (index, text) in inputs.enumerated() {
+      let updateStarted = CACurrentMediaTime()
+      let sequence = UInt64(index + 1)
+      state.applyCompactProjection(
+        CsCompactProjection(
+          sessionId: session, captureEpoch: 1, sequence: sequence,
+          text: text, degraded: false, evidence: []))
+      state.applyTranscriptProjection(
+        transcriptProjection(
+          sequence: sequence, emittedAt: "2026-11-09T00:00:00Z", sessionId: session,
+          renderedText: text, phase: "listening", terminal: false,
+          reducerAction: "record_ledger_projection"))
+      if bus {
+        state.applyChannelRoster(roster)
+        state.applyConversationSnapshot(snapshot)
+      }
+      settle(panel)
+      RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+      settle(panel)
+      latencies.append((CACurrentMediaTime() - updateStarted) * 1000)
+      RunLoop.main.run(until: Date().addingTimeInterval(0.09))
+    }
+    let cpu = cpuSeconds() - before
+    let wall = CACurrentMediaTime() - started
+    XCTAssertTrue(cpu.isFinite && cpu >= 0)
+    XCTAssertEqual(state.activeText, inputs.last)
+    XCTAssertEqual(state.compactProjection?.sequence, UInt64(ticks))
+    XCTAssertEqual(state.presentationMode, mini ? .mini : .expanded)
+    XCTAssertTrue(state.showsMyDictation)
+    let native = try XCTUnwrap(panel.contentView.flatMap { firstText(in: $0) })
+    XCTAssertEqual(native.string, inputs.last, "Even mini must actually exercise the mounted text")
+    if append && !mini { XCTAssertGreaterThan(panel.frame.height, initialHeight) }
+    if mini { XCTAssertEqual(panel.frame.height, initialHeight) }
+    let sorted = latencies.sorted()
+    let payload: [String: Any] = [
+      "schema": "codescribe.full-overlay-probe.v1",
+      "scope": QualityCaptureHost.interactiveWindows()
+        ? "visible-isolated-gui" : "background-update-layout-only",
+      "mode": mini ? "mini" : "expanded", "workload": append ? "append" : "fixed",
+      "equal_bus_snapshots": bus, "conversation_count": 10, "message_count": 400,
+      "ticks": ticks, "final_utf16": native.string.utf16.count,
+      "cpu_seconds": cpu, "wall_seconds": wall,
+      "start_unix_ms": wallStarted * 1000,
+      "end_unix_ms": Date().timeIntervalSince1970 * 1000,
+      "initial_height": initialHeight, "final_height": panel.frame.height,
+      "panel_visible": panel.isVisible,
+      "occlusion_visible": panel.occlusionState.contains(.visible),
+      "update_p50_ms": sorted[sorted.count / 2], "update_p95_ms": sorted[sorted.count - 1],
+      "microphone": false, "asr": false, "file_observer": false,
+    ]
+    let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+    print("FULL_OVERLAY_PROBE_RESULT \(String(decoding: data, as: UTF8.self))")
+    withExtendedLifetime(controller) {}
+  }
+
   private func runWorkload(_ workload: Workload, visible: Bool) throws {
     if visible { try BackgroundTestWindow.requireIsolatedGUI() }
     // A matched, deterministic text stream; never reads audio or user content.
