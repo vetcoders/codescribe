@@ -70,13 +70,13 @@ final class CSSidebarColumnTests: XCTestCase {
     }
   }
 
-  func testSettingsToolbarPointerRouteSurvivesTopAccessory() throws {
+  func testSettingsToolbarPointerRouteSurvivesHeaderAccessory() throws {
     try assertNativeToolbarRoute(key: keys[0]) {
       self.mount(NSHostingController(rootView: SettingsView(model: .preview(.creator))))
     }
   }
 
-  func testAgentToolbarPointerRouteSurvivesTopAccessory() throws {
+  func testAgentToolbarPointerRouteSurvivesHeaderAccessory() throws {
     try assertNativeToolbarRoute(key: keys[1]) {
       self.show(
         AgentWindowChrome.makeWindow(
@@ -135,18 +135,22 @@ final class CSSidebarColumnTests: XCTestCase {
     let before = try route("with-accessory")
     let index = try XCTUnwrap(
       window.titlebarAccessoryViewControllers.firstIndex {
-        $0.layoutAttribute == .top
+        $0.view.identifier?.rawValue == "codescribe-window-top-header"
       })
     let owner = window.titlebarAccessoryViewControllers[index]
     window.removeTitlebarAccessoryViewController(at: index)
     pump()
     let without = try route("without-accessory")
+    // Public side allocation leaves the toolbar's own leading controls out of
+    // the accessory container. Probe it before changing the product owner.
+    owner.layoutAttribute = .right
+    owner.view.setFrameSize(NSSize(width: window.frame.width - 216, height: 52))
     window.addTitlebarAccessoryViewController(owner)
     pump()
     let restored = try route("restored-accessory")
     XCTAssertTrue(without, "negative control: native toolbar target without our accessory")
     XCTAssertTrue(before, "our header must leave the system toolbar pointer target reachable")
-    XCTAssertTrue(restored, "reattaching our header must preserve the native pointer target")
+    XCTAssertTrue(restored, "side accessory allocation must preserve the native pointer target")
   }
 
   private func mount(_ host: NSViewController) -> NSWindow {
