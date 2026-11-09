@@ -413,8 +413,7 @@ one-key-per-line shape as `l10n-identical-allowed.txt` (`#` starts a comment;
 itself empty, since a blank line there is a separator, not a key).
 `verify-l10n-catalog` refuses a flag with no entry, and refuses an entry whose
 flag is gone — a stale allowance hides the next unlisted flag exactly as well
-as no gate at all — and reports the count as `untranslated by flag: N
-(allow-listed)` next to the translated/untranslated counts.
+as no gate at all — and reports the count as `untranslated by flag: N (allow-listed)` next to the translated/untranslated counts.
 
 ### R4 — Plurals are one string, resolved by the catalog
 
