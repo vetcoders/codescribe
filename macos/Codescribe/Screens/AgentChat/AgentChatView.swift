@@ -478,7 +478,13 @@ private struct ThreadDetail: View {
         // The reading canvas stops below the titlebar and beside the sidebar.
         // Extending it into the top safe area backs header glass with an opaque
         // sheet, blocking the desktop exactly over the conversation column.
-        .background(CSColor.sheet, ignoresSafeAreaEdges: [.bottom])
+        // A 2pt top bleed seals subpixel rounding between the titlebar safe-area
+        // inset and the header viewport without reaching behind the header body.
+        .background(alignment: .top) {
+          CSColor.sheet
+            .padding(.top, -2)
+            .ignoresSafeArea(edges: .bottom)
+        }
       if isContextOpen {
         HStack(spacing: 0) {
           Divider()

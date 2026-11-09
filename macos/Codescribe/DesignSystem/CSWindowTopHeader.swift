@@ -202,8 +202,14 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
             .map { $0.convert($0.bounds, to: nil).maxX }.max() ?? 0) + CSSpace.sm
       }
       let origin = host.convert(NSPoint.zero, to: nil)
+      let minY = min(0, window.contentLayoutRect.maxY - origin.y)
+      let maxY = max(52, window.frame.height - origin.y)
       let rect = NSRect(
-        x: leading - origin.x, y: 0, width: max(0, window.frame.width - leading), height: 52)
+        x: leading - origin.x,
+        y: minY,
+        width: max(0, window.frame.width - leading),
+        height: max(52, maxY - minY)
+      )
       host.setVisibleFrame(rect)
     }
 

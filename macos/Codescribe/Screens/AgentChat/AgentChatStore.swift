@@ -246,7 +246,7 @@ enum AgentHeaderActivity: Equatable {
   }
 }
 
-private enum AgentHeaderLexical {
+private enum AgentHeaderLexical: Equatable {
   case thinking
   case answering
   case failed
@@ -3555,7 +3555,13 @@ final class AgentChatStore: ObservableObject {
       existing.mode = remote.mode
       existing.tags = remote.tags
       existing.updatedAt = remote.updatedAt
-      if composerTurn(in: existing.id) == nil, let model = remote.model {
+      // Failed turns do not publish completed-thread metadata. While their
+      // error remains visible, an older index must not relabel that attempt
+      // with the model from the last successful turn.
+      if composerTurn(in: existing.id) == nil,
+        headerSlots[existing.id]?.lexical != .failed,
+        let model = remote.model
+      {
         if existing.model != model { existing.provider = remote.provider }
         existing.model = model
       }
