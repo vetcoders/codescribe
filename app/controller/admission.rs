@@ -75,7 +75,7 @@ impl AdmissionBlocker {
     pub fn action(&self) -> String {
         match self {
             Self::MicrophonePermissionUnavailable { .. } => {
-                "Enable Codescribe in System Settings › Privacy & Security › Microphone."
+                "Enable x9bus in System Settings › Privacy & Security › Microphone."
                     .to_string()
             }
             Self::CaptureDeviceUnavailable { .. } => {

@@ -159,7 +159,7 @@ pub fn google_credential_status() -> Result<GoogleCredentialStatus, AccountAuthE
         return Ok(GoogleCredentialStatus {
             available: true,
             stored_account: false,
-            message: "An ADC file is configured; credentials are validated when sending. Only authorized-user ADC is supported. Manage it with gcloud; Codescribe never changes the file. Service-account and external-account credentials are not supported.".into(),
+            message: "An ADC file is configured; credentials are validated when sending. Only authorized-user ADC is supported. Manage it with gcloud; x9bus never changes the file. Service-account and external-account credentials are not supported.".into(),
         });
     }
     if std::env::var_os("GOOGLE_APPLICATION_CREDENTIALS").is_some_and(|path| !path.is_empty()) {

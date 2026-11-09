@@ -455,14 +455,23 @@ fn normalized_app_name(app_name: Option<String>) -> Option<String> {
         .filter(|name| !name.is_empty())
 }
 
-/// Whether this app name is Codescribe itself (the localized name of **this
+/// The names this process answers to. macOS reports the localized product
+/// name `x9bus` as `NSRunningApplication.localizedName` (InfoPlist.xcstrings
+/// with `LSHasLocalizedDisplayName`); the bundle, the executable and any probe
+/// that reads the raw bundle name still say `Codescribe`. Both are this app.
+const SELF_APP_NAMES: [&str; 2] = ["x9bus", "Codescribe"];
+
+/// Whether this app name is this app itself (the localized name of **this
 /// process**). One owner for the whole crate: the capture latch skips its own
 /// overlay here, and the delivery transport uses it to skip
 /// `NSRunningApplication` activate (we are already running). Not a paste
 /// veto — the Agent window is a legal Cmd+V sink; the overlay-canvas veto is
 /// the Swift caret probe.
 pub fn is_codescribe_app(app_name: &str) -> bool {
-    app_name.trim().eq_ignore_ascii_case("codescribe")
+    let name = app_name.trim();
+    SELF_APP_NAMES
+        .iter()
+        .any(|own| name.eq_ignore_ascii_case(own))
 }
 
 /// Pick which app the capture should treat as the user's, and say whether it

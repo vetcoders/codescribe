@@ -170,7 +170,7 @@ pub fn compose_agent_system_prompt(use_assistive_persona: bool, assistive_prompt
     let base = if use_assistive_persona {
         assistive_prompt
     } else {
-        "You are the Codescribe agent. Answer and act on the user's spoken request using the available tools when helpful."
+        "You are the x9bus agent. Answer and act on the user's spoken request using the available tools when helpful."
     };
     let mut sections = vec![base.to_string()];
     sections.extend(agent_context_sections());

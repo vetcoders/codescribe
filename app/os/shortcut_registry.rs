@@ -154,7 +154,7 @@ pub fn fn_tap_intercept_note(settings: &UserSettings) -> Option<&'static str> {
     }
 
     fn_tap_symbols_enabled().then_some(
-        "Fn/Globe tap is configured by macOS. Codescribe Hold Fn may intercept that tap while dictation is active; this is informational, not a shortcut conflict.",
+        "Fn/Globe tap is configured by macOS. x9bus Hold Fn may intercept that tap while dictation is active; this is informational, not a shortcut conflict.",
     )
 }
 

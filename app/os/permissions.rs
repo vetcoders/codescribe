@@ -309,7 +309,7 @@ fn wait_for_microphone_resolution(callback_rx: Receiver<bool>) -> bool {
                 }
 
                 warn!(
-                    "Microphone permission denied. Enable Codescribe in System Settings > Privacy & Security > Microphone."
+                    "Microphone permission denied. Enable x9bus in System Settings > Privacy & Security > Microphone."
                 );
                 return false;
             }
@@ -320,7 +320,7 @@ fn wait_for_microphone_resolution(callback_rx: Receiver<bool>) -> bool {
                 }
                 PermissionStatus::Denied => {
                     warn!(
-                        "Microphone permission is denied/restricted. Enable Codescribe in System Settings > Privacy & Security > Microphone."
+                        "Microphone permission is denied/restricted. Enable x9bus in System Settings > Privacy & Security > Microphone."
                     );
                     return false;
                 }

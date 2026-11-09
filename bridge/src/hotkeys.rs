@@ -358,11 +358,11 @@ fn deliver_deferred_insert_and_notify() {
             );
         }
         Ok(clipboard::DeferredInsertDelivery::NothingToInsert) => {
-            notifications::notify("Codescribe", "Nothing to insert");
+            notifications::notify("x9bus", "Nothing to insert");
         }
         Err(error) => {
             tracing::warn!(%error, "Deferred transcript paste request failed");
-            notifications::notify("Codescribe", "Couldn't insert the armed transcript");
+            notifications::notify("x9bus", "Couldn't insert the armed transcript");
         }
     }
 }
@@ -1102,7 +1102,7 @@ impl CodescribeHotkeys {
                             if recording_tx.send(recording_event).is_err() {
                                 tray_status::update_tray_status(TrayStatus::Error);
                                 notifications::notify(
-                                    "Codescribe",
+                                    "x9bus",
                                     "Hotkey recording dispatcher stopped",
                                 );
                             }
@@ -2167,7 +2167,7 @@ fn report_hotkey_dispatch_error(error: &anyhow::Error, notify: impl FnOnce(&str,
         tray_status::update_tray_status(TrayStatus::Error);
         tracing::error!(%error, "Hotkey event dispatch failed");
     }
-    notify("Codescribe", &error.to_string());
+    notify("x9bus", &error.to_string());
 }
 
 /// Wrap a recording dispatch in the one-controller capture lifecycle: claim on

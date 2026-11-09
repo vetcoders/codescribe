@@ -107,7 +107,7 @@ pub(super) fn observe_paste_target(latched_target: Option<&str>) -> super::Paste
 #[cfg(not(test))]
 pub(super) fn announce_paste_hold(notice: &str) {
     info!(notice, "paste held in deferred buffer");
-    crate::os::notifications::notify("Codescribe deferred the paste", notice);
+    crate::os::notifications::notify("x9bus deferred the paste", notice);
 }
 
 /// Unit tests post no user notification; the log line is the witness.

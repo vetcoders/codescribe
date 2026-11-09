@@ -357,7 +357,7 @@ pub fn paste_hold_notice(decision: DeliveryDecision) -> Option<&'static str> {
         }
         "hold_secure_field" => "Held: a password field has focus. It is waiting in Deferred Paste.",
         "hold_no_text_field" => "Held: no text field had focus. It is waiting in Deferred Paste.",
-        _ => "Held: Codescribe could not confirm a text field. It is waiting in Deferred Paste.",
+        _ => "Held: x9bus could not confirm a text field. It is waiting in Deferred Paste.",
     })
 }
 
@@ -1330,6 +1330,17 @@ mod tests {
         assert!(is_codescribe_app(" codescribe "));
         assert!(!is_codescribe_app("Ghostty"));
         assert!(!is_codescribe_app(""));
+    }
+
+    /// macOS reports the localized product name as `localizedName`; the
+    /// running app must still recognise itself under it, or the paste latch
+    /// stores its own overlay and the read-only canvas becomes a recipient.
+    #[test]
+    fn localized_product_name_is_self() {
+        assert!(is_codescribe_app("x9bus"));
+        assert!(is_codescribe_app(" X9BUS "));
+        assert!(!is_codescribe_app("x9bus helper"));
+        assert!(!is_codescribe_app("x9"));
     }
 
     #[test]

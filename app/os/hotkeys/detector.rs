@@ -184,7 +184,7 @@ impl DoubleTapBlockReason {
     /// User-facing explanation, phrased to complete "…because …".
     pub fn message(self) -> &'static str {
         match self {
-            Self::BindingDisabled => "that gesture is not assigned to a Codescribe mode",
+            Self::BindingDisabled => "that gesture is not assigned to an x9bus mode",
             Self::ModifierComboActive => "another modifier or hold gesture is active",
             Self::TooSlow => "the second tap came too late",
             Self::TapTooLong => "a press lasted too long to be a tap",

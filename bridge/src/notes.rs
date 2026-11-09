@@ -112,7 +112,7 @@ fn notify_saved(_path: &std::path::Path) {}
 /// Best-effort non-blocking toast (macOS only).
 #[cfg(target_os = "macos")]
 fn notify_toast(message: &str) {
-    codescribe::os::notifications::notify("Codescribe", message);
+    codescribe::os::notifications::notify("x9bus", message);
 }
 
 /// No-op off macOS.
