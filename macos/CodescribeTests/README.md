@@ -9,6 +9,10 @@ to obtain a window-size pass. The diagnostic asserts the host's fitting minimum
 and retains frame, ignored window-minimum fields and fitting-size evidence
 across layout and sidebar updates. Removing and restoring only the app-owned
 minimum constraints provides the native negative control.
+The fitting height must reserve the readable minimum plus the actual native
+titlebar allocation; a content-only floor can admit a user-resized frame whose
+SwiftUI split view extends beyond the window. The programmatic frame path may
+enlarge such a frame automatically and conceal that incorrect fitting floor.
 It does not simulate a pointer resize or certify the minimum enforced during a
 real drag; the recorded desktop gesture remains a separate acceptance check.
 The production owner supplies required width and height minima on the public

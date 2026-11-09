@@ -373,12 +373,16 @@ final class AgentWindowChromeTests: XCTestCase {
       }
       window.contentView?.superview?.layoutSubtreeIfNeeded()
       window.displayIfNeeded()
+      let nativeBandHeight = max(0, hosting.view.bounds.height - window.contentLayoutRect.height)
       evidence.append(
         "expanded=\(expanded) width=\(width) frame=\(window.frame) "
           + "min=\(window.minSize) contentMin=\(window.contentMinSize) "
-          + "layout=\(window.contentLayoutRect) fitting=\(hosting.view.fittingSize)")
+          + "layout=\(window.contentLayoutRect) fitting=\(hosting.view.fittingSize) "
+          + "safeArea=\(hosting.view.safeAreaInsets) nativeBandHeight=\(nativeBandHeight)")
       XCTAssertGreaterThanOrEqual(hosting.view.fittingSize.width, AgentWindowMetrics.minWidth)
-      XCTAssertGreaterThanOrEqual(hosting.view.fittingSize.height, AgentWindowMetrics.minHeight)
+      XCTAssertGreaterThanOrEqual(
+        hosting.view.fittingSize.height, AgentWindowMetrics.minHeight + nativeBandHeight,
+        "the native fitting minimum must reserve readable content below the native titlebar")
       XCTAssertTrue(hosting.sizingOptions.isEmpty, "retain the display-cycle crash protection")
     }
     // AppKit ignores the stored window minimum under Auto Layout. Prove the
