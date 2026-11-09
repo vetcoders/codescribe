@@ -404,6 +404,18 @@ ordinary English and is extracted like any other. Its keys carry
 the lint does not count them. The mark belongs to keys no shipped screen uses;
 remove it when one starts to.
 
+The flag used to be free: nothing recorded why a key was exempt, so it could
+cover a user-visible string that simply had nobody translate it, as 23 keys
+did. A key marked `shouldTranslate: false` must also be named in
+`scripts/data/l10n-untranslated-allowed.txt`, with the reason, in the same
+one-key-per-line shape as `l10n-identical-allowed.txt` (`#` starts a comment;
+`EMPTY_KEY_MARKER`, written `(empty string)`, stands for the one key that is
+itself empty, since a blank line there is a separator, not a key).
+`verify-l10n-catalog` refuses a flag with no entry, and refuses an entry whose
+flag is gone — a stale allowance hides the next unlisted flag exactly as well
+as no gate at all — and reports the count as `untranslated by flag: N
+(allow-listed)` next to the translated/untranslated counts.
+
 ### R4 — Plurals are one string, resolved by the catalog
 
 Never choose a noun form in code. Write the count and the plural noun once:

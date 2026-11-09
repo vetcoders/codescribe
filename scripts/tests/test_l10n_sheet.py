@@ -92,9 +92,20 @@ class WorksheetCase(unittest.TestCase):
         self.write_catalog("InfoPlist", INFOPLIST)
         sheet.CATALOG_DIR = self.catalogs
         os.environ["L10N_DERIVED"] = str(root / "no-build")
+        # This fixture carries its own shouldTranslate=false keys (a font
+        # sample and the empty string), unrelated to the shipped allowlist.
+        self.original_untranslated_allowed = lint.UNTRANSLATED_ALLOWED
+        lint.UNTRANSLATED_ALLOWED = root / "l10n-untranslated-allowed.txt"
+        lint.UNTRANSLATED_ALLOWED.write_text(
+            f"Space Grotesk — body 18  # fixture font sample\n{lint.EMPTY_KEY_MARKER}  # fixture empty key\n",
+            encoding="utf-8",
+        )
+        lint.untranslated_allowed.cache_clear()
 
     def tearDown(self):
         sheet.CATALOG_DIR = SHIPPED_CATALOG_DIR
+        lint.UNTRANSLATED_ALLOWED = self.original_untranslated_allowed
+        lint.untranslated_allowed.cache_clear()
         os.environ.pop("L10N_DERIVED", None)
         self.tmp.cleanup()
 

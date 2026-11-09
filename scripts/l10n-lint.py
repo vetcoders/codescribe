@@ -40,7 +40,13 @@ wrong or missing string:
      word or an identifier really is spelled the same, with the reason;
   7. no string, in any language, spells the product other than `Codescribe`;
   8. the permission prompts in InfoPlist.xcstrings match macos/project.yml word
-     for word, so the catalog cannot drift from the plist it overrides.
+     for word, so the catalog cannot drift from the plist it overrides;
+  9. a key marked `shouldTranslate: false` skips check 5 entirely — no language
+     owes it a translation — so that flag needs its own gate: the key must be
+     named in scripts/data/l10n-untranslated-allowed.txt with the reason it
+     needs none, or the flag passes an untranslated, user-visible string
+     without a trace. A name on that list that no catalog still flags is a
+     stale allowance and must be dropped.
 
 It reports, without failing, translation coverage per language and count-bearing
 keys that have no plural variations yet.
@@ -82,6 +88,16 @@ FORBIDDEN_SPELLINGS = {"CodeScribe": "the product is spelled Codescribe"}
 # Keys whose translation is allowed to read exactly as the English source: a
 # proper noun, a borrowed word, an identifier. Every line carries its reason.
 IDENTICAL_ALLOWED = REPO / "scripts" / "data" / "l10n-identical-allowed.txt"
+
+# Keys allowed to carry `shouldTranslate: false` — skipping translation,
+# coverage and the identical-to-source check entirely. Every line carries its
+# reason; the gate below refuses a flag not named here, and a name here that
+# no catalog still flags.
+UNTRANSLATED_ALLOWED = REPO / "scripts" / "data" / "l10n-untranslated-allowed.txt"
+# A blank line separates groups in that file and is never a key, so the one
+# real key that is itself the empty string needs a stand-in no catalog key
+# collides with.
+EMPTY_KEY_MARKER = "(empty string)"
 
 # Unicode CLDR cardinal plural rules, byte for byte as published in cldr-json
 # (cldr-core/supplemental/plurals.json). Provenance and licence: NOTICE.
@@ -277,6 +293,19 @@ def identical_allowed() -> frozenset[str]:
     return frozenset(filter(None, (line.split("#", 1)[0].strip() for line in lines)))
 
 
+@functools.lru_cache(maxsize=None)
+def untranslated_allowed() -> frozenset[str]:
+    """The keys allowed to carry `shouldTranslate: false`.
+
+    `EMPTY_KEY_MARKER` stands for the literal empty-string key: a blank line
+    in the file is a separator, not a key, so the empty string cannot name
+    itself there.
+    """
+    lines = UNTRANSLATED_ALLOWED.read_text(encoding="utf-8").splitlines()
+    keys = (line.split("#", 1)[0].strip() for line in lines)
+    return frozenset("" if key == EMPTY_KEY_MARKER else key for key in keys if key)
+
+
 def lint_arguments(key: str, entry: dict, complain) -> None:
     """Check every string of every language against the arguments of the source."""
     source_text, source_rules = source_format(key, entry)
@@ -373,6 +402,7 @@ def lint_catalog(
     strings = catalog.get("strings", {})
 
     translatable = 0
+    untranslated_flagged = 0
     translated = Counter()
     untranslated: dict[str, list[str]] = {}
     reviewing: dict[str, list[str]] = {}
@@ -384,6 +414,7 @@ def lint_catalog(
     plural_candidates = []
     unruled = set()
     allow_identical = identical_allowed()
+    allow_untranslated = untranslated_allowed()
 
     for key, entry in strings.items():
         if entry.get("extractionState") == "stale":
@@ -400,6 +431,12 @@ def lint_catalog(
                     where = f" [{label}]" if label else ""
                     errors.append(f"{name}: {language}{where}: spells `{spelling}` ({reason}) in {key!r}")
         if entry.get("shouldTranslate") is False:
+            untranslated_flagged += 1
+            if key not in allow_untranslated:
+                errors.append(
+                    f"{name}: key {key!r} marked shouldTranslate=false without an entry in "
+                    "scripts/data/l10n-untranslated-allowed.txt"
+                )
             continue
         translatable += 1
 
@@ -489,8 +526,33 @@ def lint_catalog(
         for key in sorted(reviewing.get(language, [])):
             report.append(f"  awaiting review ({language}): {key!r}")
     report.append(f"{name}: {len(strings)} keys, {translatable} translatable")
+    report.append(f"{name}: untranslated by flag: {untranslated_flagged} (allow-listed)")
     for key in sorted(plural_candidates):
         report.append(f"  count without plural variations: {key!r}")
+
+
+def lint_untranslated_allowlist(catalogs: list[Path], errors: list[str]) -> None:
+    """Every key named in scripts/data/l10n-untranslated-allowed.txt must still
+    carry `shouldTranslate: false` somewhere in the bundle. A name that was
+    renamed, removed from the catalog or regained a translation leaves a
+    stale allowance behind, which hides the next flag added without one
+    exactly as well as a missing entry does."""
+    flagged: set[str] = set()
+    for path in catalogs:
+        try:
+            catalog = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        flagged |= {
+            key
+            for key, entry in catalog.get("strings", {}).items()
+            if entry.get("shouldTranslate") is False
+        }
+    for key in sorted(untranslated_allowed() - flagged):
+        errors.append(
+            f"scripts/data/l10n-untranslated-allowed.txt: {key!r} is listed but no catalog "
+            "marks it shouldTranslate=false (stale allowance — drop the line, or restore the flag)"
+        )
 
 
 def lint_usage_descriptions(errors: list[str]) -> None:
@@ -541,6 +603,13 @@ def main(argv: list[str]) -> int:
         print(f"l10n-lint: cannot read the identity allowlist in {allowed}: {error}", file=sys.stderr)
         return 1
 
+    try:
+        untranslated_allowed()
+    except OSError as error:
+        allowed = UNTRANSLATED_ALLOWED.relative_to(REPO)
+        print(f"l10n-lint: cannot read the untranslated allowlist in {allowed}: {error}", file=sys.stderr)
+        return 1
+
     errors: list[str] = []
     report: list[str] = []
     catalogs = sorted(CATALOG_DIR.glob("*.xcstrings"))
@@ -553,6 +622,7 @@ def main(argv: list[str]) -> int:
         languages |= catalog_languages(path)
     for path in catalogs:
         lint_catalog(path, errors, report, languages, allow_partial)
+    lint_untranslated_allowlist(catalogs, errors)
     lint_usage_descriptions(errors)
 
     for line in report:
