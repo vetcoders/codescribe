@@ -35,7 +35,26 @@ first task is ordinary dictation. That checklist is distinct from the
 requirements of the selected recording mode. Full Disk Access is optional;
 it is not a universal prerequisite for dictation.
 
-After changing a permission, follow the app's prompt to reopen it when needed.
+Each row states what macOS reports for the running copy of x9bus:
+
+- **Granted** — x9bus has the access.
+- **Denied** — macOS recorded a refusal (Microphone, Speech Recognition, Input
+  Monitoring, Spotify control). For Microphone and Speech Recognition macOS does
+  not ask again; turn x9bus on in System Settings.
+- **No access** — this copy of x9bus has no effective access now
+  (Accessibility, Screen Recording, Full Disk Access). These checks cannot tell
+  a refusal from a grant that is missing, belongs to another copy of the app, or
+  is not applied yet, so the row does not claim you refused.
+- **Not determined** — macOS has not decided yet.
+
+After changing a permission in System Settings, return to x9bus: setup
+re-reads every status when its window becomes active, and **Refresh status**
+reads them again. If a permission you turned on still shows **No access**,
+macOS may apply it only after you quit and reopen x9bus; the row says so
+in a grey hint with an info sign, because it is not an error and a reopen is not
+guaranteed to help. Only a refusal macOS will not ask about again shows a red
+note with a warning sign. Optional permissions say what stays unavailable and
+never block setup.
 Finish active recordings and preserve unsent drafts before quitting. Avoid
 repeatedly resetting all permissions: development and distribution builds can
 have different signing identities and grants.

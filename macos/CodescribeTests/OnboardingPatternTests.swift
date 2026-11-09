@@ -233,7 +233,15 @@ final class OnboardingPatternTests: XCTestCase {
     // The three provider errors, the calibration error, the language error,
     // both agent bridge errors, "Agent needs setup" and the required-grant note.
     XCTAssertEqual(steps.components(separatedBy: "OnboardingProblemText(").count, 10)
-    XCTAssertTrue(steps.contains("if kind.isRequiredForSetup {"), "optional notes stay grey")
+    // Only a required refusal macOS will not ask about again is a problem;
+    // the reopen hint and optional guidance are grey hints behind the info
+    // sign (Founder, smoke review 2026-11-09).
+    XCTAssertTrue(steps.contains("if noteIsProblem {"), "hints are not problems")
+    XCTAssertTrue(steps.contains("struct OnboardingHintText"), "one hint line")
+    XCTAssertTrue(
+      steps.contains(
+        "CSIconView(icon: .info, size: 11, weight: .semibold, color: CSColor.secondaryInk)"),
+      "a hint has its own sign, not only a different colour")
   }
 
   /// Founder decision of 2026-10-29 (W0-20): the final summary's not-ready

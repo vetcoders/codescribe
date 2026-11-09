@@ -176,6 +176,8 @@ struct AgentWidthModeButton: View {
 /// closes the card; the outside-click rule leaves this button to its action.
 struct AgentContextToggle: View {
   @ObservedObject var presenter: AgentContextCardPresenter
+  @FocusState private var isFocused: Bool
+  @AccessibilityFocusState private var isAccessibilityFocused: Bool
 
   var body: some View {
     let isOpen = presenter.isOpen
@@ -204,8 +206,16 @@ struct AgentContextToggle: View {
       .contentShape(Rectangle())
       .background(AgentContextHitAnchor { presenter.registerToggle($0) })
     }
-    .buttonStyle(.borderless)
+    // The focus-ring style is the button's only style: a `.borderless` set
+    // closer to the button would win over it, and with the native effect
+    // disabled keyboard focus on Context would be invisible.
     .csFocusRing(cornerRadius: CSRadius.window)
+    .focused($isFocused)
+    .accessibilityFocused($isAccessibilityFocused)
+    // A keyboard or VoiceOver close removed the focused control with the
+    // card; the button that opened it takes focus back.
+    .onChange(of: presenter.keyboardFocusReturn) { _, _ in isFocused = true }
+    .onChange(of: presenter.accessibilityFocusReturn) { _, _ in isAccessibilityFocused = true }
     .fixedSize()
     .help(isOpen ? AgentContextPanelCopy.closeHelp : AgentContextPanelCopy.openHelp)
     .accessibilityLabel(AgentContextPanelCopy.contextButton)
@@ -230,11 +240,31 @@ struct AgentContextToggle: View {
 /// so showing the Agent window again shows it without the card, while
 /// re-activating a window that stayed on screen leaves the card as it was.
 ///
-/// While open, Escape in this window closes the card first, and a click
-/// anywhere outside the card closes it and still reaches its target.
+/// While open, plain Escape in this window closes the card first (after any
+/// text a field is still composing), and a click anywhere outside the visible
+/// card closes it and still reaches its target. A keyboard or VoiceOver close
+/// that removes the focused control hands focus back to the Context button in
+/// the same window; a click or a hide never moves focus.
 @MainActor
 final class AgentContextCardPresenter: ObservableObject {
   @Published private(set) var isOpen = false
+  /// Bumped when a keyboard close should return focus to the Context button.
+  @Published private(set) var keyboardFocusReturn = 0
+  /// Bumped when a VoiceOver close should return its cursor to the button.
+  @Published private(set) var accessibilityFocusReturn = 0
+  /// Observation of the card's own controls, read when it closes; the
+  /// controls stay the owners of focus.
+  var cardHoldsKeyboardFocus = false
+
+  /// How a close came about, which decides whether focus goes back.
+  enum CloseCause {
+    /// The button, a click outside, or the window leaving the screen.
+    case pointerOrHide
+    /// Escape while the card's control had keyboard focus.
+    case keyboard
+    /// VoiceOver's escape gesture on the card.
+    case accessibility
+  }
 
   private weak var window: NSWindow?
   private weak var toggleAnchor: NSView?
@@ -256,23 +286,41 @@ final class AgentContextCardPresenter: ObservableObject {
 
   func open() {
     guard !isOpen else { return }
+    cardHoldsKeyboardFocus = false
     isOpen = true
     installEventMonitor()
   }
 
-  func close() {
+  func close(_ cause: CloseCause = .pointerOrHide) {
     guard isOpen else { return }
+    let returnKeyboard = cause == .keyboard && cardHoldsKeyboardFocus
+    cardHoldsKeyboardFocus = false
     isOpen = false
     removeEventMonitor()
+    // Focus goes back only inside the key window that owns both the card and
+    // the button; in full screen the button lives in another window, and
+    // focus is never moved into a window the person is not using.
+    guard canReturnFocus else { return }
+    if returnKeyboard { keyboardFocusReturn &+= 1 }
+    if cause == .accessibility { accessibilityFocusReturn &+= 1 }
   }
 
-  /// The Context button's frame, for the outside-click rule.
+  private var canReturnFocus: Bool {
+    guard let window, window.isKeyWindow else { return false }
+    return toggleAnchor?.window === window
+  }
+
+  /// The Context button's frame, for the outside-click rule. The button lives
+  /// in the titlebar accessory, which AppKit can host in a window of its own
+  /// (the full-screen toolbar window), so it never decides which window the
+  /// card belongs to; a click there is another window's event and reaches
+  /// the button, whose own action closes the card.
   func registerToggle(_ view: NSView) {
     toggleAnchor = view
-    attach(to: view.window)
   }
 
-  /// The card's frame, for the outside-click rule.
+  /// The card's frame, for the outside-click rule. The card's window is the
+  /// one whose Escape, clicks, close and order-out apply to it.
   func registerCard(_ view: NSView) {
     cardAnchor = view
     attach(to: view.window)
@@ -284,7 +332,10 @@ final class AgentContextCardPresenter: ObservableObject {
     guard isOpen, let window, event.windowNumber == window.windowNumber else { return true }
     switch event.kind {
     case .escape:
-      close()
+      // Escape first ends text being composed (input methods, press-and-hold
+      // accents) in the focused field; only a later Escape is the card's.
+      if (window.firstResponder as? NSTextInputClient)?.hasMarkedText() == true { return true }
+      close(.keyboard)
       return false
     case .click(let point):
       if contains(cardAnchor, point) || contains(toggleAnchor, point) { return true }
@@ -295,6 +346,9 @@ final class AgentContextCardPresenter: ObservableObject {
     }
   }
 
+  /// The card anchor spans the visible card — or, on a short window, the
+  /// scroll viewport — so a click on the conversation beside a scrolled card
+  /// is outside it.
   private func contains(_ anchor: NSView?, _ pointInWindow: NSPoint) -> Bool {
     guard let anchor, anchor.window === window else { return false }
     return anchor.bounds.contains(anchor.convert(pointInWindow, from: nil))
@@ -361,7 +415,9 @@ struct AgentContextCardEvent: Sendable {
     windowNumber = event.windowNumber
     switch event.type {
     case .keyDown where event.keyCode == 53:
-      kind = .escape
+      // Only plain Escape (Shift aside) dismisses; a chorded Escape is not ours.
+      let chord = event.modifierFlags.intersection([.command, .option, .control])
+      kind = chord.isEmpty ? .escape : .other
     case .leftMouseDown, .rightMouseDown, .otherMouseDown:
       kind = .click(event.locationInWindow)
     default:
@@ -410,6 +466,7 @@ struct AgentContextCard: View {
   @ObservedObject var presenter: AgentContextCardPresenter
   let openToolSettings: () -> Void
   @Environment(\.colorScheme) private var colorScheme
+  @FocusedValue(\.agentContextCardFocus) private var focusedPresenter
 
   /// Preferred width; the card narrows to the space the conversation has.
   static let preferredWidth: CGFloat = 280
@@ -446,15 +503,29 @@ struct AgentContextCard: View {
     .shadow(
       color: .black.opacity(colorScheme == .dark ? 0.20 : 0.16), radius: 20, x: 0, y: 9
     )
-    .background(AgentContextHitAnchor { presenter.registerCard($0) })
+    .onChange(of: focusedPresenter === presenter, initial: true) { _, focused in
+      presenter.cardHoldsKeyboardFocus = focused
+    }
     .accessibilityElement(children: .contain)
     .accessibilityLabel(AgentContextPanelCopy.contextButton)
+    // VoiceOver's escape gesture closes the card like the Escape key does.
+    .accessibilityAction(.escape) { presenter.close(.accessibility) }
     .accessibilityIdentifier("agent-context-card")
   }
 
   private func hasFacts(_ thread: ChatThread) -> Bool {
-    !thread.messages.isEmpty || thread.updatedAt != nil
+    Self.knownMessageCount(of: thread) != nil || thread.updatedAt != nil
       || !store.queuedTurns(in: thread.id).isEmpty
+  }
+
+  /// The thread's message count when it is known, zero included. A persisted
+  /// thread whose history has not been read yet (the store loads it lazily)
+  /// has no known count, so the card shows none rather than a false zero.
+  static func knownMessageCount(of thread: ChatThread) -> Int? {
+    if !thread.messages.isEmpty || thread.messagesLoaded || thread.backendId == nil {
+      return thread.messages.count
+    }
+    return nil
   }
 
   private func section<Content: View>(
@@ -472,9 +543,9 @@ struct AgentContextCard: View {
   @ViewBuilder
   private func facts(_ thread: ChatThread) -> some View {
     VStack(alignment: .leading, spacing: CSSpace.xs) {
-      if !thread.messages.isEmpty {
+      if let count = Self.knownMessageCount(of: thread) {
         fact(AgentContextPanelCopy.messagesFact) {
-          Text(verbatim: "\(thread.messages.count)")
+          Text(count, format: .number)
         }
         .accessibilityIdentifier("agent-context-messages")
       }
@@ -487,27 +558,42 @@ struct AgentContextCard: View {
       let queued = store.queuedTurns(in: thread.id).count
       if queued > 0 {
         fact(AgentContextPanelCopy.queuedFact) {
-          Text(verbatim: "\(queued)")
+          Text(queued, format: .number)
         }
         .accessibilityIdentifier("agent-context-queued-count")
       }
     }
   }
 
+  /// Label and value on one line while both fit; on a narrow card or with a
+  /// long localized label the value moves under its label instead of being
+  /// truncated or pushed past the edge.
   private func fact<Value: View>(_ label: String, @ViewBuilder value: () -> Value) -> some View {
-    HStack(alignment: .firstTextBaseline, spacing: CSSpace.sm) {
-      Text(label)
-        .font(CSFont.ui(12, .regular))
-        .foregroundStyle(CSColor.secondaryInk)
-        .fixedSize(horizontal: false, vertical: true)
-      Spacer(minLength: CSSpace.sm)
-      value()
-        .font(CSFont.metaMono)
-        .foregroundStyle(Color.primary)
-        .lineLimit(1)
-        .layoutPriority(1)
+    let value = value()
+    return ViewThatFits(in: .horizontal) {
+      HStack(alignment: .firstTextBaseline, spacing: CSSpace.sm) {
+        factLabel(label).fixedSize()
+        Spacer(minLength: CSSpace.sm)
+        factValue(value).fixedSize()
+      }
+      VStack(alignment: .leading, spacing: 2) {
+        factLabel(label).fixedSize(horizontal: false, vertical: true)
+        factValue(value).fixedSize(horizontal: false, vertical: true)
+      }
     }
     .accessibilityElement(children: .combine)
+  }
+
+  private func factLabel(_ label: String) -> some View {
+    Text(label)
+      .font(CSFont.ui(12, .regular))
+      .foregroundStyle(CSColor.secondaryInk)
+  }
+
+  private func factValue<Value: View>(_ value: Value) -> some View {
+    value
+      .font(CSFont.metaMono)
+      .foregroundStyle(Color.primary)
   }
 
   private var toolSettingsRow: some View {
@@ -516,7 +602,6 @@ struct AgentContextCard: View {
         CSIconView(icon: .settings, size: 12, color: CSColor.secondaryInk)
         Text(AgentContextPanelCopy.toolSettings)
           .font(CSFont.ui(13, .medium))
-          .lineLimit(2)
           .fixedSize(horizontal: false, vertical: true)
         Spacer(minLength: CSSpace.sm)
         CSIconView(
@@ -532,9 +617,26 @@ struct AgentContextCard: View {
       restingColor: Color.primary, hoverColor: Color.primary,
       hoverBackground: Color.primary.opacity(CSAlpha.fill)
     )
+    // Publishes "focus is in this card" without a second focus binding beside
+    // the hover modifier's own focus outline.
+    .focusedValue(\.agentContextCardFocus, presenter)
     .padding(.horizontal, -CSSpace.sm)
     .help(AgentContextPanelCopy.toolSettingsHelp)
+    .accessibilityLabel(AgentContextPanelCopy.toolSettings)
     .accessibilityIdentifier("agent-context-tool-settings")
+  }
+}
+
+/// The presenter whose card holds keyboard focus, published by the card's
+/// focusable control and read by the card itself.
+private struct AgentContextCardFocusKey: FocusedValueKey {
+  typealias Value = AgentContextCardPresenter
+}
+
+extension FocusedValues {
+  fileprivate var agentContextCardFocus: AgentContextCardPresenter? {
+    get { self[AgentContextCardFocusKey.self] }
+    set { self[AgentContextCardFocusKey.self] = newValue }
   }
 }
 
@@ -546,6 +648,7 @@ struct AgentContextCardLayer: View {
   @ObservedObject var store: AgentChatStore
   @ObservedObject var presenter: AgentContextCardPresenter
   let openToolSettings: () -> Void
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     GeometryReader { geometry in
@@ -559,15 +662,24 @@ struct AgentContextCardLayer: View {
             .frame(maxHeight: maxHeight)
         }
         .frame(width: width)
+        // The visible card, or the scroll viewport on a short window — not
+        // the scrolled content, whose clipped part lies over the conversation.
+        .background(AgentContextHitAnchor { presenter.registerCard($0) })
         .frame(maxHeight: maxHeight, alignment: .top)
         .padding(.top, inset)
         .padding(.trailing, inset)
         .frame(
           width: geometry.size.width, height: geometry.size.height, alignment: .topTrailing
         )
-        .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .topTrailing)))
+        .transition(
+          reduceMotion
+            ? .opacity : .opacity.combined(with: .scale(scale: 0.97, anchor: .topTrailing)))
       }
     }
+    // A closing card leaves the hit and accessibility trees at once, not when
+    // its fade ends.
+    .allowsHitTesting(presenter.isOpen)
+    .accessibilityHidden(!presenter.isOpen)
     .animation(.easeOut(duration: CSMotion.Tempo.hover), value: presenter.isOpen)
   }
 

@@ -1,7 +1,7 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
-    "" : {
+    "": {
       "shouldTranslate" : false
     },
     "%@\nEndpoint: %@" : {
@@ -3268,11 +3268,11 @@
       }
     },
     "Allow access" : {
-      "comment" : "In-app permission repair chip; the row title already names the permission",
+      "comment" : "In-app permission repair action; the row title already names the permission",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
+            "state" : "translated",
             "value" : "Przyznaj dostęp"
           }
         }
@@ -3345,17 +3345,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Jest już w innej synchronizacji. Wybranie łączy obie grupy."
-          }
-        }
-      }
-    },
-    "Already turned on? macOS may apply it only after you quit and reopen x9bus." : {
-      "comment" : "Permission still missing after a request; macOS may need the app to restart",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Już włączone? macOS może to uwzględnić dopiero po zamknięciu i ponownym otwarciu x9bus."
           }
         }
       }
@@ -4824,6 +4813,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zmień klucz"
+          }
+        }
+      }
+    },
+    "Changed access in System Settings? The status updates when you return to this window." : {
+      "comment" : "Setup permissions step: statuses are re-read when the setup window becomes active again",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zmieniono dostęp w Ustawieniach systemowych? Stan odświeży się po powrocie do tego okna."
           }
         }
       }
@@ -12259,6 +12259,17 @@
         }
       }
     },
+    "No access" : {
+      "comment" : "Permission row status: the probe only shows that Codescribe has no effective access, not that the user refused",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Brak dostępu"
+          }
+        }
+      }
+    },
     "No action is required. To clear this notice, delete or correct the line, then restart x9bus." : {
       "comment" : "About panel: what to do about an unread .env key",
       "localizations" : {
@@ -13748,6 +13759,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Otwórz Ustawienia systemowe"
+          }
+        }
+      }
+    },
+    "Open System Settings for %@" : {
+      "comment" : "VoiceOver label of the row's System Settings action; the placeholder is a macOS privacy scope",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwórz Ustawienia systemowe: %@"
           }
         }
       }
@@ -28188,6 +28210,17 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "x9bus nie odczytuje tego wpisu z pliku %@, więc nie ma on żadnego wpływu."
+          }
+        }
+      }
+    },
+    "x9bus doesn’t have access yet. If it’s already on in System Settings, macOS may apply it only after you quit and reopen x9bus." : {
+      "comment" : "Informational hint, not an error: access is still missing after a request; reopening may help but is not guaranteed",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "x9bus nie ma jeszcze dostępu. Jeśli jest już włączony w Ustawieniach systemowych, macOS może go uwzględnić dopiero po zamknięciu i ponownym otwarciu x9bus."
           }
         }
       }

@@ -258,6 +258,9 @@ struct CreatorPanel: View {
         kind: kind,
         state: model.permissions.state(kind),
         note: model.permissionRepairNote(for: kind),
+        noteIsProblem: kind.repairNoteIsProblem(
+          for: model.permissions.state(kind),
+          requested: model.requestedPermissions.contains(kind)),
         onRequested: { model.notePermissionRequested(kind) },
         // A grant can change recording admission, not only this row.
         onStateChanged: { model.refreshDictationReadiness() }
@@ -853,6 +856,9 @@ private struct PermissionChecklistRow: View {
   let state: PermissionState
   /// Shown under the name when the row's own button cannot fix the scope.
   var note: String? = nil
+  /// The note reports a problem (`PermissionKind.repairNoteIsProblem`);
+  /// otherwise it is a hint: neutral guidance, not a failure.
+  var noteIsProblem = false
   /// Records that this scope was asked for, so a later miss can explain itself.
   var onRequested: (() -> Void)? = nil
   /// Re-probe after an in-app request (Speech Recognition dialog).
@@ -861,61 +867,99 @@ private struct PermissionChecklistRow: View {
 
   private var granted: Bool { state.isGranted }
 
+  /// Reading order: the name with its status on the right — the olive
+  /// capsule when granted, the warning disc and the status word when not —
+  /// then, only while the scope is missing, the note and the repair chips on
+  /// their own line, so a long Polish name, its note and the chips never
+  /// squeeze one another at the 664 pt detail minimum (smoke review
+  /// 2026-11-09; layout after candidate f5185f38c).
   var body: some View {
-    HStack(spacing: SettingsScale.rowInsetH) {
-      // A granted row says it with the capsule, which VoiceOver reads once;
-      // a missing scope keeps its state on the name, beside the warning disc.
-      VStack(alignment: .leading, spacing: 2) {
-        Text(kind.displayName)
-          .font(CSFont.ui(14, .medium))
-          .foregroundStyle(Color.primary)
-          .accessibilityValue(granted ? "" : state.label)
-        if kind == .spotifyAutomation {
-          Text("Optional")
-            .font(.caption)
-            .foregroundStyle(CSColor.secondaryInk)
-        }
-        if let note {
-          Text(note)
-            .font(.caption)
-            .foregroundStyle(kind.isRequiredForSetup ? CSColor.dangerLight : CSColor.secondaryInk)
+    VStack(alignment: .leading, spacing: 4) {
+      HStack(alignment: .center, spacing: SettingsScale.rowInsetH) {
+        // A granted row says it with the capsule, which VoiceOver reads once;
+        // a missing scope keeps its state on the name, beside the warning disc.
+        VStack(alignment: .leading, spacing: 2) {
+          Text(kind.displayName)
+            .font(CSFont.ui(14, .medium))
+            .foregroundStyle(Color.primary)
             .fixedSize(horizontal: false, vertical: true)
+            .accessibilityValue(granted ? "" : kind.statusLabel(for: state))
+          if kind.isOptionalForSetup {
+            Text("Optional")
+              .font(.caption)
+              .foregroundStyle(CSColor.secondaryInk)
+          }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        if granted {
+          CSStatusBadge(text: state.label, mark: .verified)
+        } else {
+          // The state is written out beside the disc, so a missing scope reads
+          // as name + state + action without relying on VoiceOver or colour.
+          HStack(spacing: 6) {
+            missingMark
+            Text(kind.statusLabel(for: state))
+              .font(CSFont.ui(11, .medium))
+              .foregroundStyle(CSColor.secondaryInk)
+              // VoiceOver already hears the state as the name's value.
+              .accessibilityHidden(true)
+          }
+          .fixedSize()
         }
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      if granted {
-        CSStatusBadge(text: state.label, mark: .verified)
-      } else {
-        missingMark
-        let repair = kind.repair(for: state)
-        // Repair actions read through their chip shape, not through bold text
-        // (Founder D2, 2026-10-26): the same neutral chip as every other flat
-        // Settings action. The row title already names the permission, so the
-        // visible label stays generic; VoiceOver keeps the specific one.
-        if repair.requestsNatively {
-          SettingsChipButton("Allow access", tint: CSColor.secondaryInk) {
-            requestPending = true
-            onRequested?()
-            Task { @MainActor in
-              defer { requestPending = false }
-              // The return value is not a grant; the following probe is.
-              _ = await kind.requestInApp()
-              onStateChanged?()
-            }
-          }
-          .disabled(requestPending)
-          .accessibilityLabel(Text("allow \(kind.displayName)"))
-        }
-        if repair.opensSettings {
-          SettingsChipButton("Open System Settings", tint: CSColor.secondaryInk) {
-            onRequested?()
-            kind.openSystemSettings()
-          }
-        }
+      if !granted {
+        if let note { noteLine(note) }
+        repairChips
       }
     }
     .padding(.horizontal, SettingsScale.rowInsetH)
     .padding(.vertical, 7)
+  }
+
+  /// A problem keeps the danger rung behind the warning sign; a hint is
+  /// secondary ink behind the info sign, so meaning never rests on colour
+  /// alone.
+  private func noteLine(_ note: String) -> some View {
+    let tint = noteIsProblem ? CSColor.dangerLight : CSColor.secondaryInk
+    return HStack(alignment: .firstTextBaseline, spacing: 4) {
+      CSIconView(icon: noteIsProblem ? .warning : .info, size: 10, weight: .semibold, color: tint)
+        .accessibilityHidden(true)
+      Text(note)
+        .font(.caption)
+        .foregroundStyle(tint)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .accessibilityElement(children: .combine)
+  }
+
+  /// Repair actions read through their chip shape, not through bold text
+  /// (Founder D2, 2026-10-26): the same neutral chip as every other flat
+  /// Settings action. The row title already names the permission, so the
+  /// visible label stays generic; VoiceOver keeps the specific one.
+  private var repairChips: some View {
+    let repair = kind.repair(for: state)
+    return HStack(spacing: 8) {
+      if repair.requestsNatively {
+        SettingsChipButton("Allow access", tint: CSColor.secondaryInk) {
+          requestPending = true
+          onRequested?()
+          Task { @MainActor in
+            defer { requestPending = false }
+            // The return value is not a grant; the following probe is.
+            _ = await kind.requestInApp()
+            onStateChanged?()
+          }
+        }
+        .disabled(requestPending)
+        .accessibilityLabel(Text("allow \(kind.displayName)"))
+      }
+      if repair.opensSettings {
+        SettingsChipButton("Open System Settings", tint: CSColor.secondaryInk) {
+          onRequested?()
+          kind.openSystemSettings()
+        }
+      }
+    }
   }
 
   /// A missing scope keeps its warning disc beside the repair action; a

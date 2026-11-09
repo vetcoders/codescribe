@@ -78,32 +78,81 @@ enum PermissionKind: String, CaseIterable, Identifiable {
     self == .accessibility || self == .inputMonitoring || self == .screenRecording
   }
 
+  /// Status text for a row. The one owner of this wording for Settings and the
+  /// wizard. Accessibility, Screen Recording and Full Disk Access are read by
+  /// probes that only report whether Codescribe has effective access now, so a
+  /// miss there is "No access", not a denial the user chose. The other scopes
+  /// expose a real macOS decision and keep "Denied".
+  var statusLabelUsesNoAccess: Bool {
+    self == .accessibility || self == .screenRecording || self == .fullDiskAccess
+  }
+
+  func statusLabel(for state: PermissionState) -> String {
+    statusLabel(
+      for: state, locale: Locale(identifier: Bundle.main.preferredLocalizations.first ?? "en"))
+  }
+
+  func statusLabel(for state: PermissionState, locale: Locale) -> String {
+    guard state == .denied, statusLabelUsesNoAccess else { return state.label(locale: locale) }
+    return String(
+      localized: LocalizedStringResource(
+        "No access", locale: locale,
+        comment:
+          "Permission row status: the probe only shows that Codescribe has no effective access, not that the user refused"
+      ))
+  }
+
+  /// Which note a missing grant gets, if any. The one classifier behind both
+  /// the sentence (`repairNote`) and its presentation (`repairNoteIsProblem`),
+  /// so the wording and the warning sign cannot drift apart.
+  func repairNoteKind(for state: PermissionState, requested: Bool) -> PermissionRepairNoteKind? {
+    guard !state.isGranted else { return nil }
+    if self == .spotifyAutomation { return .spotifySetup }
+    if state == .denied, self == .microphone || self == .speechRecognition {
+      return .settingsOnly
+    }
+    if requested, grantMayNeedReopen { return .mayNeedReopen }
+    return nil
+  }
+
+  /// Whether the row's note reports a problem (danger ink behind the warning
+  /// sign) rather than a hint (secondary ink behind the info sign). Only a
+  /// required scope macOS will not ask about again is a problem; the reopen
+  /// hint and the optional Spotify guidance are information (Founder, smoke
+  /// review 2026-11-09: red and the warning sign are for real problems).
+  func repairNoteIsProblem(for state: PermissionState, requested: Bool) -> Bool {
+    isRequiredForSetup && repairNoteKind(for: state, requested: requested) == .settingsOnly
+  }
+
   /// One sentence for a missing grant the row's own button cannot fix: a
   /// denial macOS never asks about again, or a grant requested in this process
   /// that macOS may apply only after Codescribe reopens. `nil` otherwise.
   func repairNote(for state: PermissionState, requested: Bool, locale: Locale) -> String? {
-    guard !state.isGranted else { return nil }
-    if self == .spotifyAutomation {
+    switch repairNoteKind(for: state, requested: requested) {
+    case nil:
+      return nil
+    case .spotifySetup:
       return String(
         localized: LocalizedStringResource(
           "Open Spotify, then allow x9bus to lower its volume while recording. If access was denied, enable Spotify under x9bus in Privacy & Security > Automation.",
           locale: locale,
           comment: "Optional Spotify control permission; Spotify must be running to ask macOS"))
-    }
-    if state == .denied, self == .microphone || self == .speechRecognition {
+    case .settingsOnly:
       return String(
         localized: LocalizedStringResource(
           "macOS will not ask again. Turn on x9bus in System Settings.", locale: locale,
           comment: "Denied Microphone or Speech Recognition; System Settings is the macOS app"))
-    }
-    if requested, grantMayNeedReopen {
+    case .mayNeedReopen:
+      // States what the probe knows (no access yet) and what may help,
+      // without promising that a reopen grants anything.
       return String(
         localized: LocalizedStringResource(
-          "Already turned on? macOS may apply it only after you quit and reopen x9bus.",
+          "x9bus doesn’t have access yet. If it’s already on in System Settings, macOS may apply it only after you quit and reopen x9bus.",
           locale: locale,
-          comment: "Permission still missing after a request; macOS may need the app to restart"))
+          comment:
+            "Informational hint, not an error: access is still missing after a request; reopening may help but is not guaranteed"
+        ))
     }
-    return nil
   }
 
   /// Display name for the privacy scope. Its stable identity (`rawValue`)
@@ -233,6 +282,16 @@ enum PermissionKind: String, CaseIterable, Identifiable {
       return observed
     }
   }
+}
+
+/// The kinds of note a missing grant can carry; see `PermissionKind.repairNoteKind`.
+enum PermissionRepairNoteKind: Equatable, Sendable {
+  /// Optional Spotify control: how to let macOS ask, and where to undo a refusal.
+  case spotifySetup
+  /// A recorded refusal macOS never asks about again; only System Settings fixes it.
+  case settingsOnly
+  /// Requested in this process and still missing; macOS may apply it after a reopen.
+  case mayNeedReopen
 }
 
 struct PermissionRepair: Equatable, Sendable {
