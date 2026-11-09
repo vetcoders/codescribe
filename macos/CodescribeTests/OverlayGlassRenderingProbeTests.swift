@@ -182,7 +182,12 @@ final class OverlayGlassRenderingProbeTests: XCTestCase {
       settle(panel)
       RunLoop.main.run(until: Date().addingTimeInterval(0.15))
       settle(panel)
+      if visible {
+        XCTAssertTrue(panel.isVisible && panel.alphaValue == 1)
+        XCTAssertTrue(panel.occlusionState.contains(.visible), "A visible probe needs a real GUI")
+      }
 
+      let wallStarted = Date().timeIntervalSince1970
       let before = cpuSeconds()
       let started = CACurrentMediaTime()
       var latencies: [Double] = []
@@ -220,6 +225,11 @@ final class OverlayGlassRenderingProbeTests: XCTestCase {
         "backing": backing.rawValue, "workload": workload.rawValue,
         "ticks": ticks, "final_utf16": (text.string as NSString).length,
         "cpu_seconds": cpu, "wall_seconds": wall,
+        "start_unix_ms": wallStarted * 1000,
+        "end_unix_ms": Date().timeIntervalSince1970 * 1000,
+        "window_number": panel.windowNumber,
+        "panel_visible": panel.isVisible,
+        "occlusion_visible": panel.occlusionState.contains(.visible),
         "update_p50_ms": sorted[sorted.count / 2],
         "update_p95_ms": sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.95))],
         "compositor_power_measured": false,
