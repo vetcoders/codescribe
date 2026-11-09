@@ -70,6 +70,84 @@ final class CSSidebarColumnTests: XCTestCase {
     }
   }
 
+  func testSettingsNativeToggleReopensAndKeepsCollapsedHeaderCovered() throws {
+    try assertNativeToggleRoundTrip(key: keys[0]) {
+      self.mount(NSHostingController(rootView: SettingsView(model: .preview(.creator))))
+    }
+  }
+
+  func testAgentNativeToggleReopensAndKeepsCollapsedHeaderCovered() throws {
+    try assertNativeToggleRoundTrip(key: keys[1]) {
+      self.show(
+        AgentWindowChrome.makeWindow(
+          content: NSHostingController(rootView: AgentChatView(store: AgentChatStore(engine: nil))))
+      )
+    }
+  }
+
+  /// Keep event routing, native action dispatch and material coverage separate:
+  /// performClick proves the action, while hitTest proves a pointer can reach it.
+  private func assertNativeToggleRoundTrip(key: String, make: () -> NSWindow) throws {
+    let previous = UserDefaults.standard.object(forKey: key)
+    UserDefaults.standard.set(true, forKey: key)
+    let window = make()
+    defer {
+      window.close()
+      if let previous {
+        UserDefaults.standard.set(previous, forKey: key)
+      } else {
+        UserDefaults.standard.removeObject(forKey: key)
+      }
+    }
+    func pump(_ ready: () -> Bool) {
+      let deadline = Date().addingTimeInterval(1.5)
+      while Date() < deadline {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        window.displayIfNeeded()
+        if ready() { return }
+      }
+    }
+    pump { window.toolbar?.items.isEmpty == false }
+    let root = try XCTUnwrap(window.contentView?.superview)
+    let split = try XCTUnwrap(first(in: root) { $0 is NSSplitView } as? NSSplitView)
+    let controller = try XCTUnwrap(split.delegate as? NSSplitViewController)
+    let sidebar = try XCTUnwrap(controller.splitViewItems.first { $0.behavior == .sidebar })
+    for collapsed in [true, false, true, false] {
+      let item = try XCTUnwrap(
+        window.toolbar?.items.first {
+          $0.itemIdentifier.rawValue.localizedCaseInsensitiveContains("toggleSidebar")
+        })
+      let itemView = try XCTUnwrap(item.view)
+      let button = try XCTUnwrap(first(in: itemView) { $0 is NSButton } as? NSButton)
+      let point = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: root)
+      let hit = root.hitTest(point)
+      let routed = hit.map { $0 === button || $0.isDescendant(of: button) } ?? false
+      let evidence = XCTAttachment(
+        string:
+          "key=\(key) nextCollapsed=\(collapsed) item=\(itemView.convert(itemView.bounds, to: nil)) "
+          + "button=\(button.convert(button.bounds, to: nil)) hit=\(String(describing: hit))")
+      evidence.name = "Native sidebar toggle route"
+      evidence.lifetime = .keepAlways
+      add(evidence)
+      XCTAssertTrue(routed, "the native sidebar button must receive its pointer target")
+      XCTAssertTrue(button.isEnabled)
+      button.performClick(nil)
+      pump { sidebar.isCollapsed == collapsed }
+      XCTAssertEqual(sidebar.isCollapsed, collapsed, "native action must change the sidebar")
+      guard sidebar.isCollapsed == collapsed else { return }
+      if collapsed {
+        let viewport = try XCTUnwrap(
+          first(in: root) {
+            $0.identifier?.rawValue == "codescribe-header-viewport"
+          })
+        let frame = viewport.convert(viewport.bounds, to: nil)
+        XCTAssertEqual(
+          frame.minX, 0, accuracy: 1, "collapsed titlebar needs material at its left edge")
+        XCTAssertEqual(frame.maxX, window.frame.width, accuracy: 1)
+      }
+    }
+  }
+
   private func mount(_ host: NSViewController) -> NSWindow {
     let window = NSWindow(
       contentRect: NSRect(x: 80, y: 80, width: 1120, height: 720),
