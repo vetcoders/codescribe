@@ -40,10 +40,12 @@ RETRYABLE = frozenset({
 #: The installed bundle: productName in macos/project.yml.
 DEFAULT_APP = Path("/Applications/X9bus.app")
 #: Bundles that installs before 2026-11-09 left beside it, with the same bundle
-#: identifier. A process started from one keeps its executable name
-#: (Codescribe) until an idle restart moves it to the installed bundle; after
-#: that the bundle goes to the Trash so LaunchServices sees one owner.
+#: identifier. Coexistence is the default (`CODESCRIBE_RETIRE_LEGACY_APP=0` or
+#: unset): `/Applications/Codescribe.app` stays side-by-side next to
+#: `/Applications/X9bus.app` and is neither targeted nor moved to the Trash
+#: unless `CODESCRIBE_RETIRE_LEGACY_APP=1` is explicitly set.
 RETIRED_BUNDLE_NAMES = ("Codescribe.app",)
+RETIRE_LEGACY_ENV = "CODESCRIBE_RETIRE_LEGACY_APP"
 TRASH = Path.home() / ".Trash"
 LSREGISTER = Path(
     "/System/Library/Frameworks/CoreServices.framework/Frameworks/"
@@ -70,6 +72,10 @@ def executable(bundle: Path) -> Path:
     if not isinstance(name, str) or not name or "/" in name:
         name = bundle.stem
     return bundle / "Contents/MacOS" / name
+
+
+def retire_legacy_enabled() -> bool:
+    return os.environ.get(RETIRE_LEGACY_ENV, "").strip().lower() in ("1", "true", "yes")
 
 
 def retired_bundles(app: Path) -> list[Path]:
@@ -152,7 +158,11 @@ CARRIED_ENV_PREFIX = "CODESCRIBE_"
 
 
 def carried_environment() -> list[str]:
-    return sorted(key for key in os.environ if key.startswith(CARRIED_ENV_PREFIX))
+    return sorted(
+        key
+        for key in os.environ
+        if key.startswith(CARRIED_ENV_PREFIX) and key != RETIRE_LEGACY_ENV
+    )
 
 
 def launch_new_generation(app: Path, carried: list[str]):
@@ -294,8 +304,11 @@ def retire(app: Path, trash: Path | None = None) -> list[dict]:
     Only a real directory with the installed bundle's identifier is moved, never
     the installed bundle itself, and never while one of its executables runs: a
     running app keeps spawning its helpers from Contents/MacOS. The Trash keeps
-    it restorable.
+    it restorable. Side-by-side coexistence is the default unless
+    `CODESCRIBE_RETIRE_LEGACY_APP=1` is explicitly set.
     """
+    if not retire_legacy_enabled():
+        return []
     trash = trash or TRASH
     identifier = info(app).get("CFBundleIdentifier")
     outcomes = []

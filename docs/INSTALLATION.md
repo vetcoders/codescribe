@@ -130,7 +130,7 @@ From the repository root, launch the intended bundle through LaunchServices:
 /usr/bin/open "$PWD/macos/build/Build/Products/Debug/X9bus.app"
 ```
 
-Direct execution of `X9bus.app/Contents/MacOS/Codescribe` from a shell or
+Direct execution of `X9bus.app/Contents/MacOS/X9bus` from a shell or
 agent host is **unsupported** for native app startup and speech acceptance.
 The launching host can remain responsible for the privacy request even when
 the bundle has the required usage description. See
@@ -222,12 +222,12 @@ verifies the original PID/path after activation:
 (
   installed_pid="$(swift - <<'SWIFT'
 import AppKit
-let expected = "/Applications/X9bus.app/Contents/MacOS/Codescribe"
+let expected = "/Applications/X9bus.app/Contents/MacOS/X9bus"
 let matches = NSRunningApplication.runningApplications(
   withBundleIdentifier: "com.vetcoders.codescribe"
 ).filter { !$0.isTerminated && $0.executableURL?.path == expected }
 guard matches.count == 1 else {
-  fputs("Expected one running installed Codescribe; refusing activation.\n", stderr)
+  fputs("Expected one running installed X9bus; refusing activation.\n", stderr)
   exit(1)
 }
 print(matches[0].processIdentifier)
@@ -235,7 +235,7 @@ SWIFT
   )" || exit 1
   open /Applications/X9bus.app || exit 1
   executable="$(ps -p "$installed_pid" -o comm=)" || exit 1
-  test "$executable" = /Applications/X9bus.app/Contents/MacOS/Codescribe || exit 1
+  test "$executable" = /Applications/X9bus.app/Contents/MacOS/X9bus || exit 1
   printf 'Installed PID: %s; executable: %s\n' "$installed_pid" "$executable"
 )
 ```
@@ -469,7 +469,7 @@ which on a fresh host is none. `--agent-clients` adds the selection and
 replaces it exactly as the Settings panel does:
 
 ```bash
-/Applications/X9bus.app/Contents/MacOS/Codescribe \
+/Applications/X9bus.app/Contents/MacOS/X9bus \
   --install-agent-bridge --agent-clients claude-code,codex
 ```
 
@@ -492,7 +492,7 @@ the selection stays a windowed act: the CLI never installs an empty selection.
 | ----------------------------------- | ------------------------ | ------------------------------------ |
 | CFBundleIdentifier                  | com.vetcoders.codescribe | Unique app identifier                |
 | CFBundleIconFile                    | AppIcon                  | Points to AppIcon.icns               |
-| CFBundleExecutable                  | Codescribe               | Main binary name                     |
+| CFBundleExecutable                  | X9bus                    | Main binary name                     |
 | LSMinimumSystemVersion              | 26.0                     | Requires macOS Tahoe+                |
 | NSMicrophoneUsageDescription        | ...                      | Microphone permission prompt         |
 | NSSpeechRecognitionUsageDescription | ...                      | Speech Recognition permission prompt |

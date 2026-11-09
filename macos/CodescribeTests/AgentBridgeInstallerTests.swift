@@ -1387,7 +1387,7 @@ final class AgentBridgeInstallerTests: XCTestCase {
         FileManager.default.fileExists(atPath: home.appendingPathComponent(folder).path),
         "no client folder appears without an explicit installation")
     }
-    for command in ["cs-bus", "cs-say"] {
+    for command in ["cs-bus", "x9-bus", "cs-say", "x9-say"] {
       let path = home.appendingPathComponent(".local/bin/" + command).path
       XCTAssertTrue(FileManager.default.isExecutableFile(atPath: path))
       let values = try URL(fileURLWithPath: path).resourceValues(

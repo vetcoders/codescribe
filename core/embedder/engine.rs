@@ -610,7 +610,7 @@ mod tests {
     fn resolves_signed_app_embedder_resource_from_executable_geometry() {
         let temp = tempfile::tempdir().unwrap();
         let contents = temp.path().join("X9bus.app/Contents");
-        let executable = contents.join("MacOS/Codescribe");
+        let executable = contents.join("MacOS/X9bus");
         let model = contents.join("Resources/models/embedder");
         std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
         std::fs::create_dir_all(&model).unwrap();

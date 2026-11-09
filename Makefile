@@ -252,7 +252,7 @@ install-app: install-voice-lab
 	  CODESCRIBE_INSTALL_LANE=1 \
 	  SPARKLE_ED_PUBLIC_KEY="$$SPARKLE" \
 	  $(MAKE) --no-print-directory app PROFILE=local-release
-	@APP_SRC="macos/build/Build/Products/Release/X9bus.app"; \
+	@APP_SRC="macos/build/Build/Products/Release/$(CODESCRIBE_APP_NAME).app"; \
 	if [ ! -d "$$APP_SRC" ]; then \
 		echo "Build product missing: $$APP_SRC — 'make app PROFILE=local-release' did not produce the app."; \
 		exit 1; \
@@ -274,7 +274,7 @@ install-app: install-voice-lab
 	@codesign --verify --deep --strict /Applications/$(CODESCRIBE_APP_NAME).app
 	@echo "Seal: codesign --verify --deep --strict ok; LSMultipleInstancesProhibited=$$(/usr/libexec/PlistBuddy -c 'Print :LSMultipleInstancesProhibited' /Applications/$(CODESCRIBE_APP_NAME).app/Contents/Info.plist)"
 	@echo "Installed: /Applications/$(CODESCRIBE_APP_NAME).app"
-	@"/Applications/$(CODESCRIBE_APP_NAME).app/Contents/MacOS/Codescribe" --install-agent-bridge
+	@"/Applications/$(CODESCRIBE_APP_NAME).app/Contents/MacOS/$(CODESCRIBE_APP_NAME)" --install-agent-bridge
 	@version=$$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "/Applications/$(CODESCRIBE_APP_NAME).app/Contents/Info.plist" 2>/dev/null || true); \
 	if [ -n "$$version" ]; then \
 		echo "Build $$version zainstalowany"; \

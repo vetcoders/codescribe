@@ -1306,9 +1306,21 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     let installedReplacement: Bool
   }
 
+  private func commandManifestPath(for name: String) -> String {
+    switch name {
+    case "x9-bus":
+      return "bin/cs-bus"
+    case "x9-say":
+      return "bin/cs-say"
+    default:
+      return "bin/" + name
+    }
+  }
+
   private func commandNames(manifest: AgentBridgeBundleManifest) -> [String] {
-    ["cs-bus", "cs-say", "cs-junie", "bus-mcp.py"].filter { name in
-      manifest.files.contains { $0.path == "bin/" + name }
+    ["cs-bus", "x9-bus", "cs-say", "x9-say", "cs-junie", "bus-mcp.py"].filter { name in
+      let manifestPath = commandManifestPath(for: name)
+      return manifest.files.contains { $0.path == manifestPath }
     }
   }
 
@@ -1350,7 +1362,9 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       let destination = commandURL(name)
       let link = try? fileManager.destinationOfSymbolicLink(atPath: destination.path)
       if fileManager.fileExists(atPath: destination.path) || link != nil {
-        let ownedLink = link == runtimeDirectory.appendingPathComponent("bin/" + name).path
+        let ownedLink =
+          link == runtimeDirectory.appendingPathComponent(commandManifestPath(for: name)).path
+          || link == runtimeDirectory.appendingPathComponent("bin/" + name).path
         let ownedFile =
           link == nil
           && managedCommandID(destination).map {
@@ -1375,8 +1389,9 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       // cs-bus receives the complete verified helper, so neither entrypoint
       // depends on the replaceable runtime/bin payload after publication.
       let mode = name.hasSuffix(".py") ? 0o644 : 0o755
+      let manifestPath = commandManifestPath(for: name)
       let source = runtimeDirectory.appendingPathComponent(
-        name == "cs-bus" ? manifest.helper : "bin/" + name)
+        manifestPath == "bin/cs-bus" ? manifest.helper : manifestPath)
       let script = try String(contentsOf: source, encoding: .utf8)
       let body = script.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
         .dropFirst().joined(separator: "\n")

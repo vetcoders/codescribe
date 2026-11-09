@@ -8,12 +8,12 @@ Apple live dictation uses `SFSpeechRecognizer` inside the bundled
 Speech Recognition authorization belongs to the **responsible process's TCC
 identity**, not to the data directory or the shell command's executable path.
 
-| Context                                                | TCC identity                                                                        |
-| ------------------------------------------------------ | ----------------------------------------------------------------------------------- |
-| Release app bundle via LaunchServices                  | `com.vetcoders.codescribe`                                                          |
-| Debug app bundle via LaunchServices                    | `com.vetcoders.codescribe.dev`                                                      |
-| CLI / terminal probes                                  | Normally the terminal/host; not proof of an app grant                               |
-| Direct `X9bus.app/Contents/MacOS/Codescribe` execution | Unsupported native app startup; may retain the terminal/agent host's responsibility |
+| Context                                           | TCC identity                                                                        |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Release app bundle via LaunchServices             | `com.vetcoders.codescribe`                                                          |
+| Debug app bundle via LaunchServices               | `com.vetcoders.codescribe.dev`                                                      |
+| CLI / terminal probes                             | Normally the terminal/host; not proof of an app grant                               |
+| Direct `X9bus.app/Contents/MacOS/X9bus` execution | Unsupported native app startup; may retain the terminal/agent host's responsibility |
 
 Granting Speech for the terminal does **not** authorize the app. That is why
 CLI can probe `speech_auth: authorized` while the installed app fails live
@@ -29,7 +29,7 @@ a particular dev/test build. See [Installation: supported native launch
 context](./INSTALLATION.md#supported-native-launch-context) for commands and
 per-launch environment variables.
 
-Do **not** execute `Contents/MacOS/Codescribe` directly from a shell, agent
+Do **not** execute `Contents/MacOS/X9bus` directly from a shell, agent
 host, debugger wrapper or subprocess for native speech acceptance. This is
 unsupported even when the executable remains inside a bundle whose
 `Info.plist` contains `NSSpeechRecognitionUsageDescription`. TCC can attribute

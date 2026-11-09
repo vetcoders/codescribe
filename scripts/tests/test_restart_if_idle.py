@@ -234,6 +234,21 @@ class RestartIfIdleTests(unittest.TestCase):
     def dispatches(self):
         return [call for call in self.calls if Path(call[0]).name == "open" and "-a" in call]
 
+    def test_retired_bundle_is_kept_side_by_side_by_default(self):
+        main = self.install_retired_bundle()
+        (self.handshakes / "123.ready.json").unlink()
+        self.publish_ready(123, "old-generation", bundle=self.retired)
+        self.stale_pids = {123}
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CODESCRIBE_RETIRE_LEGACY_APP", None)
+            code, result, _ = self.invoke_main("--newer-only")
+        self.assertEqual((code, result["status"]), (0, "restarted"))
+        self.assertEqual(result["retired"], [])
+        self.assertTrue(main.is_file())
+        self.assertTrue(self.retired.is_dir())
+        self.assertFalse(self.trash.exists())
+        self.assertFalse(any(Path(call[0]).name == "lsregister" for call in self.calls))
+
     def test_process_lookup_covers_the_installed_and_the_retired_executable(self):
         self.invoke()
         pgrep = [call for call in self.calls if Path(call[0]).name == "pgrep"][0]
@@ -259,7 +274,8 @@ class RestartIfIdleTests(unittest.TestCase):
         (self.handshakes / "123.ready.json").unlink()
         self.publish_ready(123, "old-generation", bundle=self.retired)
         self.stale_pids = {123}
-        code, result, _ = self.invoke_main("--newer-only")
+        with patch.dict(os.environ, {"CODESCRIBE_RETIRE_LEGACY_APP": "1"}):
+            code, result, _ = self.invoke_main("--newer-only")
         self.assertEqual((code, result["status"]), (0, "restarted"))
         self.assertEqual(result["retired"], [{
             "bundle": str(self.retired), "status": "retired", "trash": str(self.trash / "Codescribe.app"),
@@ -271,7 +287,8 @@ class RestartIfIdleTests(unittest.TestCase):
     def test_retired_bundle_stays_while_one_of_its_executables_runs(self):
         main = self.install_retired_bundle()
         self.processes = [str(main.parent / "codescribe-stt-bridge")]
-        code, result, _ = self.invoke_main("--newer-only")
+        with patch.dict(os.environ, {"CODESCRIBE_RETIRE_LEGACY_APP": "1"}):
+            code, result, _ = self.invoke_main("--newer-only")
         self.assertEqual((code, result["status"]), (0, "current"))
         self.assertEqual(result["retired"], [
             {"bundle": str(self.retired), "status": "kept", "reason": "bundle_in_use"},
@@ -281,7 +298,8 @@ class RestartIfIdleTests(unittest.TestCase):
     def test_retired_bundle_with_another_identifier_is_never_moved(self):
         main = self.install_retired_bundle(identifier="com.example.other")
         self.running = set()
-        code, result, _ = self.invoke_main("--newer-only")
+        with patch.dict(os.environ, {"CODESCRIBE_RETIRE_LEGACY_APP": "1"}):
+            code, result, _ = self.invoke_main("--newer-only")
         self.assertEqual((code, result["status"]), (0, "not_running"))
         self.assertEqual(result["retired"], [
             {"bundle": str(self.retired), "status": "kept", "reason": "different_bundle_identifier"},

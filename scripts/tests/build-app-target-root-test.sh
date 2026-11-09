@@ -109,13 +109,13 @@ elif name == "install_name_tool":
         record()
     else:
         assert args[0] == "-change" and len(args) == 4, args
-        assert args[2] == "@rpath/libcodescribe_ffi.dylib" and Path(args[3]).name == "Codescribe", args
+        assert args[2] == "@rpath/libcodescribe_ffi.dylib" and Path(args[3]).name == "X9bus", args
         Path(str(args[3]) + ".ffi").write_text(args[2])
         record()
 elif name == "otool":
     assert args[0] == "-L" and len(args) == 2, args
     path = Path(args[1])
-    if path.name == "Codescribe":
+    if path.name == "X9bus":
         marker = Path(str(path) + ".ffi")
         ffi = marker.read_text() if marker.exists() else str(out / "deps/libcodescribe_ffi.dylib")
         print(f"{path}:\n\t{ffi} (compatibility version 0.0.0, current version 0.0.0)\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1.0.0)")
@@ -147,7 +147,7 @@ elif name == "xcodebuild":
     bundle_id = "com.vetcoders.codescribe.dev" if config == "Debug" else "com.vetcoders.codescribe"
     (contents / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": bundle_id}))
     (contents / "MacOS").mkdir()
-    (contents / "MacOS/Codescribe").write_bytes(b"fresh:Codescribe")
+    (contents / "MacOS/X9bus").write_bytes(b"fresh:X9bus")
 elif name == "cp":
     import subprocess
     assert len(args) == 2, args
@@ -309,7 +309,7 @@ def run_case(base, profile, layout, mode="success", skip=False, signing_identity
             else:
                 config = "Debug" if profile == "debug" else "Release"
                 product = repo / "macos/build/Build/Products" / config
-                assert (product / "X9bus.app/Contents/MacOS/Codescribe").is_file()
+                assert (product / "X9bus.app/Contents/MacOS/X9bus").is_file()
                 assert not (product / "Codescribe.app").exists()
                 assert str(product / "X9bus.app") in result.stdout
         else:

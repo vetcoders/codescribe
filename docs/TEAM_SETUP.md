@@ -31,7 +31,7 @@ make app PROFILE=debug
 Native dev/test launches must open the **app bundle through LaunchServices**.
 `make start` also uses LaunchServices but selects by app name first; use the
 explicit path above when choosing Debug or a particular build. Directly
-executing `X9bus.app/Contents/MacOS/Codescribe` from a terminal or agent
+executing `X9bus.app/Contents/MacOS/X9bus` from a terminal or agent
 host is unsupported: TCC may attribute Speech Recognition to that host and
 abort even though the app bundle contains the usage description.
 

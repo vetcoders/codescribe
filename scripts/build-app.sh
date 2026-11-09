@@ -337,7 +337,7 @@ if [[ "${SKIP_XCODEBUILD:-0}" != "1" \
 fi
 
 SCHEME="Codescribe"
-APP_BUNDLE_NAME="X9bus"
+APP_BUNDLE_NAME="${CODESCRIBE_APP_NAME:-X9bus}"
 BRIDGE_DIR="macos/Codescribe/Bridge"
 DYLIB="$TARGET_DIR/libcodescribe_ffi.dylib"
 BINDGEN="$TARGET_DIR/uniffi-bindgen"
@@ -481,6 +481,7 @@ run_app_xcodebuild() {
   xcodebuild -project macos/Codescribe.xcodeproj \
     -scheme "$SCHEME" -configuration "$CONFIG" \
     -derivedDataPath "$DERIVED" \
+    PRODUCT_NAME="$APP_BUNDLE_NAME" \
     ONLY_ACTIVE_ARCH=YES \
     LIBRARY_SEARCH_PATHS="\"$TARGET_DIR\"" \
     CODE_SIGNING_ALLOWED="${CODE_SIGNING_ALLOWED:-NO}" \
@@ -522,12 +523,12 @@ cp "$DYLIB" "$FRAMEWORKS/"
 # (21 X 2026). So both ends are named here, after the link.
 EMBEDDED_FFI="$FRAMEWORKS/libcodescribe_ffi.dylib"
 install_name_tool -id @rpath/libcodescribe_ffi.dylib "$EMBEDDED_FFI"
-# A Debug build moves the app's code into $SCHEME.debug.dylib (Xcode's
+# A Debug build moves the app's code into $APP_BUNDLE_NAME.debug.dylib (Xcode's
 # ENABLE_DEBUG_DYLIB, for previews) and the executable becomes a stub that
 # loads it, so the library is linked from there.
-APP_MACHO="$MACOS_DIR/$SCHEME"
-if [[ -f "$MACOS_DIR/$SCHEME.debug.dylib" ]]; then
-  APP_MACHO="$MACOS_DIR/$SCHEME.debug.dylib"
+APP_MACHO="$MACOS_DIR/$APP_BUNDLE_NAME"
+if [[ -f "$MACOS_DIR/$APP_BUNDLE_NAME.debug.dylib" ]]; then
+  APP_MACHO="$MACOS_DIR/$APP_BUNDLE_NAME.debug.dylib"
 fi
 LINKED_FFI="$(otool -L "$APP_MACHO" | awk '/libcodescribe_ffi\.dylib/ {print $1; exit}')"
 if [[ -z "$LINKED_FFI" ]]; then
@@ -535,7 +536,7 @@ if [[ -z "$LINKED_FFI" ]]; then
   exit 1
 fi
 install_name_tool -change "$LINKED_FFI" @rpath/libcodescribe_ffi.dylib "$APP_MACHO"
-for MACHO in "$MACOS_DIR/$SCHEME" "$APP_MACHO" "$EMBEDDED_FFI"; do
+for MACHO in "$MACOS_DIR/$APP_BUNDLE_NAME" "$APP_MACHO" "$EMBEDDED_FFI"; do
   OUTSIDE="$(otool -L "$MACHO" | tail -n +2 | awk '{print $1}' \
     | grep -v -E '^(@rpath/|@executable_path/|@loader_path/|/System/|/usr/lib/)' || true)"
   if [[ -n "$OUTSIDE" ]]; then

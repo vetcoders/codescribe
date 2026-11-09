@@ -43,7 +43,7 @@ final class LocalizationFoundationTests: XCTestCase {
     XCTAssertEqual(app.infoDictionary?["CFBundleDisplayName"] as? String, "X9bus")
     XCTAssertEqual(app.infoDictionary?["CFBundleName"] as? String, "X9bus")
     XCTAssertEqual(app.bundleURL.lastPathComponent, "X9bus.app")
-    XCTAssertEqual(app.infoDictionary?["CFBundleExecutable"] as? String, "Codescribe")
+    XCTAssertEqual(app.infoDictionary?["CFBundleExecutable"] as? String, "X9bus")
     XCTAssertTrue(
       ["com.vetcoders.codescribe", "com.vetcoders.codescribe.dev"].contains(app.bundleIdentifier ?? ""))
   }
