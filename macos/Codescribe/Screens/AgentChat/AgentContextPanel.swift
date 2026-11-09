@@ -1,14 +1,7 @@
+import AppKit
 import SwiftUI
 
-/// Persisted open/closed state of the Agent context panel. Per app, closed by
-/// default (Founder decision, 2026-10-20). It is view state only: no thread,
-/// draft, model, recording or agent call reads or writes it.
-enum AgentContextPanelPreference {
-  static let defaultsKey = "AgentChat.contextPanelOpen.v1"
-  static let defaultIsOpen = false
-}
-
-/// User-facing copy for the conversation header and the context panel.
+/// User-facing copy for the conversation header and the context card.
 enum AgentContextPanelCopy {
   static var contextButton: String {
     String(localized: "Context", comment: "Agent header button that opens the context panel")
@@ -24,10 +17,6 @@ enum AgentContextPanelCopy {
     String(
       localized: "Close the context panel",
       comment: "Tooltip and accessibility label of the context panel's close button")
-  }
-
-  static var panelTitle: String {
-    String(localized: "Agent context", comment: "Title of the Agent window's context panel")
   }
 
   static var conversationSection: String {
@@ -50,10 +39,6 @@ enum AgentContextPanelCopy {
     String(
       localized: "Open Settings › Agent › Tools",
       comment: "Tooltip on the Tool settings row of the context panel")
-  }
-
-  static var modelFact: String {
-    String(localized: "Model", comment: "Context panel fact: the conversation's model")
   }
 
   static var queuedFact: String {
@@ -151,8 +136,6 @@ struct AgentLiveStatusPill: View {
   }
 }
 
-/// "Context": opens and closes the panel. It writes only the persisted flag,
-/// in the pin toggle's style (accent fill and stroke while on).
 /// One-click conversation width, beside Context: the founders use the width
 /// often enough that the submenu under "More actions" was too far away
 /// (2026-10-21). Cycles Standard → Wide → Full width over the same persisted
@@ -188,12 +171,17 @@ struct AgentWidthModeButton: View {
   }
 }
 
+
+/// "Context": opens and closes the context card, in the pin toggle's style
+/// (accent fill and stroke while on). A click on it while the card is open
+/// closes the card; the outside-click rule leaves this button to its action.
 struct AgentContextToggle: View {
-  @Binding var isOpen: Bool
+  @ObservedObject var presenter: AgentContextCardPresenter
 
   var body: some View {
+    let isOpen = presenter.isOpen
     Button {
-      isOpen.toggle()
+      presenter.toggle()
     } label: {
       HStack(spacing: 5) {
         CSIconView(icon: .info, size: 12, weight: .medium)
@@ -215,6 +203,7 @@ struct AgentContextToggle: View {
             lineWidth: 1)
       )
       .contentShape(Rectangle())
+      .background(AgentContextHitAnchor { presenter.registerToggle($0) })
     }
     .buttonStyle(.borderless)
     .csFocusRing(cornerRadius: CSRadius.window)
@@ -232,89 +221,242 @@ struct AgentContextToggle: View {
   }
 }
 
-// MARK: - Context panel
+// MARK: - Context card
 
-/// "Agent context": a fixed-width trailing column with what the selected
-/// conversation's stored facts and live execution, plus tool settings. It owns
-/// no execution state: the same store feeds the header, rail and this panel.
-struct AgentContextPanel: View {
-  @ObservedObject var store: AgentChatStore
-  let close: () -> Void
-  let openToolSettings: () -> Void
-  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-  @Environment(\.colorSchemeContrast) private var contrast
-  @Environment(\.csReduceTransparencyOverride) private var reduceTransparencyOverride
-  @Environment(\.csContrastOverride) private var contrastOverride
+/// Open/closed state of the Agent context card and the rules that close it.
+///
+/// View state only: no thread, draft, scroll position, model, recording or
+/// agent call reads or writes it, and it is never persisted. It starts closed
+/// in every new window and closes when the window is closed or ordered out,
+/// so showing the Agent window again shows it without the card, while
+/// re-activating a window that stayed on screen leaves the card as it was.
+///
+/// While open, Escape in this window closes the card first, and a click
+/// anywhere outside the card closes it and still reaches its target.
+@MainActor
+final class AgentContextCardPresenter: ObservableObject {
+  @Published private(set) var isOpen = false
 
-  private var opaqueSurface: Bool {
-    (reduceTransparencyOverride ?? reduceTransparency)
-      || (contrastOverride ?? contrast) == .increased
+  private weak var window: NSWindow?
+  private weak var toggleAnchor: NSView?
+  private weak var cardAnchor: NSView?
+  // Removed in deinit, which is nonisolated; touched only on the main actor.
+  nonisolated(unsafe) private var eventMonitor: Any?
+  nonisolated(unsafe) private var windowObservers: [NSObjectProtocol] = []
+
+  deinit {
+    if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
+    windowObservers.forEach { NotificationCenter.default.removeObserver($0) }
   }
+
+  func toggle() {
+    isOpen ? close() : open()
+  }
+
+  func open() {
+    guard !isOpen else { return }
+    isOpen = true
+    installEventMonitor()
+  }
+
+  func close() {
+    guard isOpen else { return }
+    isOpen = false
+    removeEventMonitor()
+  }
+
+  /// The Context button's frame, for the outside-click rule.
+  func registerToggle(_ view: NSView) {
+    toggleAnchor = view
+    attach(to: view.window)
+  }
+
+  /// The card's frame, for the outside-click rule.
+  func registerCard(_ view: NSView) {
+    cardAnchor = view
+    attach(to: view.window)
+  }
+
+  /// Applies one window event while the card is open. Returns `false` when
+  /// the event is consumed (Escape); clicks are never consumed.
+  func handle(_ event: AgentContextCardEvent) -> Bool {
+    guard isOpen, let window, event.windowNumber == window.windowNumber else { return true }
+    switch event.kind {
+    case .escape:
+      close()
+      return false
+    case .click(let point):
+      if contains(cardAnchor, point) || contains(toggleAnchor, point) { return true }
+      close()
+      return true
+    case .other:
+      return true
+    }
+  }
+
+  private func contains(_ anchor: NSView?, _ pointInWindow: NSPoint) -> Bool {
+    guard let anchor, anchor.window === window else { return false }
+    return anchor.bounds.contains(anchor.convert(pointInWindow, from: nil))
+  }
+
+  private func attach(to newWindow: NSWindow?) {
+    guard let newWindow, newWindow !== window else { return }
+    windowObservers.forEach { NotificationCenter.default.removeObserver($0) }
+    window = newWindow
+    let center = NotificationCenter.default
+    let closeOnHide: @Sendable (Notification) -> Void = { [weak self] _ in
+      MainActor.assumeIsolated { self?.close() }
+    }
+    // Close and order-out are the two ways the Agent window leaves the
+    // screen; activation and occlusion by other windows are not hides.
+    windowObservers = [
+      center.addObserver(
+        forName: NSWindow.willCloseNotification, object: newWindow, queue: .main,
+        using: closeOnHide),
+      center.addObserver(
+        forName: HidingWindow.didOrderOutNotification, object: newWindow, queue: .main,
+        using: closeOnHide),
+    ]
+  }
+
+  private func installEventMonitor() {
+    guard eventMonitor == nil else { return }
+    eventMonitor = NSEvent.addLocalMonitorForEvents(
+      matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]
+    ) { [weak self] event in
+      // Local monitors deliver on the main thread; reduce the non-Sendable
+      // NSEvent to value fields before assuming the main actor.
+      let reduced = AgentContextCardEvent(event)
+      let passes = MainActor.assumeIsolated { self?.handle(reduced) ?? true }
+      return passes ? event : nil
+    }
+  }
+
+  private func removeEventMonitor() {
+    if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
+    eventMonitor = nil
+  }
+}
+
+/// The parts of a window event the card's close rules read.
+struct AgentContextCardEvent: Sendable {
+  enum Kind: Sendable, Equatable {
+    case escape
+    case click(NSPoint)
+    case other
+  }
+
+  let windowNumber: Int
+  let kind: Kind
+
+  init(windowNumber: Int, kind: Kind) {
+    self.windowNumber = windowNumber
+    self.kind = kind
+  }
+
+  init(_ event: NSEvent) {
+    windowNumber = event.windowNumber
+    switch event.type {
+    case .keyDown where event.keyCode == 53:
+      kind = .escape
+    case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+      kind = .click(event.locationInWindow)
+    default:
+      kind = .other
+    }
+  }
+}
+
+/// An inert AppKit view that reports where a SwiftUI control sits in its
+/// window. It never takes hits, focus or accessibility.
+struct AgentContextHitAnchor: NSViewRepresentable {
+  let register: (NSView) -> Void
+
+  func makeNSView(context: Context) -> AnchorView {
+    let view = AnchorView()
+    view.onWindow = register
+    return view
+  }
+
+  func updateNSView(_ view: AnchorView, context: Context) {
+    view.onWindow = register
+  }
+
+  final class AnchorView: NSView {
+    var onWindow: ((NSView) -> Void)?
+
+    override func viewDidMoveToWindow() {
+      super.viewDidMoveToWindow()
+      if window != nil { onWindow?(self) }
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func isAccessibilityElement() -> Bool { false }
+  }
+}
+
+/// "Context": a compact card under the window header, at the trailing edge of
+/// the conversation, opened on demand from the header's Context button. It
+/// floats over the conversation without taking width from it, and shows only
+/// facts the header does not: messages, last update, queued turns when there
+/// are any, plus the way to tool settings. The conversation's title, model and
+/// live activity stay in the header; the card controls no running work.
+struct AgentContextCard: View {
+  @ObservedObject var store: AgentChatStore
+  @ObservedObject var presenter: AgentContextCardPresenter
+  let openToolSettings: () -> Void
+  @Environment(\.colorScheme) private var colorScheme
+
+  /// Preferred width; the card narrows to the space the conversation has.
+  static let preferredWidth: CGFloat = 280
+  /// Gap to the header above and to the conversation's trailing edge.
+  static let inset: CGFloat = CSSpace.md
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      header
-      Divider()
-      VStack(alignment: .leading, spacing: 18) {
-        if let thread = store.currentThread {
-          section(AgentContextPanelCopy.conversationSection) {
-            conversationCard(thread)
-          }
-        }
-        section(AgentContextPanelCopy.toolsSection) {
-          toolSettingsRow
-        }
-      }
-      .padding(.horizontal, 14)
-      .padding(.top, 14)
-      Spacer(minLength: 0)
-    }
-    // A fixed width, not a minimum: a long title wraps inside the column and
-    // never widens it (Founder, 2026-10-20).
-    .frame(width: AgentWindowMetrics.contextPanelWidth)
-    .frame(maxHeight: .infinity, alignment: .top)
-    // One real-content surface below the existing window header. The reading
-    // canvas belongs to the conversation, so it never covers this glass.
-    // Extend only the material above the visible panel: the paired padding
-    // keeps the controls in place and clips its active top rim at the seam.
-    .padding(.top, CSSpace.sm)
-    .background {
-      if opaqueSurface { CSColor.sheet }
-    }
-    .glassEffect(opaqueSurface ? .identity : .regular, in: Rectangle())
-    .padding(.top, -CSSpace.sm)
-    .clipped()
-    .accessibilityElement(children: .contain)
-    .accessibilityIdentifier("agent-context-panel")
-  }
-
-  private var header: some View {
-    HStack(spacing: 8) {
-      Text(AgentContextPanelCopy.panelTitle)
+    VStack(alignment: .leading, spacing: CSSpace.md) {
+      Text(AgentContextPanelCopy.contextButton)
         .font(CSFont.ui(13, .semibold))
         .foregroundStyle(Color.primary)
         .lineLimit(1)
-        .truncationMode(.tail)
         .accessibilityAddTraits(.isHeader)
-      Spacer(minLength: 8)
-      Button(action: close) {
-        CSIconView(icon: .close, size: 11, weight: .semibold, color: CSColor.textTertiary)
-          .frame(width: 24, height: 20)
-          .contentShape(Rectangle())
+      if let thread = store.currentThread, hasFacts(thread) {
+        section(AgentContextPanelCopy.conversationSection) {
+          facts(thread)
+        }
       }
-      .buttonStyle(.borderless)
-      .csFocusRing(cornerRadius: CSRadius.window)
-      .help(AgentContextPanelCopy.closeHelp)
-      .accessibilityLabel(AgentContextPanelCopy.closeHelp)
+      section(AgentContextPanelCopy.toolsSection) {
+        toolSettingsRow
+      }
     }
-    .padding(.horizontal, 14)
-    .frame(height: AgentWindowMetrics.panelHeaderHeight)
+    .padding(CSSpace.card)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(CSColor.sheet)
+    .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
+        .strokeBorder(Color.primary.opacity(CSAlpha.stroke), lineWidth: 1)
+        .allowsHitTesting(false)
+    )
+    // The overlay canvas's floating-surface shadow, so both floating sheets
+    // sit at the same height above their content.
+    .shadow(
+      color: .black.opacity(colorScheme == .dark ? 0.20 : 0.16), radius: 20, x: 0, y: 9)
+    .background(AgentContextHitAnchor { presenter.registerCard($0) })
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel(AgentContextPanelCopy.contextButton)
+    .accessibilityIdentifier("agent-context-card")
+  }
+
+  private func hasFacts(_ thread: ChatThread) -> Bool {
+    !thread.messages.isEmpty || thread.updatedAt != nil
+      || !store.queuedTurns(in: thread.id).isEmpty
   }
 
   private func section<Content: View>(
     _ title: String, @ViewBuilder content: () -> Content
   ) -> some View {
-    VStack(alignment: .leading, spacing: 7) {
+    VStack(alignment: .leading, spacing: CSSpace.xs) {
       Text(title)
         .font(CSFont.ui(11, .semibold))
         .foregroundStyle(CSColor.secondaryInk)
@@ -323,99 +465,107 @@ struct AgentContextPanel: View {
     }
   }
 
-  private func conversationCard(_ thread: ChatThread) -> some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack(alignment: .firstTextBaseline, spacing: 8) {
-        CSIconView(icon: .agent, size: 12, color: CSColor.textTertiary)
-        Text(verbatim: ThreadRowTitle.labelTitle(for: thread))
-          .font(CSFont.ui(13, .medium))
-          .foregroundStyle(Color.primary)
-          .lineLimit(3)
-          .truncationMode(.tail)
-          .fixedSize(horizontal: false, vertical: true)
-          .frame(maxWidth: .infinity, alignment: .leading)
-      }
-      AgentLiveStatusPill(activity: store.headerActivity(in: thread.id))
-        .accessibilityIdentifier("agent-context-activity")
-      if let model = store.modelIdentity(for: thread) {
-        fact(AgentContextPanelCopy.modelFact) {
-          Text(verbatim: model)
-        }
-        .accessibilityIdentifier("agent-context-model")
-      }
-      fact(AgentContextPanelCopy.queuedFact) {
-        Text(verbatim: "\(store.queuedTurns(in: thread.id).count)")
-      }
-      .accessibilityIdentifier("agent-context-queued-count")
+  @ViewBuilder
+  private func facts(_ thread: ChatThread) -> some View {
+    VStack(alignment: .leading, spacing: CSSpace.xs) {
       if !thread.messages.isEmpty {
         fact(AgentContextPanelCopy.messagesFact) {
           Text(verbatim: "\(thread.messages.count)")
         }
+        .accessibilityIdentifier("agent-context-messages")
       }
       if let updatedAt = thread.updatedAt {
         fact(AgentContextPanelCopy.updatedFact) {
           MessageTimestampLabel(date: updatedAt)
         }
+        .accessibilityIdentifier("agent-context-updated")
+      }
+      let queued = store.queuedTurns(in: thread.id).count
+      if queued > 0 {
+        fact(AgentContextPanelCopy.queuedFact) {
+          Text(verbatim: "\(queued)")
+        }
+        .accessibilityIdentifier("agent-context-queued-count")
       }
     }
-    .padding(.horizontal, 11)
-    .padding(.vertical, 10)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .fixedSize(horizontal: false, vertical: true)
-    .modifier(AgentContextCardSurface())
   }
 
   private func fact<Value: View>(_ label: String, @ViewBuilder value: () -> Value) -> some View {
-    HStack(alignment: .firstTextBaseline, spacing: 8) {
+    HStack(alignment: .firstTextBaseline, spacing: CSSpace.sm) {
       Text(label)
-        .font(CSFont.ui(11, .regular))
+        .font(CSFont.ui(12, .regular))
         .foregroundStyle(CSColor.secondaryInk)
-        .lineLimit(1)
-      Spacer(minLength: 8)
+        .fixedSize(horizontal: false, vertical: true)
+      Spacer(minLength: CSSpace.sm)
       value()
-        .font(CSFont.mono(11, .medium))
+        .font(CSFont.metaMono)
         .foregroundStyle(Color.primary)
         .lineLimit(1)
-        .truncationMode(.middle)
+        .layoutPriority(1)
     }
     .accessibilityElement(children: .combine)
   }
 
   private var toolSettingsRow: some View {
     Button(action: openToolSettings) {
-      HStack(spacing: 8) {
+      HStack(spacing: CSSpace.sm) {
         CSIconView(icon: .settings, size: 12, color: CSColor.secondaryInk)
         Text(AgentContextPanelCopy.toolSettings)
           .font(CSFont.ui(13, .medium))
-          .foregroundStyle(Color.primary)
           .lineLimit(2)
           .fixedSize(horizontal: false, vertical: true)
-        Spacer(minLength: 8)
+        Spacer(minLength: CSSpace.sm)
         CSIconView(
           icon: .chevronRight, size: 9, weight: .semibold, color: CSColor.textTertiary)
       }
-      .padding(.horizontal, 11)
-      .padding(.vertical, 10)
+      .padding(.horizontal, CSSpace.sm)
+      .padding(.vertical, CSSpace.xs)
       .frame(maxWidth: .infinity, alignment: .leading)
-      .modifier(AgentContextCardSurface())
       .contentShape(Rectangle())
     }
-    .csFocusRing(cornerRadius: CSRadius.card)
+    .buttonStyle(.borderless)
+    .conversationActionHover(
+      restingColor: Color.primary, hoverColor: Color.primary,
+      hoverBackground: Color.primary.opacity(CSAlpha.fill))
+    .padding(.horizontal, -CSSpace.sm)
     .help(AgentContextPanelCopy.toolSettingsHelp)
     .accessibilityIdentifier("agent-context-tool-settings")
   }
 }
 
-/// The card surface the conversation already uses for tool activity and
-/// queued turns: a faint fill and a hairline on the card radius.
-private struct AgentContextCardSurface: ViewModifier {
-  func body(content: Content) -> some View {
-    content
-      .background(Color.primary.opacity(CSAlpha.subtle))
-      .overlay(
-        RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-          .strokeBorder(Color.primary.opacity(CSAlpha.line), lineWidth: 1)
-      )
-      .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
+/// Places the card under the header at the conversation's trailing edge and
+/// fits it to the space there: narrower than its preferred width when the
+/// column is narrow, and scrolling inside itself when the window is short.
+/// The layer takes no hits outside the card.
+struct AgentContextCardLayer: View {
+  @ObservedObject var store: AgentChatStore
+  @ObservedObject var presenter: AgentContextCardPresenter
+  let openToolSettings: () -> Void
+
+  var body: some View {
+    GeometryReader { geometry in
+      let inset = AgentContextCard.inset
+      let width = max(0, min(AgentContextCard.preferredWidth, geometry.size.width - 2 * inset))
+      let maxHeight = max(0, geometry.size.height - 2 * inset)
+      if presenter.isOpen {
+        ViewThatFits(in: .vertical) {
+          card
+          ScrollView { card.padding(.bottom, 1) }
+            .frame(maxHeight: maxHeight)
+        }
+        .frame(width: width)
+        .frame(maxHeight: maxHeight, alignment: .top)
+        .padding(.top, inset)
+        .padding(.trailing, inset)
+        .frame(
+          width: geometry.size.width, height: geometry.size.height, alignment: .topTrailing)
+        .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .topTrailing)))
+      }
+    }
+    .animation(.easeOut(duration: CSMotion.Tempo.hover), value: presenter.isOpen)
+  }
+
+  private var card: some View {
+    AgentContextCard(store: store, presenter: presenter, openToolSettings: openToolSettings)
   }
 }

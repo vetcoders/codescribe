@@ -11,8 +11,9 @@ top titlebar accessory containing one rectangular `NSGlassEffectView`; the
 actual header is hosted inside its `contentView`. AppKit owns window controls and the native
 sidebar toggle. Agent and Settings set `titlebarSeparatorStyle = .none` to avoid
 an additional system separator; this does not remove the glass optical edge.
-The Agent context column has its own real-content glass below the titlebar.
-The conversation alone owns the opaque reading canvas.
+The Agent window has no trailing column: since 2026-11-09 its context is an
+opaque card floating over the conversation, which owns no glass. The
+conversation alone owns the opaque reading canvas.
 
 Reading backgrounds respect both leading and top safe areas. The November 8
 striped/text desktop captures showed that allowing `.top` behind titlebar
@@ -34,12 +35,10 @@ sidebar/detail join. Text-backdrop captures exposed that small diagonal notch
 once the header could sample the scene. The viewport and controls keep the
 original sidebar boundary; no material or hit area is added over native controls.
 
-The trailing context material similarly extends above its clipped panel by
-8 pt, with compensating padding preserving its content geometry. The November
-8 19:14–19:15 captures showed the central header edge softened while the active
-context panel's top rim remained visible, especially in Light mode. This is a
-separate edge from the intentional divider below the context title. Its new
-clipping still requires optical acceptance.
+The trailing context column and its material, extended 8 pt above the panel,
+were removed on 2026-11-09 together with the top rim the November 8 captures
+showed at the header join. No trailing material remains in the Agent window,
+so that edge no longer needs optical acceptance.
 
 ## Why
 

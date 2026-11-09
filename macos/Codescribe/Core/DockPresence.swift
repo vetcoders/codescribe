@@ -223,7 +223,18 @@ private final class MinimiseHider: NSObject {
 /// programmatic one that the "double-click a window's title bar to minimise"
 /// preference and Minimize All end at. Overriding both means no path can put
 /// this window into the window list as an empty Exposé tile.
+///
+/// Every hide posts `didOrderOutNotification`, so view state that must not
+/// survive a hide (the Agent context card) closes without relying on
+/// WindowServer occlusion updates, which a background session never sends.
 final class HidingWindow: NSWindow {
+  static let didOrderOutNotification = Notification.Name("HidingWindow.didOrderOut")
+
+  override func orderOut(_ sender: Any?) {
+    super.orderOut(sender)
+    NotificationCenter.default.post(name: Self.didOrderOutNotification, object: self)
+  }
+
   override func performMiniaturize(_ sender: Any?) {
     orderOut(nil)
   }
