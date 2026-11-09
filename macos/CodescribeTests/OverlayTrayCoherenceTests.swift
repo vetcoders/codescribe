@@ -56,7 +56,7 @@ final class OverlayTrayCoherenceTests: XCTestCase {
   /// tints are measured in pixels (`OverlayHeaderChromeTests`).
   func testHeaderDiagnosticsStayNeutral() throws {
     let view = try source("Overlay/DictationOverlayView.swift")
-    let preference = try XCTUnwrap(view.range(of: "exclamationmark.triangle.fill"))
+    let preference = try XCTUnwrap(view.range(of: "minus.circle"))
     let preferenceWindow = String(view[preference.lowerBound...].prefix(180))
     XCTAssertTrue(preferenceWindow.contains("palette.primaryText.color"))
     XCTAssertFalse(preferenceWindow.contains("palette.processingStatus.color"))

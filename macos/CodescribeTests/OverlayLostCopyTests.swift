@@ -250,4 +250,43 @@ final class OverlayLostCopyTests: XCTestCase {
     }
     XCTAssertEqual(writes, ["Fragment"])
   }
+
+  @MainActor
+  func testCopySelectedSubviewTextHonorsMenuValidatedLeafBeforeBubbleFallback() throws {
+    final class MenuValidatedTextLeafView: NSView {
+      var hasActiveSelection = true
+      var copiedCount = 0
+
+      @objc func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        menuItem.action == #selector(NSText.copy(_:)) && hasActiveSelection
+      }
+
+      @objc func copy(_ sender: Any?) {
+        guard hasActiveSelection else { return }
+        copiedCount += 1
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString("X9bus.app", forType: .string)
+      }
+    }
+
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 320, height: 200),
+      styleMask: [.titled], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    let root = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 200))
+    let unselectedLeaf = MenuValidatedTextLeafView(frame: NSRect(x: 10, y: 50, width: 100, height: 20))
+    unselectedLeaf.hasActiveSelection = false
+    let selectedLeaf = MenuValidatedTextLeafView(frame: NSRect(x: 10, y: 10, width: 100, height: 20))
+    root.addSubview(unselectedLeaf)
+    root.addSubview(selectedLeaf)
+    window.contentView = root
+    defer {
+      window.contentView = nil
+      window.close()
+    }
+
+    XCTAssertTrue(window.hasSelectedSubviewText)
+    selectedLeaf.hasActiveSelection = false
+    XCTAssertFalse(window.hasSelectedSubviewText)
+  }
 }

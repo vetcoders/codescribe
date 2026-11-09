@@ -154,7 +154,7 @@ final class OverlayAgentPanelFocusTests: XCTestCase {
     let row = try XCTUnwrap(state.visibleChannelRows.first { $0.channel == owner.channel })
     XCTAssertFalse(statusView.hasNoTerminalTarget(row))
     XCTAssertEqual(statusView.rowStateText(for: row, receiptText: "Read"), "Read")
-    XCTAssertEqual(statusView.panelFocusSymbol(failed), "exclamationmark.triangle")
+    XCTAssertEqual(statusView.panelFocusSymbol(failed), "minus.circle")
     XCTAssertEqual(
       statusView.panelFocusHelp(for: row, state: failed),
       String(localized: "Panel not found in Frame"))

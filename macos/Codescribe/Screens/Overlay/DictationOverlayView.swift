@@ -1592,7 +1592,7 @@ struct DictationOverlayView: View {
         } else {
           if let error = state.expansionPreferenceError {
             OverlayMicrophoneGlyph(
-              symbol: "exclamationmark.triangle.fill", tint: palette.primaryText.color
+              symbol: "minus.circle", tint: palette.primaryText.color
             )
             .help(error)
             .accessibilityLabel(error)

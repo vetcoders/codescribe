@@ -47,15 +47,16 @@ final class OverlayLocalHoldTests: XCTestCase {
     let frozen =
       prose + "\n" + files.map { ConversationAttachmentPointer.prefix + $0 }.joined(separator: "\n")
     let owner = try XCTUnwrap(agent("2").owner)
-    let reply = OverlayUserReplyReference(
-      id: "reply-1", sender: "lena", channel: "2", excerpt: "Poprzednia odpowiedź")
+    let reply = try XCTUnwrap(
+      OverlayUserReplyReference(
+        row: ["message_id": "reply-1", "author": "lena", "text": "Poprzednia odpowiedź"]))
     let send = OverlayHeldSend(
       id: OverlayHeldSend.newID(), conversationID: owner.id, owner: owner, text: frozen,
       reply: reply, alsoSentTo: [], acceptedAt: clock,
       deadline: clock.addingTimeInterval(5), phase: .holding)
     let row = send.row(order: 1, now: clock)
     XCTAssertEqual(row.text, prose)
-    XCTAssertEqual(row.attachments?.map(\.path), files)
+    XCTAssertEqual(row.attachments?.map { $0.path }, files)
     XCTAssertEqual(row.userReplyTo, reply)
 
     let returned = OverlayConversationView.heldDraft(row)

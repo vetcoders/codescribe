@@ -921,7 +921,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
           break
         }
       }
-      if event.type == .leftMouseDown, let contentView {
+      if event.type == .leftMouseDown, !openedKeyboardGate, let contentView {
         var hit = contentView.hitTest(contentView.convert(event.locationInWindow, from: nil))
         while let view = hit {
           // SwiftUI uses different native text classes across macOS versions.
@@ -2470,12 +2470,18 @@ extension NSWindow {
   /// without replacing the window's first responder).
   var hasSelectedSubviewText: Bool {
     guard let root = contentView else { return false }
+    let copyItem = NSMenuItem(title: "", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
     var stack: [NSView] = [root]
     while let view = stack.popLast() {
       stack.append(contentsOf: view.subviews)
       if let textView = view as? NSTextView {
         if textView.isSelectable, textView.selectedRange().length > 0 { return true }
         continue
+      }
+      if view.responds(to: #selector(NSText.copy(_:))),
+        (view as AnyObject).validateMenuItem?(copyItem) == true
+      {
+        return true
       }
       let range = view.accessibilitySelectedTextRange()
       if range.location != NSNotFound, range.length > 0 { return true }
@@ -2490,6 +2496,7 @@ extension NSWindow {
   @discardableResult
   func copySelectedSubviewText() -> Bool {
     guard let root = contentView else { return false }
+    let copyItem = NSMenuItem(title: "", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
     var stack: [NSView] = [root]
     while let view = stack.popLast() {
       stack.append(contentsOf: view.subviews)
@@ -2500,12 +2507,23 @@ extension NSWindow {
         }
         continue
       }
+      let validation = (view as AnyObject).validateMenuItem?(copyItem)
+      if validation == true, view.responds(to: #selector(NSText.copy(_:))) {
+        let before = NSPasteboard.general.changeCount
+        _ = view.tryToPerform(#selector(NSText.copy(_:)), with: nil)
+        if NSPasteboard.general.changeCount != before {
+          return true
+        }
+      }
       let range = view.accessibilitySelectedTextRange()
       let selected = view.accessibilitySelectedText() ?? ""
-      guard (range.location != NSNotFound && range.length > 0) || !selected.isEmpty else {
+      guard
+        validation == true || (range.location != NSNotFound && range.length > 0)
+          || !selected.isEmpty
+      else {
         continue
       }
-      if view.responds(to: #selector(NSText.copy(_:))) {
+      if validation != true, view.responds(to: #selector(NSText.copy(_:))) {
         let before = NSPasteboard.general.changeCount
         _ = view.tryToPerform(#selector(NSText.copy(_:)), with: nil)
         if NSPasteboard.general.changeCount != before {
@@ -2546,9 +2564,6 @@ extension NSPanel {
       }
       let before = NSPasteboard.general.changeCount
       _ = textView.nextResponder?.tryToPerform(#selector(NSText.copy(_:)), with: nil)
-      if NSPasteboard.general.changeCount == before {
-        _ = NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: self)
-      }
       if NSPasteboard.general.changeCount != before {
         return true
       }

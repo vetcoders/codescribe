@@ -571,7 +571,7 @@ extension RealAgentBridgeInstaller {
         let path = root.appendingPathComponent("leases/\(candidate.leaseID).json")
         var st = Darwin.stat()
         let filePath = path.path
-        guard Darwin.stat(filePath, &st) == 0, st.st_size <= (16 << 20) else { continue }
+        guard stat(filePath, &st) == 0, st.st_size <= (16 << 20) else { continue }
         let stamp = LeaseFileStamp(
           dev: st.st_dev, ino: st.st_ino, size: st.st_size,
           mtimeSec: st.st_mtimespec.tv_sec, mtimeNsec: st.st_mtimespec.tv_nsec,

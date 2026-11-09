@@ -965,11 +965,11 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
                   } else {
                     Image(
                       systemName: focusState.isFailed
-                        ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"
+                        ? "minus.circle.fill" : "checkmark.circle.fill"
                     )
                     .font(.system(size: 8, weight: .semibold))
                     .foregroundStyle(
-                      focusState.isFailed ? palette.errorStatus.color : palette.primaryText.color
+                      focusState.isFailed ? palette.mutedText.color : palette.primaryText.color
                     )
                     .offset(x: 5, y: -4)
                   }
@@ -2795,7 +2795,7 @@ struct OverlayChannelStatusView: View {
     _ state: OverlayAgentPanelFocusState?, target: OverlayAgentPanelFocusTarget? = nil
   ) -> String {
     if state?.isSucceeded == true { return "checkmark" }
-    if state?.isFailed == true { return "exclamationmark.triangle" }
+    if state?.isFailed == true { return "minus.circle" }
     switch state?.target ?? target {
     case .some(.terminal): return "terminal"
     case .some(.codexThread): return "bubble.left.and.text.bubble.right"
@@ -3165,7 +3165,7 @@ struct OverlayChannelStatusView: View {
   /// presence dot's `stalled` kind (olive with a bold "!"), and "zzz" is the
   /// moon's alone (L6, 2026-11-06: a stall is not sleep).
   func statusSymbol(for channel: OverlayChannelDelivery) -> String {
-    if unavailable { return "exclamationmark.triangle" }
+    if unavailable { return "minus.circle" }
     if hasDeadFollower(channel) { return "xmark.circle" }
     if isOpen(channel) { return OverlayAgentAudioControls.liveSpeechSymbol }
     switch channel.stage {
@@ -3781,8 +3781,7 @@ struct OverlayAgentStatusDot: View {
     // The agent's own voice, violet as the tray's speaking state.
     case .speaking: palette.agentAccent
     case .present: palette.successStatus
-    case .stalled: palette.processingStatus
-    case .asleep, .sleeping, .idle: palette.mutedText
+    case .stalled, .asleep, .sleeping, .idle: palette.mutedText
     }
   }
 
@@ -3817,17 +3816,16 @@ struct OverlayAgentStatusDot: View {
       }
     } else if kind == .idle {
       // No liveness claim: a "?" in a circle, the dot's size, in the muted
-      // tone (Founder, 2026-11-04, decision 7). Not "!", which is the stall.
+      // tone (Founder, 2026-11-04, decision 7).
       Image(systemName: "questionmark.circle")
         .font(.system(size: Self.diameter * textScale, weight: .semibold))
         .foregroundStyle(tone.color)
         .frame(width: Self.diameter * textScale, height: Self.diameter * textScale)
         .accessibilityHidden(true)
     } else if kind == .stalled {
-      // A stalled reader wears an amber warning triangle, never a green dot
-      // with an exclamation mark inside (Founder, 2026-11-09: "nie dawaj
-      // wykrzyknika na zielono").
-      Image(systemName: "exclamationmark.triangle.fill")
+      // A stalled reader wears a calm muted horizontal dash in a circle,
+      // never a warning triangle or exclamation mark (Founder, 2026-11-09).
+      Image(systemName: "minus.circle")
         .font(.system(size: Self.diameter * textScale, weight: .semibold))
         .foregroundStyle(tone.color)
         .frame(width: Self.diameter * textScale, height: Self.diameter * textScale)
@@ -4169,8 +4167,8 @@ struct OverlayStatusNotice: View {
 
     var symbol: String {
       switch self {
-      case .error: "exclamationmark.circle.fill"
-      case .warning: "exclamationmark.triangle.fill"
+      case .error: "minus.circle.fill"
+      case .warning: "minus.circle.fill"
       }
     }
   }
