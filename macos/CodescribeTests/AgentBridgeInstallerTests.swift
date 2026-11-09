@@ -9,16 +9,22 @@ import XCTest
 final class AgentBridgeInstallerTests: XCTestCase {
   private var scratch: URL!
 
-  override func setUpWithError() throws {
-    scratch = FileManager.default.temporaryDirectory
-      .appendingPathComponent("codescribe-agent-bridge-tests-\(UUID().uuidString)")
-    try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+  override func setUp() async throws {
+    try await super.setUp()
+    try await MainActor.run {
+      scratch = FileManager.default.temporaryDirectory
+        .appendingPathComponent("codescribe-agent-bridge-tests-\(UUID().uuidString)")
+      try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+    }
   }
 
-  override func tearDownWithError() throws {
-    if let scratch {
-      try? FileManager.default.removeItem(at: scratch)
+  override func tearDown() async throws {
+    await MainActor.run {
+      if let scratch {
+        try? FileManager.default.removeItem(at: scratch)
+      }
     }
+    try await super.tearDown()
   }
 
   func testCaptureAttachmentRefusalKeepsTheLocalizedMessageAndPrivateDiagnostic() async throws {

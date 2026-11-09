@@ -31,7 +31,7 @@ AST_COMMAND = (
     "cargo", "run", "--offline", "--locked", "--package",
     "codescribe-structural-ast", "--bin", "codescribe-structural-ast", "--quiet",
 )
-AST_IDENTITY = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=9"
+AST_IDENTITY = "codescribe-structural-ast/0.1.0;syn=2.0.118;grammar=10"
 AST_BODIES = {
     "paste_text_from_overlay": "app/controller/mod.rs",
     # The overlay early return calls `OverlayPasteResult::noop()`; the
@@ -48,6 +48,7 @@ AST_BODIES = {
     "is_settled": "core/audio/streaming_recorder.rs",
     "prepare_terminal_audio": "core/audio/streaming_recorder.rs",
     "finish": "core/audio/streaming_recorder.rs",
+    "finish_shared_document": "core/audio/streaming_recorder.rs",
     "copy_stop_error": "core/audio/streaming_recorder.rs",
     "finalize_take_archive": "core/audio/streaming_recorder.rs",
     "terminal_finality": "core/pipeline/acoustic_ledger/fence.rs",

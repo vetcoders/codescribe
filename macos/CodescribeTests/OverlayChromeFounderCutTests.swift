@@ -178,14 +178,26 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.finishControllerRecording()
   }
 
-  /// Founder, 2026-11-04 (bus brief §12.1): a still click on the free
+  private func headerClickState(_ mode: OverlayIntercomPresentationMode) -> OverlayState {
+    let name = "CodescribeTests.header-click.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: name)!
+    addTeardownBlock { defaults.removePersistentDomain(forName: name) }
+    let preference = OverlayChannelMapPreference(defaults: defaults)
+    preference.selectMode(mode)
+    let state = OverlayState()
+    state.channelMapPreference = preference
+    state.engine = OverlayChromePolicyEngine()
+    state.attach()
+    XCTAssertEqual(state.layoutContract.mode, mode)
+    return state
+  }
+
+  /// Belka (Monika, 2026-11-04, bus brief §12.1): a still click on the free
   /// background toggles mini and the bar round and round. The window opens
   /// only from the chevron, the Agents button and the menus; from the window
   /// a header click returns to the bar.
-  func testHeaderClickTogglesMiniAndTheBarAndLeavesTheWindowForTheBar() {
-    let state = OverlayState()
-    state.engine = OverlayChromePolicyEngine()
-    state.attach()
+  func testBelkaHeaderClickTogglesMiniAndTheBarAndLeavesTheWindowForTheBar() {
+    let state = headerClickState(.horizontal)
     XCTAssertEqual(state.presentationMode, .mini)
     state.advancePresentationFromHeader()
     XCTAssertEqual(state.presentationMode, .midi)
@@ -203,6 +215,37 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(state.presentationMode, .expanded)
     state.toggleCollapsed()
     XCTAssertEqual(state.presentationMode, .mini)
+  }
+
+  /// Klasyczny and Fiszki (Maciej, 2026-11-06): a still click on the
+  /// collapsed overlay opens the window on its last full view, not the bar,
+  /// and a click on the window's header returns to the compact form the
+  /// window replaced, mini or the bar. Belka's cycle above is untouched.
+  func testClassicAndFiszkiHeaderClickOpensTheWindowAndReturnsToTheRememberedCompactForm() {
+    for mode in [OverlayIntercomPresentationMode.classic, .vertical] {
+      let state = headerClickState(mode)
+      XCTAssertEqual(state.presentationMode, .mini)
+      state.advancePresentationFromHeader()
+      XCTAssertEqual(state.presentationMode, .expanded, "\(mode): mini opens the window")
+      XCTAssertEqual(state.windowContentSurface, .transcription)
+      state.advancePresentationFromHeader()
+      XCTAssertEqual(state.presentationMode, .mini, "\(mode): the window returns to mini")
+      state.setPresentationMode(.midi)
+      state.advancePresentationFromHeader()
+      XCTAssertEqual(state.presentationMode, .expanded, "\(mode): the bar opens the window")
+      state.advancePresentationFromHeader()
+      XCTAssertEqual(state.presentationMode, .midi, "\(mode): the window returns to the bar")
+      // The last full view is remembered across the fold: Agents stays Agents.
+      state.showAgentMonitor()
+      XCTAssertEqual(state.presentationMode, .expanded)
+      XCTAssertEqual(state.windowContentSurface, .agents)
+      state.advancePresentationFromHeader()
+      XCTAssertEqual(state.presentationMode, .midi, "\(mode): Agents folds to the bar it replaced")
+      state.advancePresentationFromHeader()
+      XCTAssertEqual(state.presentationMode, .expanded)
+      XCTAssertEqual(
+        state.windowContentSurface, .agents, "\(mode): the click reopens the last full view")
+    }
   }
 
   /// Outside mini only the header band advances the presentation: a still
@@ -751,7 +794,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       of: source, from: "private func canvasStack", to: "private var header: some View")
     XCTAssertEqual(canvas.components(separatedBy: "transcriptActionsColumn(").count - 1, 1)
     XCTAssertTrue(
-      canvas.contains("let transcriptActionsShown = transcriptionSurface && !state.isCollapsed"))
+      canvas.contains("let transcriptActionsShown = transcriptionSurface && expandedCanvasActive"))
     let column = try section(
       of: source, from: "private func transcriptActionsColumn",
       to: "private func agentDrawerColumn")
@@ -815,7 +858,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(source.contains("overlay-transcript-actions"))
     XCTAssertTrue(
       source.contains(
-        "let transcriptActionsShown = transcriptionSurface && !state.isCollapsed"))
+        "let transcriptActionsShown = transcriptionSurface && expandedCanvasActive"))
     XCTAssertTrue(source.contains("OverlayIntentRail.projectedIntents(for: state)"))
     XCTAssertTrue(source.contains("OverlayRecordingControls.railIntents(from: projectedIntents)"))
     XCTAssertTrue(source.contains("intents: railIntents"))
@@ -918,13 +961,18 @@ final class OverlayChromeFounderCutTests: XCTestCase {
 
   func testTakeStartAndCollapseRemoveMountedTools() throws {
     let source = try overlaySource()
+    // The one gate both columns read: collapsed, or ordered out behind Fiszki.
+    XCTAssertTrue(
+      source.contains(
+        "private var expandedCanvasActive: Bool {\n    !state.isCollapsed && !hiddenBehindIntercom")
+    )
     let canvas = try section(
       of: source, from: "private func canvasStack", to: "private var header: some View")
     XCTAssertTrue(
       canvas.contains(
-        "let transcriptActionsShown = transcriptionSurface && !state.isCollapsed"))
+        "let transcriptActionsShown = transcriptionSurface && expandedCanvasActive"))
     XCTAssertTrue(
-      canvas.contains("let railShown = agentsSurface && !state.isCollapsed && !listOnScreen"))
+      canvas.contains("let railShown = agentsSurface && expandedCanvasActive && !listOnScreen"))
     XCTAssertTrue(
       canvas.range(
         of: #"footerMessageRow\s*\.frame\(height: 18\)"#,
@@ -1690,12 +1738,13 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       roster.contains("open ? recordingAccent"),
       "an open microphone takes the active-speaker accent")
     XCTAssertFalse(roster.contains("open ? Color.red"), "recording is no longer a separate red")
+    // The pinned pill is compact (Maciej, 2026-11-06): All keeps one line,
+    // and its last message stays one hover away.
     let all = try section(
-      of: roster, from: "private func scaledMonitorBody(", to: "var currentConversations")
-    XCTAssertTrue(all.contains(".lineLimit(3)"), "three preview lines belong to All")
-    XCTAssertTrue(all.contains("overlay-all-preview"))
-    XCTAssertTrue(
-      roster.contains("includePreview: false"), "the title button does not repeat the preview")
+      of: roster, from: "private func pinnedMailboxPill(", to: "private func scaledMonitorBody(")
+    XCTAssertTrue(all.contains(".lineLimit(1)"), "one line belongs to All")
+    XCTAssertTrue(all.contains("OverlayRosterMessageHint("), "the preview is the hover hint")
+    XCTAssertFalse(roster.contains("overlay-all-preview"))
     let agentLabel = try source(at: "Codescribe/Screens/Overlay/OverlayAgentRosterLabel.swift")
     XCTAssertTrue(agentLabel.contains(".lineLimit(2)"), "agent rows keep a two-line preview")
     let agentBudget = try section(

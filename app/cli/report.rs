@@ -1,8 +1,6 @@
 //! Batch quality report generator.
 //!
-//! Reached as `codescribe report` and, for compatibility, as the standalone
-//! `qube-report` binary. The surface lives here rather than in a bin so both
-//! entry points share one flag set and one dispatch.
+//! Reached as `codescribe report`. This module owns its arguments and dispatch.
 
 use anyhow::Result;
 use std::path::PathBuf;

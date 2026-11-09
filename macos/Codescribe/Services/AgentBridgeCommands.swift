@@ -702,6 +702,72 @@ extension RealAgentBridgeInstaller {
       installer: installer)
   }
 
+  static func channelHistoryExportArguments(
+    channel: String, agentOnly: Bool, root: URL
+  ) -> [String] {
+    var arguments = ["--history", "--channel", channel, "--export"]
+    if agentOnly {
+      arguments.append("--agent-only")
+    }
+    arguments.append(contentsOf: ["--bridge-home", root.path])
+    return arguments
+  }
+
+  @MainActor
+  static func exportChannelHistory(
+    channel: String, agentOnly: Bool = false,
+    installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
+  ) async throws -> String {
+    let executable = installer.commandURL("cs-bus")
+    guard installer.fileManager.isExecutableFile(atPath: executable.path),
+      installer.managedCommandID(executable) != nil
+    else {
+      throw NSError(
+        domain: "Codescribe.BusHistory", code: 1,
+        userInfo: [
+          NSLocalizedDescriptionKey: String(
+            localized: "Install the agent bridge to control agent preferences.")
+        ])
+    }
+    var environment = ProcessInfo.processInfo.environment
+    let commandDirectories = [
+      installer.homeDirectory.appendingPathComponent(".cargo/bin").path,
+      installer.homeDirectory.appendingPathComponent(".local/bin").path,
+      "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin",
+    ]
+    environment["PATH"] = (commandDirectories + [environment["PATH"] ?? ""]).joined(separator: ":")
+    let commandEnvironment = environment
+    let arguments = channelHistoryExportArguments(
+      channel: channel, agentOnly: agentOnly, root: installer.bridgeRoot)
+    return try await Task.detached(priority: .userInitiated) {
+      let process = Process()
+      let output = Pipe()
+      process.executableURL = executable
+      process.arguments = arguments
+      process.environment = commandEnvironment
+      process.standardInput = FileHandle.nullDevice
+      process.standardOutput = output
+      process.standardError = FileHandle.nullDevice
+      try process.run()
+      defer { if process.isRunning { process.terminate() } }
+      let outputData = output.fileHandleForReading.readDataToEndOfFile()
+      process.waitUntilExit()
+      let path =
+        String(data: outputData, encoding: .utf8)?
+        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      guard process.terminationReason == .exit, process.terminationStatus == 0,
+        path.hasPrefix("/")
+      else {
+        throw NSError(
+          domain: "Codescribe.BusHistory", code: 2,
+          userInfo: [
+            NSLocalizedDescriptionKey: String(localized: "Export failed")
+          ])
+      }
+      return path
+    }.value
+  }
+
   @MainActor
   private static func runPlaybackMuteCommand(
     _ arguments: [String], installer: RealAgentBridgeInstaller
@@ -915,7 +981,9 @@ extension RealAgentBridgeInstaller {
     }.value
   }
 
-  /// Stages files against one exact open channel capture row. The helper
+  /// Stages files against one exact open channel bus document. Despite its
+  /// name, target.captureSessionID is the row's session_id; occurrenceSessionID
+  /// carries the shared capture namespace. The helper
   /// rechecks session, epoch and source sequence under the bus append lock;
   /// stale targets fail so callers can keep the files in their draft.
   @MainActor
@@ -1412,7 +1480,7 @@ extension RealAgentBridgeInstaller {
     }
     let deadline = Date().addingTimeInterval(1.0)
     while process.isRunning, Date() < deadline {
-      Thread.sleep(forTimeInterval: 0.01)
+      Thread.sleep(forTimeInterval: 0.02)
     }
     if process.isRunning {
       process.terminate()
@@ -1479,7 +1547,7 @@ extension RealAgentBridgeInstaller {
     }
     let deadline = Date().addingTimeInterval(2.0)
     while process.isRunning, Date() < deadline {
-      Thread.sleep(forTimeInterval: 0.01)
+      Thread.sleep(forTimeInterval: 0.02)
     }
     if process.isRunning {
       process.terminate()
@@ -1497,11 +1565,9 @@ extension RealAgentBridgeInstaller {
   }
 
   /// True when a public `vc-frame` supporting `action focus-pane-id` is installed.
-  /// Positive results are memoized by executable and wrapper-target file stamps
-  /// so periodic HUD polls do not re-spawn `vc-frame` unless the binary, symlink
-  /// target, or referenced wrapper dependency changes on disk. Negative results
-  /// are never cached, allowing repaired dependencies to take effect on the next
-  /// poll without restarting Codescribe.
+  /// Positive results are memoized by executable and wrapper-target file stamps.
+  /// Negative results are cached with a 30s TTL so periodic HUD polls do not
+  /// re-spawn `vc-frame` unless the binary/wrapper changes on disk or cooldown expires.
   @MainActor
   static func supportsAgentPanelFocus(
     installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller(),
@@ -1520,21 +1586,16 @@ extension RealAgentBridgeInstaller {
       else {
         return false
       }
-      if let cached = await AgentPanelFocusCapabilityCache.shared.value(for: stamp), cached {
-        return true
+      if let cached = await AgentPanelFocusCapabilityCache.shared.value(for: stamp, now: now) {
+        return cached
       }
       let supported = probeVcFramePanelFocusCapability(
         executableURL: executableURL,
         environment: environment
       )
-      if supported {
-        await AgentPanelFocusCapabilityCache.shared.store(true, for: stamp)
-        if let postProbeStamp = VcFrameExecutableStamp(url: executableURL), postProbeStamp != stamp
-        {
-          await AgentPanelFocusCapabilityCache.shared.store(true, for: postProbeStamp)
-        }
-      } else {
-        await AgentPanelFocusCapabilityCache.shared.remove(for: stamp)
+      await AgentPanelFocusCapabilityCache.shared.store(supported, for: stamp, at: now)
+      if let postProbeStamp = VcFrameExecutableStamp(url: executableURL), postProbeStamp != stamp {
+        await AgentPanelFocusCapabilityCache.shared.store(supported, for: postProbeStamp, at: now)
       }
       return supported
     }.value
@@ -1662,6 +1723,20 @@ private struct VcFrameExecutableStamp: Hashable, Sendable {
     self.referencedFiles = discovered.sorted().map(VcFrameFileStat.init(path:))
   }
 
+  private static let wrapperScriptRedirectRegex = try? NSRegularExpression(
+    pattern: #"[0-9]*>>?"#)
+  private static let wrapperScriptPathRegexes: [NSRegularExpression] = [
+    #"'(/[^'\n]+)'"#,
+    #""(/[^"$\n]+)""#,
+    #"(?:^|[\s=:])(/[A-Za-z0-9._+@/-]+)"#,
+  ].compactMap { try? NSRegularExpression(pattern: $0) }
+  private static let ignoredWrapperPrefixes = [
+    "/bin/", "/usr/bin/", "/sbin/", "/usr/sbin/", "/dev/",
+  ]
+  private static let ignoredWrapperExact: Set<String> = [
+    "/bin", "/usr/bin", "/sbin", "/usr/sbin", "/dev",
+  ]
+
   private static func referencedPathsInWrapperScript(atPath path: String) -> [String] {
     var statBuf = Darwin.stat()
     guard fstatat(AT_FDCWD, path, &statBuf, 0) == 0,
@@ -1672,13 +1747,6 @@ private struct VcFrameExecutableStamp: Hashable, Sendable {
     else {
       return []
     }
-    let patterns = [
-      #"'(/[^'\n]+)'"#,
-      #""(/[^"$\n]+)""#,
-      #"(?:^|[\s=:])(/[A-Za-z0-9._+@/-]+)"#,
-    ]
-    let ignoredPrefixes = ["/bin/", "/usr/bin/", "/sbin/", "/usr/sbin/", "/dev/"]
-    let ignoredExact: Set<String> = ["/bin", "/usr/bin", "/sbin", "/usr/sbin", "/dev"]
     var results: [String] = []
 
     let scriptURL = URL(fileURLWithPath: path)
@@ -1696,23 +1764,25 @@ private struct VcFrameExecutableStamp: Hashable, Sendable {
     for rawLine in text.components(separatedBy: .newlines) {
       let line = rawLine.trimmingCharacters(in: .whitespaces)
       if line.isEmpty || line.hasPrefix("#") { continue }
+      let lineRange = NSRange(line.startIndex..<line.endIndex, in: line)
       let scanSegment: String
-      if let redirectRange = line.range(of: #"[0-9]*>>?"#, options: .regularExpression) {
+      if let redirectMatch = wrapperScriptRedirectRegex?.firstMatch(in: line, range: lineRange),
+        let redirectRange = Range(redirectMatch.range, in: line)
+      {
         scanSegment = String(line[..<redirectRange.lowerBound])
       } else {
         scanSegment = line
       }
       let nsRange = NSRange(scanSegment.startIndex..<scanSegment.endIndex, in: scanSegment)
-      for pattern in patterns {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+      for regex in wrapperScriptPathRegexes {
         for match in regex.matches(in: scanSegment, range: nsRange) {
           guard match.numberOfRanges > 1,
             let range = Range(match.range(at: 1), in: scanSegment)
           else { continue }
           let candidate = String(scanSegment[range])
           guard candidate.count > 1,
-            !ignoredExact.contains(candidate),
-            !ignoredPrefixes.contains(where: { candidate.hasPrefix($0) }),
+            !ignoredWrapperExact.contains(candidate),
+            !ignoredWrapperPrefixes.contains(where: { candidate.hasPrefix($0) }),
             !results.contains(candidate)
           else { continue }
           results.append(candidate)
@@ -1725,17 +1795,32 @@ private struct VcFrameExecutableStamp: Hashable, Sendable {
 
 private actor AgentPanelFocusCapabilityCache {
   static let shared = AgentPanelFocusCapabilityCache()
-  private var entries: [VcFrameExecutableStamp: Bool] = [:]
 
-  func value(for stamp: VcFrameExecutableStamp) -> Bool? {
-    entries[stamp]
+  private struct Entry {
+    let supported: Bool
+    let recordedAt: Date
   }
 
-  func store(_ supported: Bool, for stamp: VcFrameExecutableStamp) {
+  private var entries: [VcFrameExecutableStamp: Entry] = [:]
+  static let negativeTTL: TimeInterval = 30.0
+
+  func value(for stamp: VcFrameExecutableStamp, now: Date = Date()) -> Bool? {
+    guard let entry = entries[stamp] else { return nil }
+    if entry.supported {
+      return true
+    }
+    if now.timeIntervalSince(entry.recordedAt) < Self.negativeTTL {
+      return false
+    }
+    entries.removeValue(forKey: stamp)
+    return nil
+  }
+
+  func store(_ supported: Bool, for stamp: VcFrameExecutableStamp, at now: Date = Date()) {
     if entries.count >= 64 {
       entries.removeAll(keepingCapacity: true)
     }
-    entries[stamp] = supported
+    entries[stamp] = Entry(supported: supported, recordedAt: now)
   }
 
   func remove(for stamp: VcFrameExecutableStamp) {

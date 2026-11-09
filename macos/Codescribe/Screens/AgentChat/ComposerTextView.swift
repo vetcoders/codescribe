@@ -333,7 +333,14 @@ struct ComposerTextView: NSViewRepresentable {
         applyHistory(recalled, to: textView)
         return true
       case .native:
-        return false
+        guard
+          let chord = ComposerTerminalChord.resolve(
+            characters: event.charactersIgnoringModifiers,
+            modifiers: event.modifierFlags,
+            hasMarkedText: textView.hasMarkedText())
+        else { return false }
+        chord.perform(on: textView)
+        return true
       }
     }
 

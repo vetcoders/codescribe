@@ -670,6 +670,12 @@ public protocol CodescribeAgentProtocol: AnyObject, Sendable {
     func cancelTurn(threadId: String)  -> Bool
 
     /**
+     * Freeze the Agent choice at acceptance, before a busy conversation queues
+     * the turn. Secrets never cross FFI or enter the durable queue sidecar.
+     */
+    func captureTurnConfiguration() throws  -> CsAgentTurnConfiguration
+
+    /**
      * Generate an isolated one-shot title from raw first-turn text using the
      * formatting lane. The core call has its own 8-second timeout and never
      * participates in the assistive or formatting response chains.
@@ -706,6 +712,12 @@ public protocol CodescribeAgentProtocol: AnyObject, Sendable {
      * resumes; a failed write downgrades to allow-once rather than to a deny.
      */
     func resolveToolApproval(sessionId: String, threadId: String, callId: String, approved: Bool, remember: Bool)  -> Bool
+
+    /**
+     * Execute an accepted selection, including after a queue restart. Later
+     * Settings edits cannot replace its provider, model or reasoning level.
+     */
+    func streamConfiguredReply(text: String, threadId: String, attachments: [CsAttachment], configuration: CsAgentTurnConfiguration, listener: CsAgentListener) async throws  -> String
 
     /**
      * Run the same agent loop against the embedding editor's live document.
@@ -898,6 +910,18 @@ open func cancelTurn(threadId: String) -> Bool  {
 }
 
     /**
+     * Freeze the Agent choice at acceptance, before a busy conversation queues
+     * the turn. Secrets never cross FFI or enter the durable queue sidecar.
+     */
+open func captureTurnConfiguration()throws  -> CsAgentTurnConfiguration  {
+    return try  FfiConverterTypeCsAgentTurnConfiguration_lift(try rustCallWithError(FfiConverterTypeCsError_lift) {
+    uniffi_codescribe_ffi_fn_method_codescribeagent_capture_turn_configuration(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+
+    /**
      * Generate an isolated one-shot title from raw first-turn text using the
      * formatting lane. The core call has its own 8-second timeout and never
      * participates in the assistive or formatting response chains.
@@ -981,6 +1005,27 @@ open func resolveToolApproval(sessionId: String, threadId: String, callId: Strin
         FfiConverterBool.lower(remember),$0
     )
 })
+}
+
+    /**
+     * Execute an accepted selection, including after a queue restart. Later
+     * Settings edits cannot replace its provider, model or reasoning level.
+     */
+open func streamConfiguredReply(text: String, threadId: String, attachments: [CsAttachment], configuration: CsAgentTurnConfiguration, listener: CsAgentListener)async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_codescribe_ffi_fn_method_codescribeagent_stream_configured_reply(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(text),FfiConverterString.lower(threadId),FfiConverterSequenceTypeCsAttachment.lower(attachments),FfiConverterTypeCsAgentTurnConfiguration_lower(configuration),FfiConverterTypeCsAgentListener_lower(listener)
+                )
+            },
+            pollFunc: ffi_codescribe_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_codescribe_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_codescribe_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeCsError_lift
+        )
 }
 
     /**
@@ -1714,10 +1759,7 @@ public protocol CodescribeConfigProtocol: AnyObject, Sendable {
     func setLaneProvider(lane: CsLlmLane, providerId: String) throws
 
     /**
-     * Toggle Notes Mode as one explicit two-key operation. Notes Mode means
-     * "dictation → daily note AND no paste", so `QUICK_NOTES_ENABLED` and
-     * `QUICK_NOTES_SAVE_ONLY` are written together in a single settings.json
-     * update — never two independent writes that could half-succeed and desync.
+     * Toggle daily-note saving without changing the automatic paste policy.
      */
     func setNotesMode(enabled: Bool) throws
 
@@ -2496,10 +2538,7 @@ open func setLaneProvider(lane: CsLlmLane, providerId: String)throws   {try rust
 }
 
     /**
-     * Toggle Notes Mode as one explicit two-key operation. Notes Mode means
-     * "dictation → daily note AND no paste", so `QUICK_NOTES_ENABLED` and
-     * `QUICK_NOTES_SAVE_ONLY` are written together in a single settings.json
-     * update — never two independent writes that could half-succeed and desync.
+     * Toggle daily-note saving without changing the automatic paste policy.
      */
 open func setNotesMode(enabled: Bool)throws   {try rustCallWithError(FfiConverterTypeCsError_lift) {
     uniffi_codescribe_ffi_fn_method_codescribeconfig_set_notes_mode(
@@ -9082,6 +9121,70 @@ public func FfiConverterTypeCsAgentResetPreview_lower(_ value: CsAgentResetPrevi
 
 
 /**
+ * Credential-free receipt captured when the composer accepts a turn. The
+ * receipt is opaque to Swift and restored by the canonical settings loader.
+ */
+public struct CsAgentTurnConfiguration: Equatable, Hashable {
+    public var provider: String
+    public var model: String
+    public var reasoningEffort: String
+    public var receipt: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(provider: String, model: String, reasoningEffort: String, receipt: String) {
+        self.provider = provider
+        self.model = model
+        self.reasoningEffort = reasoningEffort
+        self.receipt = receipt
+    }
+
+
+}
+
+#if compiler(>=6)
+extension CsAgentTurnConfiguration: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCsAgentTurnConfiguration: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CsAgentTurnConfiguration {
+        return
+            try CsAgentTurnConfiguration(
+                provider: FfiConverterString.read(from: &buf),
+                model: FfiConverterString.read(from: &buf),
+                reasoningEffort: FfiConverterString.read(from: &buf),
+                receipt: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CsAgentTurnConfiguration, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.provider, into: &buf)
+        FfiConverterString.write(value.model, into: &buf)
+        FfiConverterString.write(value.reasoningEffort, into: &buf)
+        FfiConverterString.write(value.receipt, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsAgentTurnConfiguration_lift(_ buf: RustBuffer) throws -> CsAgentTurnConfiguration {
+    return try FfiConverterTypeCsAgentTurnConfiguration.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCsAgentTurnConfiguration_lower(_ value: CsAgentTurnConfiguration) -> RustBuffer {
+    return FfiConverterTypeCsAgentTurnConfiguration.lower(value)
+}
+
+
+/**
  * Agentic-lane readiness verdict + rows. `ready` reflects the CORE capability
  * gate only (assistive provider access available + native tools
  * available); the MCP rows (Vibecrafted + AICX + Loctree + PRView) are
@@ -14470,7 +14573,6 @@ public struct CsSettings: Equatable, Hashable {
     public var audioRetention: String
     public var historyEnabled: Bool
     public var quickNotesEnabled: Bool
-    public var quickNotesSaveOnly: Bool
     public var useLocalStt: Bool
     public var localModel: String
     public var sttFileEndpoint: String?
@@ -14670,7 +14772,7 @@ public struct CsSettings: Equatable, Hashable {
          */overlayPositionMode: String, overlayCustomX: Double?, overlayCustomY: Double?, beepOnStart: Bool, soundName: String, soundVolume: Float, audioInputDevice: String?,
         /**
          * Effective settings-only storage policy for the next capture.
-         */audioRetention: String, historyEnabled: Bool, quickNotesEnabled: Bool, quickNotesSaveOnly: Bool, useLocalStt: Bool, localModel: String, sttFileEndpoint: String?, sttLiveEndpoint: String?, restoreClipboard: Bool, restoreClipboardDelayMs: UInt64, startAtLogin: Bool, agentEnterSends: Bool, agentAutoSend: Bool,
+         */audioRetention: String, historyEnabled: Bool, quickNotesEnabled: Bool, useLocalStt: Bool, localModel: String, sttFileEndpoint: String?, sttLiveEndpoint: String?, restoreClipboard: Bool, restoreClipboardDelayMs: UInt64, startAtLogin: Bool, agentEnterSends: Bool, agentAutoSend: Bool,
         /**
          * Agent-channel send hold in seconds; zero disables it. UI range is 0...30.
          */agentSendHoldSec: UInt32,
@@ -14796,7 +14898,6 @@ public struct CsSettings: Equatable, Hashable {
         self.audioRetention = audioRetention
         self.historyEnabled = historyEnabled
         self.quickNotesEnabled = quickNotesEnabled
-        self.quickNotesSaveOnly = quickNotesSaveOnly
         self.useLocalStt = useLocalStt
         self.localModel = localModel
         self.sttFileEndpoint = sttFileEndpoint
@@ -14902,7 +15003,6 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
                 audioRetention: FfiConverterString.read(from: &buf),
                 historyEnabled: FfiConverterBool.read(from: &buf),
                 quickNotesEnabled: FfiConverterBool.read(from: &buf),
-                quickNotesSaveOnly: FfiConverterBool.read(from: &buf),
                 useLocalStt: FfiConverterBool.read(from: &buf),
                 localModel: FfiConverterString.read(from: &buf),
                 sttFileEndpoint: FfiConverterOptionString.read(from: &buf),
@@ -14996,7 +15096,6 @@ public struct FfiConverterTypeCsSettings: FfiConverterRustBuffer {
         FfiConverterString.write(value.audioRetention, into: &buf)
         FfiConverterBool.write(value.historyEnabled, into: &buf)
         FfiConverterBool.write(value.quickNotesEnabled, into: &buf)
-        FfiConverterBool.write(value.quickNotesSaveOnly, into: &buf)
         FfiConverterBool.write(value.useLocalStt, into: &buf)
         FfiConverterString.write(value.localModel, into: &buf)
         FfiConverterOptionString.write(value.sttFileEndpoint, into: &buf)
@@ -16358,8 +16457,7 @@ public struct CsTrayToggles: Equatable, Hashable {
      */
     public var startAssistive: Bool
     /**
-     * Notes Mode: voice → daily note (no paste). Backed by the core
-     * `quick_notes_enabled` + `quick_notes_save_only` pair, flipped together.
+     * Notes Mode: voice also saves to a daily note, independently of paste mode.
      */
     public var notesModeEnabled: Bool
     /**
@@ -16390,8 +16488,7 @@ public struct CsTrayToggles: Equatable, Hashable {
          * UI-initiated recording starts in the assistive lane when enabled.
          */startAssistive: Bool,
         /**
-         * Notes Mode: voice → daily note (no paste). Backed by the core
-         * `quick_notes_enabled` + `quick_notes_save_only` pair, flipped together.
+         * Notes Mode: voice also saves to a daily note, independently of paste mode.
          */notesModeEnabled: Bool,
         /**
          * Cursor-following recording indicator visibility.
@@ -22719,6 +22816,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_cancel_turn() != 14066) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeagent_capture_turn_configuration() != 20956) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_generate_thread_title() != 6378) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -22732,6 +22832,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_resolve_tool_approval() != 55035) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_codescribe_ffi_checksum_method_codescribeagent_stream_configured_reply() != 34816) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeagent_stream_document() != 12706) {
@@ -22914,7 +23017,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_lane_provider() != 7010) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_notes_mode() != 60930) {
+    if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_notes_mode() != 24867) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_codescribe_ffi_checksum_method_codescribeconfig_set_onboarding_mode() != 39503) {

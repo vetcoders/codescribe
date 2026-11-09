@@ -919,6 +919,16 @@ enum LLMLane: String, CaseIterable, Identifiable, Hashable {
   }
 }
 
+/// Discovered model options for one provider, used by the cross-provider
+/// model picker in Settings › Agent › AI models.
+struct ProviderModelGroup: Identifiable, Equatable {
+  let providerId: String
+  let providerDisplayName: String
+  let models: [CsModelOption]
+
+  var id: String { providerId }
+}
+
 /// One read model for a request lane: the loader-sealed runtime truth plus the
 /// registry row and the latest discovery for that provider. Both Settings
 /// panels consume this snapshot, so resolution cannot drift between them.
@@ -935,7 +945,21 @@ struct LLMLaneModel {
   var providerDisplayName: String { provider?.displayName ?? runtime.providerDisplayName }
   var resolvedEndpoint: String { runtime.endpoint }
   var resolvedModel: String { runtime.model }
-  var modelOptions: [CsModelOption] { discovery.models }
+  var modelOptions: [CsModelOption] { Self.disambiguateModelOptions(discovery.models) }
+
+  /// Append ` (id)` whenever multiple options in the same catalog share a
+  /// `displayName`, so the picker never renders indistinguishable rows.
+  static func disambiguateModelOptions(_ options: [CsModelOption]) -> [CsModelOption] {
+    var counts: [String: Int] = [:]
+    for option in options {
+      counts[option.displayName.lowercased(), default: 0] += 1
+    }
+    return options.map { option in
+      let key = option.displayName.lowercased()
+      guard (counts[key] ?? 0) > 1, key != option.id.lowercased() else { return option }
+      return CsModelOption(id: option.id, displayName: "\(option.displayName) (\(option.id))")
+    }
+  }
 
   /// Discovery drives the Menu when it is fresh or cached and non-empty; the Model ID
   /// field stays beside it either way (custom hosts may publish no list).
@@ -2363,7 +2387,7 @@ final class SettingsViewModel: ObservableObject {
     if tab != targetTab { tab = targetTab }
     refreshForCurrentSection()
     if target == .agent, engine?.shouldShowOnboarding() == false {
-      refreshModelDiscoveries(providerIds: LLMLane.allCases.map { llmLane($0).providerId })
+      refreshModelDiscoveries(providerIds: discoverableProviderIds)
     }
     if target == .engine {
       refreshServingStatus()
@@ -2713,6 +2737,81 @@ final class SettingsViewModel: ObservableObject {
     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
     settings[keyPath: lane.modelPath] = trimmed.isEmpty ? nil : trimmed
     persist(lane.modelKey, trimmed)
+  }
+
+  /// Select a model for `lane`, switching the lane's provider first when the
+  /// chosen model belongs to another configured provider.
+  func selectLLMModel(_ modelId: String, providerId: String, for lane: LLMLane) {
+    let currentProviderId = llmLane(lane).providerId
+    if providerId != currentProviderId {
+      guard let engine else { return }
+      do {
+        try engine.setLaneProvider(lane: lane.bridgeLane, providerId: providerId)
+      } catch {
+        lastError = error.userFacingMessage
+        return
+      }
+      laneResetNotice = nil
+      refreshModelDiscovery(providerId: providerId)
+      refreshAgentStatus()
+    }
+    setLLMModel(modelId, for: lane)
+  }
+
+  /// Provider IDs whose model catalogs should be discovered: the active lanes'
+  /// providers plus every configured provider (stored API key, signed-in
+  /// account, or key-optional custom host).
+  var discoverableProviderIds: [String] {
+    let laneIds = LLMLane.allCases.map { llmLane($0).providerId }
+    let configuredIds =
+      providers
+      .filter { $0.apiKeySet || $0.accountSignedIn || !$0.keyRequired }
+      .map(\.id)
+    var ordered: [String] = []
+    for id in laneIds + configuredIds where !ordered.contains(id) {
+      ordered.append(id)
+    }
+    return ordered
+  }
+
+  /// Discovered model groups across all configured providers, ordered with
+  /// `lane`'s current provider first, followed by other configured providers
+  /// in registry order.
+  func availableModelGroups(for lane: LLMLane) -> [ProviderModelGroup] {
+    let currentLane = llmLane(lane)
+    let currentId = currentLane.providerId
+    let orderedProviders =
+      providers.filter { $0.id == currentId }
+      + providers.filter {
+        $0.id != currentId && ($0.apiKeySet || $0.accountSignedIn || !$0.keyRequired)
+      }
+    var groups: [ProviderModelGroup] = []
+    var seenProviders: Set<String> = []
+    for provider in orderedProviders {
+      guard seenProviders.insert(provider.id).inserted else { continue }
+      let discovery =
+        modelDiscoveries[provider.id] ?? CsModelDiscovery.sample(for: provider.id)
+      let options = LLMLaneModel.disambiguateModelOptions(discovery.models)
+      guard !options.isEmpty, ["fresh", "cached"].contains(discovery.status) else { continue }
+      groups.append(
+        ProviderModelGroup(
+          providerId: provider.id,
+          providerDisplayName: provider.displayName,
+          models: options
+        )
+      )
+    }
+    if !seenProviders.contains(currentId), currentLane.usesDiscoveredPicker {
+      groups.insert(
+        ProviderModelGroup(
+          providerId: currentId,
+          providerDisplayName: currentLane.providerDisplayName,
+          models: currentLane.modelOptions
+        ),
+        at: 0
+      )
+    }
+    return groups
   }
 
   var formattingDescription: String {
@@ -3994,7 +4093,7 @@ final class SettingsViewModel: ObservableObject {
         providerAccessCheckedAt = Date()
         providerAccessError = nil
         refreshAgentStatus()
-        refreshModelDiscoveries(providerIds: LLMLane.allCases.map { llmLane($0).providerId })
+        refreshModelDiscoveries(providerIds: discoverableProviderIds)
       } catch {
         guard generation == providerAccessGeneration else {
           providerRefreshRequested = true

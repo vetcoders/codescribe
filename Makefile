@@ -4,7 +4,7 @@
 # The user-facing app is built by `make app` (xcodebuild); the Rust side no
 # longer ships a standalone `codescribe` tray binary.
 
-.PHONY: all build release release-codescribe release-codescribe-embedded release-qube app app-bindings install install-no-embed config install-app install-if-idle install-voice-lab install-lab \
+.PHONY: all build release release-codescribe release-codescribe-embedded app app-bindings install install-no-embed config install-app install-voice-lab install-lab \
         start stop restart status logs logs-follow \
         bump bump-patch bump-minor bump-major version \
         lint format test test-quick test-e2e test-e2e-real test-e2e-roundtrip test-sse test-sse-release test-responses-live test-sse-heavy test-formatting test-structural-verifier test-transcript-bus-path test-all \
@@ -152,18 +152,13 @@ app-bindings:
 	@echo "Regenerating UniFFI Swift bindings + Xcode project (PROFILE=$(PROFILE), no xcodebuild)..."
 	@SKIP_XCODEBUILD=1 ./scripts/build-app.sh $(PROFILE)
 
-release-qube: dist-preflight
-	@echo "Building qube-* (release, runtime model resolve from HF cache)..."
-	@CODESCRIBE_NO_EMBED=1 CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(CODESCRIBE_DIST_LICENSE_KEY)" \
-	 cargo build --release --bin qube-daemon --bin qube-report
-
-release: release-codescribe release-qube
+release: release-codescribe
 
 CARGO_INSTALL_ROOT ?= $(if $(CARGO_HOME),$(CARGO_HOME),$(HOME)/.cargo)
 CARGO_BIN ?= $(CARGO_INSTALL_ROOT)/bin
 
 install:
-	@echo "Installing qube tools + codescribe CLI (Silero embedded; Whisper from cache)..."
+	@echo "Installing codescribe CLI (Silero embedded; Whisper from cache)..."
 	@echo "Local install uses the development license verifier — same contract as install-app."
 	@echo "MiniLM is not fetched: no runtime path loads it. Need it for e2e_round_trip or"
 	@echo "lexicon_gate_calibration? Run 'make download-embedder' once."
@@ -175,11 +170,11 @@ install:
 	@mkdir -p ~/.codescribe
 	@$(MAKE) hooks
 	@./scripts/install-finder-quick-action.sh
-	@echo "Installed: qube tools $$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*\"\(.*\)\"/v\1/')"
+	@echo "Installed: codescribe CLI $$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*\"\(.*\)\"/v\1/')"
 	@echo "Note: Whisper is not embedded — download via Settings → Dictation or make download-model"
 
 install-no-embed:
-	@echo "Installing qube tools (DEV/RECOVERY: no optional embeds; runtime paths only)..."
+	@echo "Installing codescribe CLI (DEV/RECOVERY: no optional embeds; runtime paths only)..."
 	@env -u CODESCRIBE_LICENSE_PUBLIC_KEY_HEX \
 	 CODESCRIBE_NO_EMBED=1 CODESCRIBE_LOCAL_INSTALL=1 cargo install --locked --path . --force
 	@if [ "$$(uname -s)" = "Darwin" ]; then \
@@ -188,7 +183,7 @@ install-no-embed:
 	@mkdir -p ~/.codescribe
 	@$(MAKE) hooks
 	@./scripts/install-finder-quick-action.sh
-	@echo "Installed: qube tools $$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*\"\(.*\)\"/v\1/')"
+	@echo "Installed: codescribe CLI $$(grep '^version' $(VERSION_FILE) | head -1 | sed 's/.*\"\(.*\)\"/v\1/')"
 	@echo "Note: Set CODESCRIBE_MODEL_PATH at runtime if Whisper is needed"
 
 config:
@@ -222,9 +217,6 @@ install-bus:
 # that only the app defines breaks it without failing any app build or test.
 verify-install-bus:
 	@./scripts/install-bus.sh --compile-only
-
-install-if-idle:
-	@./scripts/install-if-idle.sh $(if $(INSTALL_APP_SOURCE),--from-app "$(INSTALL_APP_SOURCE)")
 
 # Restart the installed app at its first idle moment, only when the running
 # process did not load the installed binaries, then say "Zrobione". The
@@ -925,7 +917,7 @@ corpus-census:
 	@set -euo pipefail; \
 	 root_args=(); \
 	 for root in $(CORPUS_ROOTS); do root_args+=(--root "$$root"); done; \
-	 CODESCRIBE_DISABLE_KEYCHAIN=1 cargo run --quiet --bin codescribe-corpus -- census \
+	 CODESCRIBE_DISABLE_KEYCHAIN=1 cargo run --quiet --bin codescribe -- corpus census \
 	   "$${root_args[@]}" \
 	   --include-historical \
 	   --out "$(CORPUS_OUT)/census.json"
@@ -948,7 +940,7 @@ test-corpus-parity:
 	 if [ -n "$(strip $(CORPUS_MAX_RECORDINGS))" ]; then \
 	   max_args+=(--max-recordings "$(CORPUS_MAX_RECORDINGS)"); \
 	 fi; \
-	 CODESCRIBE_DISABLE_KEYCHAIN=1 cargo run --quiet --bin codescribe-corpus -- run \
+	 CODESCRIBE_DISABLE_KEYCHAIN=1 cargo run --quiet --bin codescribe -- corpus run \
 	   "$${root_args[@]}" \
 	   "$${max_args[@]}" \
 	   --out-dir "$(CORPUS_OUT)" \
@@ -1088,7 +1080,7 @@ test-engine-apple-channel: $(ENGINE_BRIDGE)
 # Teacher CLI: live×whisper×human → Needs attention → lexicon (built-in proof fixture).
 test-teacher:
 	@echo "=== Teacher proof (built-in e2e 01 texts; no mic) ==="
-	@cargo run --bin codescribe-teacher -- proof --html /tmp/codescribe-teacher.html
+	@cargo run --bin codescribe -- teach proof --html /tmp/codescribe-teacher.html
 	@echo "HTML: /tmp/codescribe-teacher.html  (open /tmp/codescribe-teacher.html)"
 
 # "all" means all workspace targets, not permission to activate ignored lanes.
@@ -1202,45 +1194,49 @@ verify:
 	echo "=== Verify (model share tokenizer hard-link) ==="; \
 	bash scripts/tests/share-new-model-tokenizer-test.sh; \
 	echo "=== Verify (env registry) ==="; \
-	python3 -m unittest scripts/tests/test_env_registry.py; \
-	python3 -m unittest scripts/tests/test_release_version.py; \
-	python3 -m unittest scripts/tests/test_data_asset_references.py; \
-	python3 -m unittest scripts/tests/test_sessions_dedupe.py; \
-	python3 -m unittest scripts/tests/test_bus_demux_speech.py; \
-	python3 -m unittest scripts/tests/test_install_if_idle.py; \
-	python3 -m unittest scripts/tests/test_restart_if_idle.py; \
-	python3 -m unittest scripts/tests/test_bus_native_queue.py; \
-	python3 -m unittest scripts/tests/test_bus_listener_recovery.py; \
-	python3 -m unittest scripts/tests/test_bus_read_ack.py; \
-	python3 -m unittest scripts/tests/test_bus_runtime_model.py; \
-	python3 -m unittest scripts/tests/test_bus_user_text.py; \
-	python3 -m unittest scripts/tests/test_bus_channel_seal_burst.py; \
-	python3 -m unittest scripts/tests/test_bus_draft_retirement.py; \
-	python3 -m unittest scripts/tests/test_install_bus_payload.py; \
-	python3 -m unittest scripts/tests/test_bus_peer_messages.py; \
-	python3 -m unittest scripts/tests/test_bus_address_authority.py; \
-	python3 -m unittest scripts/tests/test_bus_co_audience.py; \
-	python3 -m unittest scripts/tests/test_bus_broadcast_policy.py; \
-	python3 -m unittest scripts/tests/test_bus_send_hold.py; \
-	python3 -m unittest scripts/tests/test_bus_history.py; \
-	python3 -m unittest scripts/tests/test_bus_steer_global.py; \
-	python3 -m unittest scripts/tests/test_bus_moon_policy.py; \
-	python3 -m unittest scripts/tests/test_bus_panel_focus.py; \
-	python3 -m unittest scripts/tests/test_agent_reply_admission.py; \
-	python3 -m unittest scripts/tests/test_agent_publisher_manifest.py; \
+	python3 -m unittest \
+		scripts/tests/test_env_registry.py \
+		scripts/tests/test_release_version.py \
+		scripts/tests/test_data_asset_references.py \
+		scripts/tests/test_sessions_dedupe.py \
+		scripts/tests/test_bus_demux_speech.py \
+		scripts/tests/test_restart_if_idle.py \
+		scripts/tests/test_bus_native_queue.py \
+		scripts/tests/test_bus_listener_recovery.py \
+		scripts/tests/test_bus_read_ack.py \
+		scripts/tests/test_bus_runtime_model.py \
+		scripts/tests/test_bus_user_text.py \
+		scripts/tests/test_bus_channel_seal_burst.py \
+		scripts/tests/test_bus_draft_retirement.py \
+		scripts/tests/test_install_bus_payload.py \
+		scripts/tests/test_bus_peer_messages.py \
+		scripts/tests/test_bus_address_authority.py \
+		scripts/tests/test_bus_co_audience.py \
+		scripts/tests/test_bus_broadcast_policy.py \
+		scripts/tests/test_bus_send_hold.py \
+		scripts/tests/test_bus_history.py \
+		scripts/tests/test_bus_steer_global.py \
+		scripts/tests/test_bus_moon_policy.py \
+		scripts/tests/test_bus_panel_focus.py \
+		scripts/tests/test_agent_reply_admission.py \
+		scripts/tests/test_agent_publisher_manifest.py; \
 	CODESCRIBE_NO_EMBED=1 cargo build --locked --bin codescribe; \
-	python3 -m unittest scripts/tests/test_bus_channel_handover.py; \
-	python3 -m unittest scripts/tests/test_bus_agent_archive.py; \
-	python3 -m unittest scripts/tests/test_agent_reply_publisher.py; \
-	python3 -m unittest scripts/tests/test_cs_say_entry.py; \
-	python3 -m unittest scripts/tests/test_bus_mcp.py; \
-	python3 -m unittest scripts/tests/test_bus_mcp_agent.py scripts/tests/test_bus_mcp_runtime.py scripts/tests/test_bus_mcp_key_store.py; \
+	python3 -m unittest \
+		scripts/tests/test_bus_channel_handover.py \
+		scripts/tests/test_bus_agent_archive.py \
+		scripts/tests/test_agent_reply_publisher.py \
+		scripts/tests/test_cs_say_entry.py \
+		scripts/tests/test_bus_mcp.py \
+		scripts/tests/test_bus_mcp_agent.py \
+		scripts/tests/test_bus_mcp_runtime.py \
+		scripts/tests/test_bus_mcp_key_store.py; \
 	bash scripts/validate-envs.sh; \
 	echo "=== Verify (String Catalog lint instrument) ==="; \
-	python3 -m unittest scripts/tests/test_l10n_lint.py; \
-	python3 -m unittest scripts/tests/test_l10n_sheet.py; \
-	python3 -m unittest scripts/tests/test_l10n_bridge_census.py; \
-	python3 -m unittest scripts/tests/test_generate_swift_bindings.py; \
+	python3 -m unittest \
+		scripts/tests/test_l10n_lint.py \
+		scripts/tests/test_l10n_sheet.py \
+		scripts/tests/test_l10n_bridge_census.py \
+		scripts/tests/test_generate_swift_bindings.py; \
 	echo "=== Verify (install-lane single-instance stamp) ==="; \
 	bash scripts/tests/single-instance-stamp-test.sh; \
 	echo "=== Verify (Voice Lab install follows main) ==="; \

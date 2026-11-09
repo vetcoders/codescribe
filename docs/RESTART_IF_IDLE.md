@@ -31,6 +31,11 @@ after another install, exits with `deferred_to_active_waiter`, because every
 attempt compares against the bundle installed at that moment. The waiter
 appends its JSON lines to `waiter.log` in the handshake directory.
 
+`make install-app` is the only installer, and this waiter is the only owner
+of the generation swap: nothing else sends the application a Quit. A
+Founder composing in the overlay keeps the running generation until the
+waiter's `founder_composing` refusal ends.
+
 `make restart` still stops and starts the application without asking it.
 Use it only when the application does not answer.
 

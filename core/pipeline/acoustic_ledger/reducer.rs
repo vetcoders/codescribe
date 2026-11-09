@@ -820,6 +820,7 @@ impl AcousticLedger {
             self.record_assigned_word_pins(observation, &assignments);
         }
         self.record_word_decode_bounds(observation, words);
+        self.record_whisper_publication_context(observation);
         self.project_anchor_decode_bounds(observation, &incoming);
         let recovery_pending = self.text_recovery_pending(owner);
         let mut slots = self.slots_of(owner).unwrap_or(&[]).to_vec();
@@ -1593,6 +1594,8 @@ impl AcousticLedger {
                 && !operations.iter().any(|operation| {
                     operation.sources.contains(source)
                         && (operation.rule_id == "witness_absence_preserves_speech/v1"
+                            || (operation.observation == *observation
+                                && self.resolved_independent_word_operation(operation))
                             || self
                                 .independent_dt_partition_debt(
                                     observation,

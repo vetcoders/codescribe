@@ -17,6 +17,14 @@ final class OverlayAgentMailboxStickyTests: XCTestCase {
     try assertPinnedInbox(palette: .dark, scale: 1)
   }
 
+  func testMailboxesKeepTheirGeometryWithLargeTextInLight() throws {
+    try assertPinnedInbox(palette: .light, scale: 1.6)
+  }
+
+  func testMailboxesKeepTheirGeometryWithLargeTextInDark() throws {
+    try assertPinnedInbox(palette: .dark, scale: 1.6)
+  }
+
   private func assertPinnedInbox(palette: OverlayAppearancePalette, scale: CGFloat) throws {
     let priorKeyWindow = NSApp.keyWindow
     var selections: [String?] = []
@@ -46,10 +54,15 @@ final class OverlayAgentMailboxStickyTests: XCTestCase {
         open: false, loud: false, autosealDeadline: nil, followerAlive: true,
         provider: owner.provider, providerSessionID: owner.providerSessionID)
     }
-    let roster = OverlayChannelStatusView(
+    hud["0"] = .init(open: false, loud: false, autosealDeadline: nil, followerAlive: nil)
+    var roster = OverlayChannelStatusView(
       channels: channels, unavailable: false, palette: palette, animates: false,
       hudStates: hud, onToggleChannel: { toggles.append($0) }, conversations: conversations,
+      selectedConversationID: "10", unreadCounts: ["channel:0": 2, "10": 3],
       onSelectConversation: { selections.append($0) })
+    roster.sharedChannelStoredName = "SHARED"
+    roster.mutedChannels = ["0": false]
+    roster.onTogglePlayback = { _ in }
     XCTAssertEqual(roster.currentConversations.filter(\.isHumanInbox).count, 1)
     let root = roster.monitorBody(maximumHeight: 360)
       .environment(\.csTextScale, scale)
@@ -76,13 +89,18 @@ final class OverlayAgentMailboxStickyTests: XCTestCase {
     let beforeOrigin = scroll.contentView.bounds.origin.y
     let before = try snapshot(host, name: "before-\(palette.appearance)")
     let inboxBefore = try XCTUnwrap(textBox("INBOX FIXTURE", in: before))
+    let sharedBefore = try XCTUnwrap(textBox("SHARED", in: before))
+    XCTAssertEqual(inboxBefore.height, sharedBefore.height, accuracy: 0.008)
+    XCTAssertLessThan(inboxBefore.maxY, sharedBefore.minY, "The destinations occupy separate rows")
     scroll.contentView.scroll(to: NSPoint(x: 0, y: distance))
     scroll.reflectScrolledClipView(scroll.contentView)
     settle(host)
     XCTAssertGreaterThan(abs(scroll.contentView.bounds.origin.y - beforeOrigin), 40)
     let after = try snapshot(host, name: "after-\(palette.appearance)")
     let inboxAfter = try XCTUnwrap(textBox("INBOX FIXTURE", in: after))
+    let sharedAfter = try XCTUnwrap(textBox("SHARED", in: after))
     XCTAssertEqual(inboxBefore.midY, inboxAfter.midY, accuracy: 0.015)
+    XCTAssertEqual(sharedBefore.midY, sharedAfter.midY, accuracy: 0.015)
     XCTAssertNotNil(
       textBox("ZEBRA", in: after),
       "the agent list really reached its end: \(after.compactMap { $0.topCandidates(1).first?.string })"

@@ -48,12 +48,14 @@ final class TrayPanel: NSPanel, NSWindowDelegate {
     if contentViewController != nil { dismiss() }
     anchor = button
     anchorClickInFlight = false
-    contentViewController = NSHostingController(
+    let hosting = NSHostingController(
       rootView: TrayPanelSurface(content: content()) { [weak self] height in
         guard let self, height.isFinite, height > 0 else { return }
         contentHeight = height
         reposition()
       })
+    hosting.sizingOptions = []
+    contentViewController = hosting
     reposition()
     makeKeyAndOrderFront(nil)
     makeFirstResponder(nil)

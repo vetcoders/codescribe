@@ -826,6 +826,7 @@ impl Recorder {
                 stream_config,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
                     let mono_samples = downmix_to_mono(data, native_channels);
+                    let mono_len = mono_samples.len();
 
                     // Send data to callback if present
                     if let Some(ref cb) = on_data {
@@ -842,24 +843,22 @@ impl Recorder {
                             failed.store(true, Ordering::SeqCst);
                         }
                     }
+                    let cap = if spill_send_failed
+                        .as_ref()
+                        .is_some_and(|failed| failed.load(Ordering::SeqCst))
+                    {
+                        None
+                    } else {
+                        buffer_cap_samples
+                    };
                     {
                         let mut buf = buffer.lock().unwrap_or_else(|e| e.into_inner());
-                        // If the writer receiver died, retain future PCM in RAM.
-                        // Previously evicted samples still require the spill source.
-                        let cap = if spill_send_failed
-                            .as_ref()
-                            .is_some_and(|failed| failed.load(Ordering::SeqCst))
-                        {
-                            None
-                        } else {
-                            buffer_cap_samples
-                        };
                         append_mono_i16_samples(&mut buf, &buffer_start_offset, &mono_i16, cap);
                     }
 
                     // Feed audio to local VAD (non-blocking)
                     if let Some(ref tx) = vad_tx {
-                        let _ = tx.try_send(mono_samples.clone());
+                        let _ = tx.try_send(mono_samples);
                     }
 
                     // Read latest speech probability from local VAD
@@ -882,7 +881,7 @@ impl Recorder {
                         // Check for silence using VAD (only after speech has been observed)
                         if seen_speech_clone.load(Ordering::SeqCst) {
                             if is_silence {
-                                silent_frames_clone.fetch_add(mono_samples.len(), Ordering::SeqCst);
+                                silent_frames_clone.fetch_add(mono_len, Ordering::SeqCst);
                             } else {
                                 silent_frames_clone.store(0, Ordering::SeqCst);
                             }

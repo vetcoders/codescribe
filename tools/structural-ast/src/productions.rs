@@ -71,6 +71,12 @@ pub(super) fn paste(g: &mut Grammar, body: &Block) {
     // Closures here are exact predicate productions, not generic opaque calls.
     g.sequence(body, vec![
         (parse_quote!(let config = self.get_config().await;), "read config before target observation"),
+        (parse_quote!(let mut deferred_insert_shortcut = None;), "initialize shortcut"),
+        (parse_quote!(let mut deferred_insert_failure = None;), "initialize failure"),
+        (parse_quote!(let deferred_delivery = self.arm_or_copy_deferred_payload(
+            paste_text.clone(), &config,
+            &mut deferred_insert_shortcut, &mut deferred_insert_failure,
+        )?;), "retain exact payload before requesting delivery"),
         (parse_quote!(let focus_confirmed = target_app.as_deref().map(str::trim)
             .filter(|name| !name.is_empty()).is_some_and(|name| {
                 is_codescribe_app(name) || (crate::os::selection::activate_app_by_name(name)
@@ -99,11 +105,8 @@ pub(super) fn paste(g: &mut Grammar, body: &Block) {
         (parse_quote!(info!("{}", format_delivery_route_line(
             DeliveryIntent::OverlayInsert, decision, target_app.as_deref()
         ));), "observational route log"),
-        (parse_quote!(let mut deferred_insert_shortcut = None;), "initialize shortcut"),
-        (parse_quote!(let mut deferred_insert_failure = None;), "initialize failure"),
         (parse_quote!(let delivery = if decision.route == DeliveryRoute::ClipboardHold {
-            self.arm_or_copy_deferred_payload(paste_text.clone(), &config,
-                &mut deferred_insert_shortcut, &mut deferred_insert_failure,)?
+            deferred_delivery
         } else if focus_confirmed && preflight.can_post_events() {
             match clipboard::paste_to_stop_target(
                 &paste_text,
@@ -119,8 +122,7 @@ pub(super) fn paste(g: &mut Grammar, body: &Block) {
                     if let Err(error) = outcome {
                         warn!(%error, "{context}: paste failed; arming deferred insert");
                     }
-                    self.arm_or_copy_deferred_payload(paste_text.clone(), &config,
-                        &mut deferred_insert_shortcut, &mut deferred_insert_failure,)?
+                    deferred_delivery
                 }
             }
         } else {
@@ -128,8 +130,7 @@ pub(super) fn paste(g: &mut Grammar, body: &Block) {
                 cg_post_event_access = preflight.cg_post_event_access,
                 ax_trusted = preflight.ax_trusted, focus_confirmed,
                 "{context}: could not execute the selected clipboard route; arming deferred insert");
-            self.arm_or_copy_deferred_payload(paste_text, &config,
-                &mut deferred_insert_shortcut, &mut deferred_insert_failure,)?
+            deferred_delivery
         };), "capability hold versus identity guarded request versus deferred branch"),
         (Stmt::Expr(parse_quote!(Ok(OverlayPasteResult { delivery, target_app_name: target_app,
             frontmost_app_name: frontmost, deferred_insert_shortcut, deferred_insert_failure, })), None), "return preserved delivery result"),

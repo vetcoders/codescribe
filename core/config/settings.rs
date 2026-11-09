@@ -133,6 +133,19 @@ pub struct AcpLaunchSettings {
     pub cwd: String,
 }
 
+/// Secret-free selection accepted with a composer turn. It survives queue
+/// persistence without copying credentials; the sole loader resolves the chosen
+/// account again while keeping provider topology, model and effort fixed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AgentTurnSelection {
+    pub provider: String,
+    pub model: String,
+    pub reasoning: Option<String>,
+    pub custom_provider: Option<CustomProvider>,
+    pub acp: Option<AcpLaunchSettings>,
+}
+
 /// Validated local launch facts sealed by the same pass as the Agent lane.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RuntimeAcpConfiguration {
@@ -424,8 +437,6 @@ pub struct UserSettings {
     pub history_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quick_notes_enabled: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub quick_notes_save_only: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_at_login: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1463,6 +1474,24 @@ impl RuntimeSettingsSnapshot {
         &self.captured_inputs
     }
 
+    /// Capture only the Agent selection, never credential or prompt bytes.
+    pub fn agent_turn_selection(&self) -> AgentTurnSelection {
+        let lane = self.llm_lanes.assistive();
+        AgentTurnSelection {
+            provider: lane.provider().as_str().to_string(),
+            model: lane.model().to_string(),
+            reasoning: lane.reasoning().map(|effort| effort.as_str().to_string()),
+            custom_provider: lane.provider().custom_id().and_then(|id| {
+                self.user_settings
+                    .llm_custom_providers
+                    .iter()
+                    .find(|p| p.id == id)
+                    .cloned()
+            }),
+            acp: self.user_settings.agent_acp.clone(),
+        }
+    }
+
     /// Borrow the frozen runtime values.
     pub fn values(&self) -> &Config {
         &self.values
@@ -1949,9 +1978,6 @@ struct FeaturesV2 {
     history_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     quick_notes_enabled: Option<bool>,
-    // De-ghosted (2026-05-30): previously dropped on V2 round-trip.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    quick_notes_save_only: Option<bool>,
 }
 
 /// `system` section: install-level state and app identity — launch at login,
@@ -2071,7 +2097,6 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "CODESCRIBE_APPLE_LIVE_ENABLED",
     "HISTORY_ENABLED",
     "QUICK_NOTES_ENABLED",
-    "QUICK_NOTES_SAVE_ONLY",
     "START_AT_LOGIN",
     "QUBE_DAEMON_AUTOSTART",
     "AGENT_ENTER_SENDS",
@@ -2156,7 +2181,6 @@ typed_setting_writes! {
         "CODESCRIBE_APPLE_LIVE_ENABLED" => apple_live_enabled,
         "HISTORY_ENABLED" => history_enabled,
         "QUICK_NOTES_ENABLED" => quick_notes_enabled,
-        "QUICK_NOTES_SAVE_ONLY" => quick_notes_save_only,
         "START_AT_LOGIN" => start_at_login,
         "QUBE_DAEMON_AUTOSTART" => qube_daemon_autostart,
         "AGENT_ENTER_SENDS" => agent_enter_sends,
@@ -2327,7 +2351,6 @@ impl UserSettings {
             features: Some(FeaturesV2 {
                 history_enabled: self.history_enabled,
                 quick_notes_enabled: self.quick_notes_enabled,
-                quick_notes_save_only: self.quick_notes_save_only,
             }),
             system: Some(SystemV2 {
                 start_at_login: self.start_at_login,
@@ -2521,7 +2544,6 @@ impl UserSettings {
             sound_name: cloned!(v2.audio, feedback, sound_name),
             history_enabled: copy!(v2.features, history_enabled),
             quick_notes_enabled: copy!(v2.features, quick_notes_enabled),
-            quick_notes_save_only: copy!(v2.features, quick_notes_save_only),
             start_at_login: copy!(v2.system, start_at_login),
             qube_daemon_autostart: copy!(v2.system, qube_daemon_autostart),
             qube_donor: cloned!(v2.system, qube_donor),
@@ -4773,6 +4795,27 @@ mod tests {
         assert!(!registry.contains("[vars.AUTO_PASTE_ENABLED]"));
     }
 
+    #[test]
+    #[serial]
+    fn stored_notes_save_only_is_dropped_without_changing_paste_mode() {
+        let _tmp = setup_isolated_data_dir();
+        let bytes = br#"{"schema_version":3,"interaction":{"paste_mode":"comfort"},"features":{"quick_notes_enabled":true,"quick_notes_save_only":true}}"#;
+        std::fs::write(UserSettings::settings_path(), bytes).unwrap();
+        let loaded = UserSettings::load();
+        assert_eq!(loaded.paste_mode, Some(PasteMode::Comfort));
+        assert_eq!(loaded.quick_notes_enabled, Some(true));
+        loaded.save().unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(UserSettings::settings_path()).unwrap()).unwrap();
+        assert!(saved.pointer("/features/quick_notes_save_only").is_none());
+        assert_eq!(
+            saved
+                .pointer("/interaction/paste_mode")
+                .and_then(serde_json::Value::as_str),
+            Some("comfort")
+        );
+    }
+
     /// The ghosting regression itself: these keys were settable and promoted,
     /// but the V2 conversion dropped them, so `save` → `load` reverted them to
     /// default. Runs the real on-disk path, since an in-memory check would pass.
@@ -4786,7 +4829,6 @@ mod tests {
         let _tmp = setup_isolated_data_dir();
         let settings = UserSettings {
             transcript_send_mode: Some("paste".to_string()),
-            quick_notes_save_only: Some(true),
             agent_enter_sends: Some(false),
             whisper_model: Some("whisper-large-v3-turbo".to_string()),
             llm_formatting_provider: Some("custom:my-local".to_string()),
@@ -4805,7 +4847,6 @@ mod tests {
 
         let loaded = UserSettings::load();
         assert_eq!(loaded.transcript_send_mode.as_deref(), Some("paste"));
-        assert_eq!(loaded.quick_notes_save_only, Some(true));
         assert_eq!(loaded.agent_enter_sends, Some(false));
         assert_eq!(
             loaded.whisper_model.as_deref(),

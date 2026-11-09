@@ -180,9 +180,9 @@ final class SettingsChromeContractTests: XCTestCase {
     let view = try XCTUnwrap(settingsSources()["SettingsView.swift"])
     let detail = try XCTUnwrap(view.range(of: "} detail: {"))
     let minimum = try XCTUnwrap(view.range(of: ".frame(minWidth: Self.detailMinWidth)"))
-    let toolbar = try XCTUnwrap(view.range(of: ".toolbar {"))
+    let splitModifiers = try XCTUnwrap(view.range(of: ".csSidebarToggle(expanded:"))
     XCTAssertLessThan(detail.lowerBound, minimum.lowerBound)
-    XCTAssertLessThan(minimum.lowerBound, toolbar.lowerBound)
+    XCTAssertLessThan(minimum.lowerBound, splitModifiers.lowerBound)
     XCTAssertTrue(
       view.contains(".frame(maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)"))
     XCTAssertFalse(view.contains("minWidth: 880"))
@@ -1599,6 +1599,7 @@ final class SettingsChromeContractTests: XCTestCase {
 
   /// Settings → Dictionary: a fixed header, three honest counters, versions
   /// compared stage by stage, and a Learn action that states its scope first.
+  @MainActor
   func testDictionaryPaneReadsAsCorrectionsAndRules() throws {
     let panel = try XCTUnwrap(try settingsSources()["VoiceLabPanel.swift"])
     XCTAssertTrue(panel.contains("SettingsPageHeader(SettingsSection.voiceLab.title)"))
@@ -1749,8 +1750,10 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(tokens.contains("static var sheetDarkHex:"))
     XCTAssertEqual(SheetShade.todayDark.hex, 0x16161C)
     XCTAssertEqual(SheetShade.todayLight.hex, 0xF6F3EE)
-    XCTAssertEqual(SheetShade.darkChoices.map(\.rawValue), ["16161C", "1B1B1D", "201F1E", "070707"])
-    XCTAssertEqual(SheetShade.lightChoices.map(\.rawValue), ["F6F3EE", "DED9D3", "D9D3CD", "F0F0F0"])
+    XCTAssertEqual(
+      SheetShade.darkChoices.map(\.rawValue), ["16161C", "1B1B1D", "201F1E", "070707"])
+    XCTAssertEqual(
+      SheetShade.lightChoices.map(\.rawValue), ["F6F3EE", "DED9D3", "D9D3CD", "F0F0F0"])
     let polish = try polishCatalog()
     let expected: [String: String] = [
       "Appearance": "Wygląd",
@@ -1765,7 +1768,8 @@ final class SettingsChromeContractTests: XCTestCase {
     for (key, value) in expected {
       XCTAssertEqual(polish[key], value, key)
     }
-    XCTAssertNil(polish["Codescribe will restart with the new shade. Your recording must finish first."])
+    XCTAssertNil(
+      polish["Codescribe will restart with the new shade. Your recording must finish first."])
   }
 
   /// One switch, one track width (Founder, 2026-10-20): every switch in

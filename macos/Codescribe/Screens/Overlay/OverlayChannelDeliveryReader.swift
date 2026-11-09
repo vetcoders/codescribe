@@ -15,7 +15,8 @@ actor OverlayChannelDeliveryReader {
     subsystem: Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe",
     category: "overlay-delivery-reader")
 
-  private let root: URL
+  /// Native observation and I/O share this exact root, including isolated readers.
+  nonisolated let root: URL
   /// The core's high-churn folder (`CodescribeConfig.churnDir()`): the restart
   /// cache lives here, apart from the bridge files `root` holds.
   private let cacheRoot: URL

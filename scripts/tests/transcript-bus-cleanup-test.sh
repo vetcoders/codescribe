@@ -18,7 +18,7 @@ root = Path(sys.argv[1])
 sandbox = Path(tempfile.mkdtemp(prefix="codescribe cleanup "))
 (sandbox / "home").mkdir()
 (sandbox / "tmp").mkdir()
-# Do not inherit a real dotenv, Bus, lock path or fake-make protocol.
+# Do not inherit a real dotenv, Bus or lock path.
 env = {
     "HOME": str(sandbox / "home"),
     "TMPDIR": str(sandbox / "tmp"),
@@ -100,16 +100,14 @@ try:
             )
             try:
                 fields = ready_line(process).split("\t")
-                assert len(fields) == 5 and fields[0] == "fixture-ready", fields
+                assert len(fields) == 3 and fields[0] == "fixture-ready", fields
                 fixture = Path(fields[1])
                 assert fixture.resolve().parent == (sandbox / "tmp").resolve(), fields
-                guard, make, lock = owned = [int(value) for value in fields[2:]]
-                assert len(set(owned)) == 3 and all(pid > 1 for pid in owned)
+                (lock,) = owned = [int(value) for value in fields[2:]]
+                assert lock > 1
                 assert str(lock) == (fixture / "lock.ready").read_text()
-                assert str(make) == (fixture / "make.ready").read_text()
                 assert all(not absent(pid) for pid in owned), "helper died before trigger"
-                assert not (fixture / "make.stopped").exists()
-                assert not (fixture / "make.release").exists()
+                assert not (fixture / "lock.release").exists()
                 assert sentinel.poll() is None, "negative control died before trigger"
                 started = time.monotonic()
                 if name in ("TERM", "INT"):
@@ -125,9 +123,7 @@ try:
                 stderr = errors.read()
                 assert process.returncode == expected, (name, process.returncode, output, stderr)
                 assert f"cleanup: original={expected} cleanup=0 root={fixture}" in output, output
-                for pid in (guard, lock):
-                    assert f"cleanup: reaped {pid} status=0" in output, output
-                assert f"cleanup: make-stopped {make}" in output, output
+                assert f"cleanup: reaped {lock} status=0" in output, output
                 assert not fixture.exists(), "fixture removed only after terminal/reap receipts"
                 assert all(absent(pid) for pid in owned), ("owned orphan", owned)
                 assert sentinel.poll() is None, "cleanup killed the negative control"
@@ -135,7 +131,7 @@ try:
                     assert "deliberate assertion failure" in stderr, stderr
                 completed += 1
                 print(f"cleanup-regression: {name} status={expected} seconds={elapsed:.3f} "
-                      f"guard={guard} make={make} lock={lock} no-owned-orphans "
+                      f"lock={lock} no-owned-orphans "
                       f"sentinel={sentinel.pid}:alive", flush=True)
                 print(output, end="", flush=True)
             finally:

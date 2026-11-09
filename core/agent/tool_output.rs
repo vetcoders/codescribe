@@ -74,41 +74,42 @@ impl ToolOutputStore {
             return Ok(false);
         }
 
-        let body = content
-            .iter()
-            .filter_map(|block| match block {
-                ContentBlock::Text(text) => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let body = text_body(content);
         let persisted = self.persist(body.as_bytes());
         let reference = match &persisted {
-            Ok(path) => ContentBlock::Text(format!(
-                "[tool output stored: {} ({} bytes)]",
-                path.display(),
+            Ok(path) => stored_reference(path, body.len()),
+            Err(error) => format!(
+                "{OMITTED_PREFIX}failed to store {} bytes: {error}]",
                 body.len()
-            )),
-            Err(error) => ContentBlock::Text(format!(
-                "[tool output omitted: failed to store {} bytes: {error}]",
-                body.len()
-            )),
+            ),
         };
-
-        let first_text = content
-            .iter()
-            .position(|block| matches!(block, ContentBlock::Text(_)))
-            .unwrap_or(0);
-        let mut replacement = Vec::with_capacity(content.len());
-        for (index, block) in content.drain(..).enumerate() {
-            match block {
-                ContentBlock::Text(_) if index == first_text => replacement.push(reference.clone()),
-                ContentBlock::Text(_) => {}
-                other => replacement.push(other),
-            }
-        }
-        *content = replacement;
+        replace_texts(content, reference);
         persisted.map(|_| true)
+    }
+
+    /// Move a tool result's text into the store whatever its size and keep
+    /// the reference — the pruning path of context compaction.
+    ///
+    /// Unlike [`Self::spill_content`], a failed write leaves the content
+    /// untouched: pruning is an optimisation and must never cost the output.
+    /// Returns `false` when there is no text or it is already a reference.
+    pub(crate) fn store_content(&self, content: &mut Vec<ContentBlock>) -> Result<bool> {
+        let mut texts = content.iter().filter_map(|block| match block {
+            ContentBlock::Text(text) => Some(text.as_str()),
+            _ => None,
+        });
+        if texts.clone().next().is_none() || texts.any(Self::is_reference) {
+            return Ok(false);
+        }
+        let body = text_body(content);
+        let path = self.persist(body.as_bytes())?;
+        replace_texts(content, stored_reference(&path, body.len()));
+        Ok(true)
+    }
+
+    /// Whether a text block is a reference this store wrote in place of output.
+    pub(crate) fn is_reference(text: &str) -> bool {
+        text.starts_with(STORED_PREFIX) || text.starts_with(OMITTED_PREFIX)
     }
 
     /// Rehydration is a full-history replay boundary. Normalizing here keeps
@@ -160,6 +161,45 @@ impl ToolOutputStore {
         atomic_write_private(&path, body)?;
         Ok(path)
     }
+}
+
+const STORED_PREFIX: &str = "[tool output stored: ";
+const OMITTED_PREFIX: &str = "[tool output omitted: ";
+
+fn stored_reference(path: &Path, bytes: usize) -> String {
+    format!("{STORED_PREFIX}{} ({bytes} bytes)]", path.display())
+}
+
+/// All text blocks of a tool result, joined in order.
+fn text_body(content: &[ContentBlock]) -> String {
+    content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Put `reference` where the first text block was and drop the other texts;
+/// non-text blocks (for example disk-backed images) keep their place.
+fn replace_texts(content: &mut Vec<ContentBlock>, reference: String) {
+    let first_text = content
+        .iter()
+        .position(|block| matches!(block, ContentBlock::Text(_)))
+        .unwrap_or(0);
+    let mut replacement = Vec::with_capacity(content.len());
+    for (index, block) in content.drain(..).enumerate() {
+        match block {
+            ContentBlock::Text(_) if index == first_text => {
+                replacement.push(ContentBlock::Text(reference.clone()))
+            }
+            ContentBlock::Text(_) => {}
+            other => replacement.push(other),
+        }
+    }
+    *content = replacement;
 }
 
 /// Write `body` to `path` atomically, owner-readable only.

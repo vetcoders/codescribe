@@ -105,4 +105,51 @@ final class ComposerPaletteSourceTests: XCTestCase {
     _ = source.entries(for: .model)
     XCTAssertEqual(reads.discovery, 1)
   }
+
+  func testModelEntriesIncludeOtherConfiguredProvidersAndSwitchProviderOnApply() throws {
+    var writes: [(String, String)] = []
+    let store = MockProviderStore()
+    var engine = MockSettingsEngine(
+      providerStore: store,
+      updateConfigObserver: { key, value in writes.append((key, value)) }
+    )
+    engine.providersReader = {
+      [
+        .row(
+          id: "openai-responses", kind: "vendor", name: "OpenAI", wire: "responses",
+          endpoint: "https://api.openai.com/v1/responses", account: "LLM_OPENAI_API_KEY",
+          keySet: true, login: true),
+        .row(
+          id: "xai-responses", kind: "vendor", name: "xAI", wire: "responses",
+          endpoint: "https://api.x.ai/v1/responses", account: "LLM_XAI_API_KEY",
+          keySet: true, login: true),
+      ]
+    }
+    engine.discoveryLoader = { providerId in
+      if providerId == "xai-responses" {
+        return CsModelDiscovery(
+          providerId: "xai-responses",
+          status: "fresh",
+          message: nil,
+          models: [CsModelOption(id: "grok-4.7", displayName: "Grok 4.7")]
+        )
+      }
+      return .sample(for: providerId)
+    }
+    let source = RealComposerPaletteSource(settings: engine, mcpAdmin: MockMCPAdminEngine()) {
+      store.runtimeLane(.assistive)
+    }
+
+    let entries = source.entries(for: .model)
+    let grok = try XCTUnwrap(entries.first { $0.id == "grok-4.7" })
+    XCTAssertEqual(grok.title, "Grok 4.7")
+    XCTAssertEqual(grok.subtitle, "xAI · grok-4.7")
+    XCTAssertEqual(grok.providerId, "xai-responses")
+    XCTAssertEqual(ComposerPalette.filter(entries, by: "xai").map(\.id), ["grok-4.7"])
+
+    try source.apply(grok, for: .model)
+    XCTAssertEqual(store.laneProviders[.assistive], "xai-responses")
+    XCTAssertEqual(writes.map(\.0), ["LLM_ASSISTIVE_MODEL"])
+    XCTAssertEqual(writes.map(\.1), ["grok-4.7"])
+  }
 }

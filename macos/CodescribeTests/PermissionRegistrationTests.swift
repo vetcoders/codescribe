@@ -62,6 +62,60 @@ final class PermissionRegistrationTests: XCTestCase {
     }
   }
 
+  func testSpotifyControlAsksOnceOnlyWhileMacOSHasNoAnswer() async {
+    let kind = PermissionKind.spotifyAutomation
+    XCTAssertTrue(kind.repair(for: .notDetermined).requestsNatively)
+    XCTAssertFalse(kind.repair(for: .notDetermined).opensSettings)
+    XCTAssertFalse(kind.repair(for: .denied).requestsNatively, "a refusal is not asked again")
+    XCTAssertTrue(kind.repair(for: .denied).opensSettings)
+    XCTAssertTrue(kind.settingsURL?.absoluteString.hasSuffix("Privacy_Automation") == true)
+
+    let allowed = PermissionRequestFixture(grantOnRequest: true)
+    let granted = await kind.requestInApp(client: allowed, probe: allowed)
+    XCTAssertEqual(allowed.requests, [kind.rawValue])
+    XCTAssertEqual(granted, .granted)
+
+    let unanswered = PermissionRequestFixture()
+    let pending = await kind.requestInApp(client: unanswered, probe: unanswered)
+    XCTAssertEqual(unanswered.requests, [kind.rawValue])
+    XCTAssertEqual(pending, .notDetermined, "an unanswered request is not a grant")
+
+    for settled in [PermissionState.denied, .granted] {
+      let fixture = PermissionRequestFixture(spotifyAutomation: settled)
+      let result = await kind.requestInApp(client: fixture, probe: fixture)
+      XCTAssertEqual(result, settled)
+      XCTAssertTrue(fixture.requests.isEmpty, "\(settled) never reaches the native request")
+    }
+  }
+
+  func testSpotifyStatusCodesBecomeAGrantOnlyOnSuccess() {
+    XCTAssertEqual(SpotifyAppleEvents.automationPermissionState(status: 0), .granted)
+    XCTAssertEqual(SpotifyAppleEvents.automationPermissionState(status: -1743), .denied)
+    for status: OSStatus in [-1744, -600, -50, 1] {
+      XCTAssertEqual(
+        SpotifyAppleEvents.automationPermissionState(status: status), .notDetermined,
+        "status \(status) proves neither a grant nor a refusal")
+    }
+  }
+
+  func testSpotifyControlIsOptionalAndNamedInBothLanguages() {
+    XCTAssertTrue(PermissionKind.spotifyAutomation.isOptionalForSetup)
+    XCTAssertFalse(PermissionKind.spotifyAutomation.isRequiredForSetup)
+    XCTAssertEqual(PermissionSnapshot.allGranted.spotifyAutomation, .granted)
+    XCTAssertEqual(
+      PermissionKind.spotifyAutomation.displayName(locale: Locale(identifier: "pl")),
+      "Sterowanie Spotify")
+    XCTAssertEqual(
+      PermissionKind.spotifyAutomation.displayName(locale: Locale(identifier: "en")),
+      "Spotify control")
+    XCTAssertNotNil(
+      PermissionKind.spotifyAutomation.repairNote(
+        for: .notDetermined, requested: false, locale: Locale(identifier: "pl")))
+    XCTAssertNil(
+      PermissionKind.spotifyAutomation.repairNote(
+        for: .granted, requested: false, locale: Locale(identifier: "pl")))
+  }
+
   func testPermissionPaneNameTracksTheSystemVersionWithoutChangingIdentity() {
     let kind = PermissionKind.accessibility
     XCTAssertEqual(
@@ -101,9 +155,13 @@ final class PermissionRequestFixture: PermissionRequesting, PermissionProbing, S
   private let grantOnRequest: Bool
   private let accessibilityPromptResult: Bool
 
-  init(grantOnRequest: Bool = false, accessibilityPromptResult: Bool = false) {
+  init(
+    grantOnRequest: Bool = false, accessibilityPromptResult: Bool = false,
+    spotifyAutomation: PermissionState = .notDetermined
+  ) {
     self.grantOnRequest = grantOnRequest
     self.accessibilityPromptResult = accessibilityPromptResult
+    state.withLock { $0.snapshot.spotifyAutomation = spotifyAutomation }
   }
 
   var requests: [String] { state.withLock { $0.requests } }
@@ -120,6 +178,7 @@ final class PermissionRequestFixture: PermissionRequesting, PermissionProbing, S
       case .screenRecording: $0.snapshot.screenRecording = .granted
       case .speechRecognition: $0.snapshot.speechRecognition = .granted
       case .fullDiskAccess: $0.snapshot.fullDiskAccess = .granted
+      case .spotifyAutomation: $0.snapshot.spotifyAutomation = .granted
       }
       return true
     }
@@ -134,5 +193,8 @@ final class PermissionRequestFixture: PermissionRequesting, PermissionProbing, S
   func requestMicrophone() async -> Bool { request(.microphone) }
   func requestSpeechRecognition() async -> PermissionState {
     request(.speechRecognition) ? .granted : .denied
+  }
+  func requestSpotifyAutomation() async -> PermissionState {
+    request(.spotifyAutomation) ? .granted : .notDetermined
   }
 }

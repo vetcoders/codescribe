@@ -161,6 +161,19 @@ impl MessageMetadata {
         Ok(Some(wire))
     }
 
+    /// The same metadata without its signed provider wire state, or `None`
+    /// when nothing else remains. Other namespaces are kept as stored.
+    pub fn without_provider_wire(&self) -> Option<Self> {
+        let mut value = self.0.clone();
+        if let Some(object) = value.as_object_mut() {
+            object.remove("provider_wire");
+            if object.is_empty() {
+                return None;
+            }
+        }
+        Some(Self(value))
+    }
+
     pub fn for_provider_wire(wire: ProviderWireMessage) -> anyhow::Result<Self> {
         wire.validate()?;
         let metadata = Self(serde_json::json!({"provider_wire": wire}));

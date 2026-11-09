@@ -38,11 +38,15 @@ struct LiveFixture {
 
 impl LiveFixture {
     fn open_and_admit_six() -> Self {
+        Self::open_for_document(LIVE_TAKE)
+    }
+
+    fn open_for_document(document_id: &str) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let bus = Arc::new(
             TranscriptBus::open_at(
                 crate::presentation::transcript_bus::TranscriptSession {
-                    session_id: LIVE_TAKE.into(),
+                    session_id: document_id.into(),
                     mode: crate::presentation::transcript_bus::TranscriptMode::Dictation,
                     has_latched_target: true,
                     latched_target_is_self: false,
@@ -52,7 +56,8 @@ impl LiveFixture {
                 dir.path().join("live-bus.jsonl"),
                 None,
             )
-            .expect("bus"),
+            .expect("bus")
+            .with_capture_session(LIVE_TAKE.into()),
         );
         bus.publish_started();
         let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
@@ -152,10 +157,8 @@ impl LiveFixture {
 }
 
 #[tokio::test]
-async fn live_formatter_paints_formatted_prefix_with_raw_suffix_before_stop_and_falls_back_on_partial_failure()
- {
+async fn live_formatter_keeps_accepted_prefix_at_stop_when_another_fragment_fails() {
     let fixture = LiveFixture::open_and_admit_six();
-    let raw_full = RAW_FRAGMENTS.join(" ");
     let canvas_floor = fixture
         .emitter
         .visible_canvas_snapshot()
@@ -228,7 +231,7 @@ async fn live_formatter_paints_formatted_prefix_with_raw_suffix_before_stop_and_
         .clone();
     assert_eq!(after_stale.as_deref(), Some(expected_live.as_str()));
 
-    // Fragment 5 fails and the take ends: Stop selection falls back to complete Raw floor, never partial 1..4.
+    // One failed fragment cannot discard the four accepted live fragments.
     fixture.propose(
         4,
         "",
@@ -239,12 +242,20 @@ async fn live_formatter_paints_formatted_prefix_with_raw_suffix_before_stop_and_
         session_id: LIVE_TAKE.into(),
         layer_summary: LayerSummary::default(),
     });
+    let raw_full = fixture
+        .emitter
+        .terminal_formatter_request()
+        .expect("owned terminal document")
+        .source_text;
     let terminal_selection = fixture
         .emitter
         .delivery_projection(FormattingPolicy::Smart, &raw_full)
         .expect("terminal delivery projection");
-    assert_eq!(terminal_selection.status, "unavailable");
-    assert_eq!(terminal_selection.rendered_text, raw_full);
+    assert_eq!(terminal_selection.status, "applied");
+    assert_eq!(
+        terminal_selection.rendered_text,
+        format!("{expected_live}.")
+    );
     assert_eq!(
         fixture
             .emitter
@@ -253,4 +264,77 @@ async fn live_formatter_paints_formatted_prefix_with_raw_suffix_before_stop_and_
             .text,
         format!("{canvas_floor}.")
     );
+}
+
+#[tokio::test]
+async fn stop_preserves_current_live_correction_for_distinct_document_and_capture() {
+    for policy in [FormattingPolicy::Correction, FormattingPolicy::Smart] {
+        let fixture = LiveFixture::open_for_document("owned-dictation-document");
+        fixture.propose(
+            0,
+            FORMATTED_FRAGMENTS[0],
+            policy,
+            LabelProposalDisposition::Propose,
+        );
+        fixture.propose(1, "", policy, LabelProposalDisposition::Refuse);
+        fixture.emitter.on_event(&EngineEvent::SessionFinalised {
+            session_id: LIVE_TAKE.into(),
+            layer_summary: LayerSummary::default(),
+        });
+        let raw = fixture
+            .emitter
+            .terminal_formatter_request()
+            .expect("owned terminal document")
+            .source_text;
+        assert!(
+            fixture
+                .emitter
+                .delivery_projection_with_assembly(
+                    Some("foreign-document"),
+                    policy,
+                    &raw,
+                    ProjectionAssembly::TerminalDocument
+                )
+                .is_none(),
+            "a different document cannot select this capture's formatting"
+        );
+        let selected = fixture
+            .emitter
+            .delivery_projection_with_assembly(
+                Some("owned-dictation-document"),
+                policy,
+                &raw,
+                ProjectionAssembly::TerminalDocument,
+            )
+            .expect("source-bound delivery for the owning document");
+        assert_eq!(selected.status, "applied");
+        assert_eq!(selected.delivered_mode, policy.as_str());
+        assert_eq!(
+            selected.rendered_text,
+            format!(
+                "{} {}.",
+                FORMATTED_FRAGMENTS[0],
+                RAW_FRAGMENTS[1..].join(" ")
+            )
+        );
+        // Late formatting is history, not authority for a second handoff.
+        fixture.propose(
+            2,
+            FORMATTED_FRAGMENTS[2],
+            policy,
+            LabelProposalDisposition::Propose,
+        );
+        assert_eq!(
+            fixture
+                .emitter
+                .delivery_projection_with_assembly(
+                    Some("owned-dictation-document"),
+                    policy,
+                    &raw,
+                    ProjectionAssembly::TerminalDocument
+                )
+                .unwrap(),
+            selected
+        );
+    }
 }

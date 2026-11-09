@@ -203,12 +203,105 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     }
   }
 
-  func testUnreadablyNarrowOrHeaderOnlyCardsDoNotMountClippedPreview() {
+  func testUnreadablyNarrowOrHeaderOnlyCardsDoNotMountClippedPreview() throws {
     for scale in [CGFloat(0.8), 1, 1.6] {
       let metrics = IntercomContentMetrics(names: ["Agent"], digits: ["2"], scale: scale)
       XCTAssertNil(metrics.compactPreviewLayout(width: metrics.iconSide, cardHeight: 2000))
       XCTAssertNil(metrics.compactPreviewLayout(width: 500, cardHeight: metrics.iconSide))
       XCTAssertEqual(metrics.cardContent(width: 500, cardHeight: metrics.iconSide), .header)
+      let row = Layout.controlHeight(scale: scale)
+      let narrowPreview = try XCTUnwrap(
+        metrics.compactPreviewLayout(width: metrics.minimumNameWidth, cardHeight: 5 * row))
+      XCTAssertGreaterThan(narrowPreview.height, 0)
+      XCTAssertFalse(narrowPreview.showsComposer)
+    }
+  }
+
+  @MainActor
+  func testLeadingHintAnchorsOutsideParentWindowAndAlignsTopEdge() {
+    let screen = NSRect(x: 0, y: 0, width: 1440, height: 900)
+    let parentFrame = NSRect(x: 1180, y: 740, width: 240, height: 30)
+    let innerButtonAnchor = NSRect(x: 1225, y: 740, width: 120, height: 30)
+    let frame = OverlayHintPanel.frame(
+      size: CGSize(width: 280, height: 180),
+      leading: innerButtonAnchor,
+      parentFrame: parentFrame,
+      within: screen)
+    XCTAssertEqual(frame.maxX, parentFrame.minX - OverlayHintPanel.gap, accuracy: 0.001)
+    XCTAssertEqual(frame.maxY, innerButtonAnchor.maxY, accuracy: 0.001)
+    XCTAssertFalse(frame.intersects(parentFrame))
+  }
+
+  /// A row in the right-hand column of a split window keeps its hint beside
+  /// itself instead of jumping across the window to the window's left edge.
+  @MainActor
+  func testLeadingHintInARightHandSplitColumnStaysBesideTheAnchor() {
+    let screen = NSRect(x: 0, y: 0, width: 1440, height: 900)
+    let window = NSRect(x: 200, y: 100, width: 900, height: 600)
+    let rightColumnRow = NSRect(x: 760, y: 500, width: 320, height: 44)
+    let size = CGSize(width: 280, height: 180)
+    let frame = OverlayHintPanel.frame(
+      size: size, leading: rightColumnRow, parentFrame: window, within: screen)
+    XCTAssertEqual(frame.maxX, rightColumnRow.minX - OverlayHintPanel.gap, accuracy: 0.001)
+    XCTAssertGreaterThan(frame.minX, window.minX, "the hint never jumps to the window's far edge")
+    XCTAssertFalse(frame.intersects(rightColumnRow))
+  }
+
+  @MainActor
+  func testLeadingHintStaysBesideItsRowWhenTheWindowHasRoom() {
+    let screen = NSRect(x: 0, y: 0, width: 1728, height: 1000)
+    // The Agents window: a wide document with the list as its right column.
+    let parentFrame = NSRect(x: 260, y: 200, width: 1080, height: 720)
+    let row = NSRect(x: 1130, y: 600, width: 200, height: 70)
+    let size = CGSize(width: 260, height: 180)
+    let frame = OverlayHintPanel.frame(
+      size: size, leading: row, parentFrame: parentFrame, within: screen)
+    XCTAssertEqual(frame.maxX, row.minX - OverlayHintPanel.gap, accuracy: 0.001)
+    XCTAssertEqual(frame.maxY, row.maxY, accuracy: 0.001)
+    XCTAssertTrue(parentFrame.contains(frame), "the preview stays over the document")
+    XCTAssertFalse(frame.intersects(row))
+    // The same list docked on the window's left edge previews on its right.
+    let leftRow = NSRect(x: 270, y: 600, width: 200, height: 70)
+    let mirrored = OverlayHintPanel.frame(
+      size: size, leading: leftRow,
+      parentFrame: NSRect(x: 8, y: 200, width: 1080, height: 720),
+      within: screen)
+    XCTAssertFalse(mirrored.intersects(leftRow))
+    XCTAssertTrue(screen.contains(mirrored))
+  }
+
+  /// A window large enough for the card keeps it inside, clear of the row
+  /// that raised it, wherever that row sits (Maciej, 2026-11-06: hover cards
+  /// are fine, "tylko NIE poza oknem").
+  @MainActor
+  func testLeadingHintNeverLeavesAWindowThatCanHoldIt() {
+    let screen = NSRect(x: 0, y: 0, width: 1728, height: 1000)
+    let size = CGSize(width: 260, height: 180)
+    for window in [
+      NSRect(x: 400, y: 150, width: 900, height: 640),
+      NSRect(x: 400, y: 150, width: 420, height: 640),
+      NSRect(x: 0, y: 150, width: 900, height: 640),
+    ] {
+      let rows: [(String, NSRect)] = [
+        ("left column", NSRect(x: window.minX + 12, y: window.midY, width: 300, height: 44)),
+        (
+          "right column",
+          NSRect(x: window.maxX - 312, y: window.midY, width: 300, height: 44)
+        ),
+        ("full width", NSRect(x: window.minX + 12, y: window.midY, width: window.width - 24, height: 44)),
+        ("bottom row", NSRect(x: window.minX + 12, y: window.minY + 8, width: 300, height: 44)),
+        ("top row", NSRect(x: window.minX + 12, y: window.maxY - 52, width: 300, height: 44)),
+        (
+          "full width at the bottom",
+          NSRect(x: window.minX + 12, y: window.minY + 8, width: window.width - 24, height: 44)
+        ),
+      ]
+      for (name, row) in rows {
+        let frame = OverlayHintPanel.frame(
+          size: size, leading: row, parentFrame: window, within: screen)
+        XCTAssertTrue(window.contains(frame), "\(name) in \(window): card left the window, \(frame)")
+        XCTAssertFalse(frame.intersects(row), "\(name) in \(window): card covers its row, \(frame)")
+      }
     }
   }
 
@@ -1113,9 +1206,10 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       "a draft with no visible card still gets a window to speak into")
   }
 
-  /// The All row and your inbox lead the sidebar's scrolling list as plain
-  /// roster rows, with an empty pinned slot and no separate card surface.
-  func testAllRowAndInboxLeadTheSidebarListWithEmptyPinnedSlot() throws {
+  /// Channel 0 and your inbox are one permanent pill over the agents list
+  /// (Maciej, 2026-11-06), on the composer's surface (Maciej, 2026-10-30).
+  /// The scrolling list starts with the agents; the mailboxes are not rows.
+  func testMailboxesArePinnedInOnePillOverTheScrollingAgents() throws {
     let url = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent().deletingLastPathComponent()
       .appendingPathComponent("Codescribe/Screens/Overlay/OverlayChannelStatusView.swift")
@@ -1129,27 +1223,43 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       body.range(of: "} content: { rowFocus in", range: pinned.upperBound..<body.endIndex))
     let pinnedSection = body[pinned.upperBound..<content.lowerBound]
     let contentSection = body[content.upperBound...]
-    XCTAssertTrue(pinnedSection.contains("_ in EmptyView()"))
-    XCTAssertFalse(pinnedSection.contains("broadcastRow("))
-    XCTAssertFalse(body.contains("OverlayComposerSurface"))
-    let broadcastCall = try XCTUnwrap(
-      contentSection.range(of: "broadcastRow(broadcast, rowFocus: rowFocus)"))
-    let inboxCall = try XCTUnwrap(
-      contentSection.range(
-        of: "inboxRow(inbox, rowFocus: rowFocus)",
-        range: broadcastCall.upperBound..<contentSection.endIndex))
-    XCTAssertNotNil(
-      contentSection.range(
-        of: "detailsContent(rowFocus: rowFocus)",
-        range: inboxCall.upperBound..<contentSection.endIndex))
-    XCTAssertEqual(body.components(separatedBy: "broadcastRow(").count - 1, 1)
+    XCTAssertTrue(pinnedSection.contains("pinnedMailboxPill(rowFocus: rowFocus)"))
+    XCTAssertFalse(pinnedSection.contains("EmptyView()"))
+    XCTAssertTrue(body.contains("showsHeader: false"), "the pill is the list's only top row")
+    XCTAssertFalse(contentSection.contains("channel == \"0\""), "All is not a scrolling row")
+    XCTAssertFalse(contentSection.contains("isHumanInbox"), "the inbox is not a scrolling row")
+    XCTAssertNotNil(contentSection.range(of: "detailsContent(rowFocus: rowFocus)"))
 
-    let inboxStart = try XCTUnwrap(source.range(of: "private func inboxRow("))
-    let inboxEnd = try XCTUnwrap(
-      source.range(of: "private func conversationRow(", range: inboxStart.upperBound..<source.endIndex))
-    let inboxBody = String(source[inboxStart.lowerBound..<inboxEnd.lowerBound])
-    XCTAssertTrue(inboxBody.contains("dot: nil"))
-    XCTAssertTrue(inboxBody.contains("symbol: \"envelope\""))
-    XCTAssertTrue(inboxBody.contains("overlay-inbox-row"))
+    let pillStart = try XCTUnwrap(source.range(of: "private func pinnedMailboxPill("))
+    let pill = String(source[pillStart.lowerBound..<start.lowerBound])
+    XCTAssertEqual(
+      pill.components(separatedBy: "OverlayComposerSurface(palette: palette)").count - 1, 1,
+      "one surface: one pill")
+    XCTAssertTrue(pill.contains("symbol: \"envelope\""))
+    XCTAssertTrue(pill.contains("overlay-inbox-row"))
+    XCTAssertTrue(pill.contains("overlay-channel-toggle-0"))
+    XCTAssertTrue(pill.contains("identifier: \"overlay-agent-sidebar-fold\""))
+    // The conversation label's metrics, so both stand at one height.
+    XCTAssertTrue(pill.contains("VStack(alignment: .leading, spacing: 2)"))
+    XCTAssertTrue(pill.contains("size: 13, weight: .bold"))
+    XCTAssertTrue(pill.contains("size: 11, weight: .regular"))
+    XCTAssertTrue(pill.contains(".padding(.horizontal, 10)"))
+    XCTAssertTrue(pill.contains(".padding(.vertical, 5)"))
+    XCTAssertTrue(pill.contains(".lineLimit(1)"), "a compact pill has no preview lines")
+  }
+
+  /// Every Intercom panel (header, group cards, and detached instances) owns
+  /// its own NSWindow frame; NSHostingView must disable sizingOptions so
+  /// windowDidLayout() never calls updateAnimatedWindowSize during
+  /// NSDisplayCycleFlush.
+  func testEveryIntercomPanelDisablesHostingSizingOptionsToAvoidDisplayCycleLayoutCrash() throws {
+    let url = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent().deletingLastPathComponent()
+      .appendingPathComponent("Codescribe/Screens/Overlay/OverlayIntercomWidget.swift")
+    let source = try String(contentsOf: url, encoding: .utf8)
+    let hostingCount = source.components(separatedBy: "NSHostingView(").count - 1
+    let sizingResetCount = source.components(separatedBy: "hosting.sizingOptions = []").count - 1
+    XCTAssertEqual(hostingCount, 3)
+    XCTAssertEqual(sizingResetCount, 3)
   }
 }

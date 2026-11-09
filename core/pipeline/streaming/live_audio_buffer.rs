@@ -256,6 +256,12 @@ pub(crate) struct OwnedTerminalPcm {
 }
 
 impl FinalizedPcmArchive {
+    /// Inspect the recorder's actual archive from cross-crate headless tests.
+    #[cfg(all(feature = "test-isolation", not(test)))]
+    pub fn path_for_test(&self) -> &std::path::Path {
+        &self.path
+    }
+
     pub(crate) fn load(
         self,
         session: &str,

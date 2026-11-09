@@ -130,8 +130,9 @@ path. The Rust core, UniFFI bridge and native SwiftUI app are built together.
 # Optimized local app bundle; this is not a distribution release.
 make app PROFILE=local-release
 
-# Guarded source install; refuses when the app is not safely idle.
-make install-if-idle
+# Build and install to /Applications; the running app keeps working and is
+# swapped at its first idle moment, never while you record or compose.
+make install-app
 ```
 
 Do not terminate a recording or an in-flight agent request to make an install

@@ -8,8 +8,9 @@ import SwiftUI
 /// lost that effect; its tint and the seam beside the content are separate
 /// questions from whether the glass is there (Founder, 2026-10-18).
 ///
-/// `CSSidebarColumn` and the transcript actions column share this material.
-/// A window never reaches for it on its own.
+/// Standalone surfaces can use this material when they do not already live
+/// inside native navigation glass. Agent and Settings let NavigationSplitView
+/// own their sidebar material instead of nesting a second effect view.
 ///
 /// Follows the native navigation material model:
 /// - In standard mode: an `NSVisualEffectView` with `.sidebar` material,

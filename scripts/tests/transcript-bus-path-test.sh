@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Hermetic parity checks for the runtime Bus path and install-if-idle guard.
+# Hermetic parity checks for the runtime Bus path and the install-idle
+# predicate (bus-demux --assert-install-idle) that the app's idle-gated
+# restarts consult.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DEMUX="$ROOT/scripts/bus-demux.py"
-INSTALL_GUARD="$ROOT/scripts/install-if-idle.sh"
 # Supply the parent in the template: bare mktemp may choose a platform default.
 TEST_TMP_PARENT="${TMPDIR:-/tmp}"
 TEST_ROOT="$(mktemp -d "${TEST_TMP_PARENT%/}/transcript-bus-path.XXXXXXXX")"
 LOCK_HOLDER_PID=""
-GUARD_PID=""
 # Cancellation is fixture-local data, never a PID/name/process-group kill.
 # Keep the root (and release paths) until Bash has reaped every owned job.
 cleanup() {
@@ -28,7 +28,7 @@ cleanup() {
     echo "transcript-bus-path: cleanup timed out; retained $TEST_ROOT" >&2
     cleanup_status=1
   else
-    for pid in "$LOCK_HOLDER_PID" "$GUARD_PID"; do
+    for pid in "$LOCK_HOLDER_PID"; do
       [[ -n "$pid" ]] || continue
       wait "$pid"
       child_status=$?
@@ -36,14 +36,6 @@ cleanup() {
       [[ "$child_status" -eq 0 ]] || cleanup_status=1
     done
     wait # also reap a job interrupted between spawn and PID assignment
-    if [[ -e "$TEST_ROOT/make.ready" ]]; then
-      if [[ -e "$TEST_ROOT/make.stopped" ]]; then
-        printf 'cleanup: make-stopped %s\n' "$(<"$TEST_ROOT/make.stopped")"
-      else
-        echo "transcript-bus-path: missing fake make terminal receipt" >&2
-        cleanup_status=1
-      fi
-    fi
     if [[ "$cleanup_status" -eq 0 ]]; then
       rm -rf "$TEST_ROOT" || cleanup_status=1
     else
@@ -59,7 +51,6 @@ trap cleanup EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 
-unset FAKE_MAKE_READY FAKE_MAKE_RELEASE
 TEST_HOME="$TEST_ROOT/home"
 mkdir -p "$TEST_HOME"
 
@@ -112,11 +103,11 @@ assert_path \
   XDG_STATE_HOME="$TEST_ROOT/state-root" \
   CODESCRIBE_TRANSCRIPT_BUS_PATH="~/direct/transcript.jsonl"
 
-# The legacy alias is deliberately ignored because the Rust runtime never
+# The retired alias is deliberately ignored because the Rust runtime never
 # reads it. Accepting it in a guard would inspect a different authority file.
 assert_path \
   "$TEST_HOME/.codescribe/transcript-events.jsonl" \
-  CODESCRIBE_TRANSCRIPT_BUS="$TEST_ROOT/legacy.jsonl"
+  CODESCRIBE_TRANSCRIPT_BUS="$TEST_ROOT/retired.jsonl"
 
 # Runtime bootstrap reads the optional dotenv before resolving the Bus. These
 # keys are env-managed (not promoted settings), so the guard must see them too.
@@ -178,51 +169,6 @@ with open(sys.argv[1], "w", encoding="utf-8") as handle:
     )
 PY
 
-FAKE_BIN="$TEST_ROOT/bin"
-FAKE_MAKE_LOG="$TEST_ROOT/fake-make.log"
-mkdir -p "$FAKE_BIN"
-cat >"$FAKE_BIN/make" <<'PYMAKE'
-#!/usr/bin/env python3
-# No sleep subprocess: this helper owns no descendants.
-import os
-from pathlib import Path
-import sys
-import time
-
-root = Path(__file__).resolve().parent.parent
-ready = os.environ.get("FAKE_MAKE_READY")
-if ready:
-    deadline = time.monotonic() + 30
-    Path(ready + ".pending").write_text(str(os.getpid()))
-    Path(ready + ".pending").replace(ready)
-    while not Path(os.environ["FAKE_MAKE_RELEASE"]).exists():
-        if (root / "cancel").exists():
-            break
-        if not root.exists() or time.monotonic() >= deadline:
-            raise SystemExit("fake make: owner disappeared or release deadline expired")
-        time.sleep(0.01)
-Path(os.environ["FAKE_MAKE_LOG"]).write_text(" ".join(sys.argv[1:]) + "\n")
-if ready:
-    (root / "make.stopped").write_text(str(os.getpid()))
-PYMAKE
-chmod +x "$FAKE_BIN/make"
-
-# The process census and AppleScript belong to this fixture too. A real
-# Codescribe process must never receive Quit from an isolated install test.
-cat >"$FAKE_BIN/pgrep" <<'PYPGREP'
-#!/usr/bin/env python3
-import sys
-
-if sys.argv[1:] != ["-x", "Codescribe"]:
-    raise SystemExit("unexpected fixture process census")
-raise SystemExit(1)
-PYPGREP
-cat >"$FAKE_BIN/osascript" <<'PYOSASCRIPT'
-#!/usr/bin/env python3
-raise SystemExit("isolated install test must not send AppleScript")
-PYOSASCRIPT
-chmod +x "$FAKE_BIN/pgrep" "$FAKE_BIN/osascript"
-
 hold_shared_lock() {
   local path="$1" ready="$2" release="$3"
   python3 - "$path" "$ready" "$release" "$TEST_ROOT" <<'PY' &
@@ -259,39 +205,11 @@ PY
   fi
 }
 
-start_idle_guard() {
-  env \
-    -u CODESCRIBE_TRANSCRIPT_BUS_PATH \
-    -u CODESCRIBE_ENV_PATH \
-    -u XDG_STATE_HOME \
-    -u CODESCRIBE_DATA_DIR \
-    HOME="$TEST_HOME" \
-    PATH="$FAKE_BIN:$PATH" \
-    FAKE_MAKE_LOG="$FAKE_MAKE_LOG" \
-    FAKE_MAKE_READY="$MAKE_READY" \
-    FAKE_MAKE_RELEASE="$MAKE_RELEASE" \
-    CODESCRIBE_TRANSCRIPT_BUS="$TEST_ROOT/legacy.jsonl" \
-    "$INSTALL_GUARD" >"$TEST_ROOT/idle.out" 2>"$TEST_ROOT/idle.err" &
-  GUARD_PID=$!
-  for _ in {1..500}; do
-    [[ ! -e "$MAKE_READY" ]] || break
-    sleep 0.01
-  done
-  if [[ ! -e "$MAKE_READY" ]]; then
-    echo "transcript-bus-path: fake make did not start under install lease" >&2
-    exit 1
-  fi
-}
-
 # Standalone cleanup regression uses these same helpers and EXIT trap. It
 # stops before policy assertions so a policy failure cannot hide this census.
 if [[ "${1:-}" == "--cleanup-fixture" ]]; then
-  MAKE_READY="$TEST_ROOT/make.ready"
-  MAKE_RELEASE="$TEST_ROOT/make.release"
   hold_shared_lock "$TEST_ROOT/fixture.lock" "$TEST_ROOT/lock.ready" "$TEST_ROOT/lock.release"
-  start_idle_guard
-  printf 'fixture-ready\t%s\t%s\t%s\t%s\n' \
-    "$TEST_ROOT" "$GUARD_PID" "$(<"$MAKE_READY")" "$LOCK_HOLDER_PID"
+  printf 'fixture-ready\t%s\t%s\n' "$TEST_ROOT" "$LOCK_HOLDER_PID"
   # A builtin wait permits Bash to run INT/TERM traps immediately. Python's
   # parent launches us with default signal dispositions, unlike shell `&` INT.
   if ! IFS= read -r -t 20 fixture_command; then
@@ -308,25 +226,38 @@ fi
 assert_guard_refuses() {
   local bus="$1"
   local label="$2"
-  rm -f "$FAKE_MAKE_LOG"
   set +e
   env \
     -u CODESCRIBE_ENV_PATH \
     -u XDG_STATE_HOME \
     -u CODESCRIBE_DATA_DIR \
     HOME="$TEST_HOME" \
-    PATH="$FAKE_BIN:$PATH" \
-    FAKE_MAKE_LOG="$FAKE_MAKE_LOG" \
     CODESCRIBE_TRANSCRIPT_BUS_PATH="$bus" \
-    "$INSTALL_GUARD" >"$TEST_ROOT/$label.out" 2>"$TEST_ROOT/$label.err"
+    python3 "$DEMUX" --assert-install-idle >"$TEST_ROOT/$label.out" 2>"$TEST_ROOT/$label.err"
   local guard_status=$?
   set -e
   if [[ "$guard_status" -ne 2 ]]; then
-    echo "transcript-bus-path: $label guard returned $guard_status, expected 2" >&2
+    echo "transcript-bus-path: $label idle predicate returned $guard_status, expected 2" >&2
     exit 1
   fi
-  if [[ -e "$FAKE_MAKE_LOG" ]]; then
-    echo "transcript-bus-path: install command ran for $label Bus" >&2
+}
+
+assert_reads_idle() {
+  local label="$1"
+  shift
+  set +e
+  env \
+    -u CODESCRIBE_TRANSCRIPT_BUS_PATH \
+    -u CODESCRIBE_ENV_PATH \
+    -u XDG_STATE_HOME \
+    -u CODESCRIBE_DATA_DIR \
+    HOME="$TEST_HOME" \
+    "$@" \
+    python3 "$DEMUX" --assert-install-idle >"$TEST_ROOT/$label.out" 2>"$TEST_ROOT/$label.err"
+  local idle_status=$?
+  set -e
+  if [[ "$idle_status" -ne 0 ]]; then
+    echo "transcript-bus-path: $label idle predicate returned $idle_status, expected 0" >&2
     exit 1
   fi
 }
@@ -336,7 +267,6 @@ assert_guard_refuses "$OPEN_BUS" "live"
 # A Bus path injected only by the app dotenv is still canonical authority.
 printf '%s\n' "CODESCRIBE_TRANSCRIPT_BUS_PATH=$OPEN_BUS" \
   >"$TEST_HOME/.codescribe/.env"
-rm -f "$FAKE_MAKE_LOG"
 set +e
 env \
   -u CODESCRIBE_TRANSCRIPT_BUS_PATH \
@@ -344,13 +274,11 @@ env \
   -u XDG_STATE_HOME \
   -u CODESCRIBE_DATA_DIR \
   HOME="$TEST_HOME" \
-  PATH="$FAKE_BIN:$PATH" \
-  FAKE_MAKE_LOG="$FAKE_MAKE_LOG" \
-  "$INSTALL_GUARD" >"$TEST_ROOT/dotenv-live.out" 2>"$TEST_ROOT/dotenv-live.err"
+  python3 "$DEMUX" --assert-install-idle >"$TEST_ROOT/dotenv-live.out" 2>"$TEST_ROOT/dotenv-live.err"
 dotenv_guard_status=$?
 set -e
 rm -f "$TEST_HOME/.codescribe/.env"
-if [[ "$dotenv_guard_status" -ne 2 ]] || [[ -e "$FAKE_MAKE_LOG" ]]; then
+if [[ "$dotenv_guard_status" -ne 2 ]]; then
   echo "transcript-bus-path: dotenv-only live Bus did not fail closed" >&2
   exit 1
 fi
@@ -369,7 +297,7 @@ PY
 assert_guard_refuses "$DEEP_OPEN_BUS" "deep-live"
 
 # Closing a nested CLI file-verdict must not hide an older still-open app take.
-# The CLI does not hold the install flock; the app session is the live mic.
+# The CLI holds no app lock; the app session is the live mic.
 NESTED_OPEN_BUS="$TEST_ROOT/nested-open.jsonl"
 python3 - "$NESTED_OPEN_BUS" <<'PY'
 import json
@@ -453,91 +381,11 @@ if [[ "$(resolve_agent_turn_lease)" != "$TEST_HOME/.codescribe/agent-turn.lock" 
   exit 1
 fi
 
-# A merely running app (shared process-lifetime lease on the runtime
-# interlock) must NOT refuse installation (Founder, 2026-09-08).
-INTERLOCK_PATH="$(resolve_interlock)"
-hold_shared_lock "$INTERLOCK_PATH" "$TEST_ROOT/app-lock.ready" "$TEST_ROOT/app-lock.release"
-rm -f "$FAKE_MAKE_LOG"
-env \
-  -u CODESCRIBE_ENV_PATH \
-  -u XDG_STATE_HOME \
-  -u CODESCRIBE_DATA_DIR \
-  HOME="$TEST_HOME" \
-  PATH="$FAKE_BIN:$PATH" \
-  FAKE_MAKE_LOG="$FAKE_MAKE_LOG" \
-  CODESCRIBE_TRANSCRIPT_BUS_PATH="$CLOSED_BUS" \
-  "$INSTALL_GUARD" >"$TEST_ROOT/runtime-running.out" 2>"$TEST_ROOT/runtime-running.err"
-if [[ ! -e "$FAKE_MAKE_LOG" ]]; then
-  echo "transcript-bus-path: a running app (no take, no agent turn) blocked install" >&2
-  exit 1
-fi
-touch "$TEST_ROOT/app-lock.release"
-wait "$LOCK_HOLDER_PID"
-LOCK_HOLDER_PID=""
+assert_reads_idle "closed" CODESCRIBE_TRANSCRIPT_BUS_PATH="$CLOSED_BUS"
 
-# An agent turn in flight holds the agent-turn lease shared. The installer
-# must refuse even though the Bus is closed and the runtime lock is free.
-AGENT_TURN_LEASE_PATH="$(resolve_agent_turn_lease)"
-hold_shared_lock "$AGENT_TURN_LEASE_PATH" "$TEST_ROOT/turn-lock.ready" "$TEST_ROOT/turn-lock.release"
-assert_guard_refuses "$CLOSED_BUS" "agent-turn"
-if ! grep -q 'agent turn is in flight' "$TEST_ROOT/agent-turn.err"; then
-  echo "transcript-bus-path: agent-turn refusal did not name the agent turn" >&2
-  exit 1
-fi
-touch "$TEST_ROOT/turn-lock.release"
-wait "$LOCK_HOLDER_PID"
-LOCK_HOLDER_PID=""
-
-rm -f "$FAKE_MAKE_LOG"
-env \
-  -u CODESCRIBE_ENV_PATH \
-  -u XDG_STATE_HOME \
-  -u CODESCRIBE_DATA_DIR \
-  HOME="$TEST_HOME" \
-  PATH="$FAKE_BIN:$PATH" \
-  FAKE_MAKE_LOG="$FAKE_MAKE_LOG" \
-  CODESCRIBE_TRANSCRIPT_BUS_PATH="$CLOSED_BUS" \
-  "$INSTALL_GUARD" >"$TEST_ROOT/closed.out" 2>"$TEST_ROOT/closed.err"
-if [[ ! -e "$FAKE_MAKE_LOG" ]]; then
-  echo "transcript-bus-path: closed Bus did not reach isolated make" >&2
-  exit 1
-fi
-
-# With no canonical Bus, the guard may proceed to the isolated fake make. A
-# live file reachable only through the retired alias must not redirect it.
-cp "$OPEN_BUS" "$TEST_ROOT/legacy.jsonl"
-rm -f "$FAKE_MAKE_LOG"
-MAKE_READY="$TEST_ROOT/make.ready"
-MAKE_RELEASE="$TEST_ROOT/make.release"
-start_idle_guard
-set +e
-python3 - "$INTERLOCK_PATH" <<'PY'
-import fcntl
-from pathlib import Path
-import sys
-
-with Path(sys.argv[1]).open("a+") as handle:
-    try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
-    except BlockingIOError:
-        raise SystemExit(3)
-raise SystemExit(0)
-PY
-shared_during_install_status=$?
-set -e
-if [[ "$shared_during_install_status" -ne 3 ]]; then
-  echo "transcript-bus-path: app lease was admitted during install" >&2
-  exit 1
-fi
-touch "$MAKE_RELEASE"
-wait "$GUARD_PID"
-GUARD_PID=""
-
-expected_make="-C $ROOT install-app"
-observed_make="$(<"$FAKE_MAKE_LOG")"
-if [[ "$observed_make" != "$expected_make" ]]; then
-  echo "transcript-bus-path: fake make observed '$observed_make'" >&2
-  exit 1
-fi
+# With no canonical Bus the predicate reads idle. A live file reachable only
+# through the retired alias must not redirect it.
+cp "$OPEN_BUS" "$TEST_ROOT/retired.jsonl"
+assert_reads_idle "retired-alias" CODESCRIBE_TRANSCRIPT_BUS="$TEST_ROOT/retired.jsonl"
 
 echo "transcript-bus-path: ok"
