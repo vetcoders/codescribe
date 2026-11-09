@@ -273,8 +273,8 @@ final class AgentWindowChromeTests: XCTestCase {
       as? NSGlassEffectView
   }
 
-  /// A native full-size content host must reserve the titlebar as well as
-  /// the readable content floor. Measuring the fitting size alone missed it.
+  /// Compare the naturally settled resize path with an explicit layout pass.
+  /// Neither programmatic path establishes acceptance of a physical drag.
   func testProductionMinimumFrameKeepsComposerActionsInsideWindow() throws {
     let previous = UserDefaults.standard.object(forKey: sidebarKey)
     defer { restoreSidebarDefault(previous) }
@@ -300,29 +300,43 @@ final class AgentWindowChromeTests: XCTestCase {
           && self.rectangularHeaderGlass(in: window) != nil
       }
       let minimumFrame = hosting.view.fittingSize
-      window.setFrame(NSRect(origin: window.frame.origin, size: minimumFrame), display: false)
-      window.contentView?.superview?.layoutSubtreeIfNeeded()
-      window.displayIfNeeded()
-      let input = try XCTUnwrap(composerInput(in: hosting.view) as? NSTextView)
-      let scroll = try XCTUnwrap(input.enclosingScrollView)
-      let field = frame(scroll)
       let actionsBelow =
         ComposerControlMetrics.spacing + ComposerControlMetrics.hitTargetSize
         + ComposerControlMetrics.verticalPadding
-      evidence.append(
-        "expanded=\(expanded) fitting=\(minimumFrame) frame=\(window.frame) "
-          + "layout=\(window.contentLayoutRect) field=\(field) actionsBelow=\(actionsBelow)")
-      XCTAssertGreaterThanOrEqual(
-        window.contentLayoutRect.height, AgentWindowMetrics.minHeight,
-        "the native titlebar must not consume the readable content minimum")
-      XCTAssertGreaterThanOrEqual(
-        field.minY, actionsBelow, "the action row below the field must fit above the window bottom")
+      let requestedSizes = [
+        NSSize(width: 1000, height: 680), NSSize(width: 840, height: 580),
+        NSSize(width: 720, height: 500), minimumFrame,
+      ]
+      defer {
+        let attachment = XCTAttachment(string: evidence.joined(separator: "\n"))
+        attachment.name = "Natural resize versus explicit layout and composer clearance"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+      }
+      for requestedSize in requestedSizes {
+        window.setFrame(NSRect(origin: window.frame.origin, size: requestedSize), display: true)
+        // Let AppKit and SwiftUI settle without repairing layout from the test.
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        for explicitLayout in [false, true] {
+          if explicitLayout {
+            window.contentView?.superview?.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+          }
+          let input = try XCTUnwrap(composerInput(in: hosting.view) as? NSTextView)
+          let scroll = try XCTUnwrap(input.enclosingScrollView)
+          let field = frame(scroll)
+          let state =
+            "expanded=\(expanded) requested=\(requestedSize) explicitLayout=\(explicitLayout) "
+            + "fitting=\(minimumFrame) frame=\(window.frame) layout=\(window.contentLayoutRect) "
+            + "field=\(field) actionsBelow=\(actionsBelow)"
+          evidence.append(state)
+          XCTAssertGreaterThanOrEqual(
+            window.contentLayoutRect.height, AgentWindowMetrics.minHeight, state)
+          XCTAssertGreaterThanOrEqual(field.minY, actionsBelow, state)
+        }
+      }
       XCTAssertTrue(hosting.sizingOptions.isEmpty)
     }
-    let attachment = XCTAttachment(string: evidence.joined(separator: "\n"))
-    attachment.name = "Actual minimum frame and composer clearance"
-    attachment.lifetime = .keepAlways
-    add(attachment)
   }
 
   /// Match the app's crash-protected host, not only a bare test controller.
