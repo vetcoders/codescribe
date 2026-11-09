@@ -81,14 +81,14 @@ pub struct CsAttachment {
 }
 
 /// Assistive-lane availability for the Swift chat surface: `available` gates
-/// the send, `detail` is the honest reason shown in the thread when the lane
-/// cannot reach a model (empty when ready).
+/// the send, `reason` says which lane, endpoint or key is missing when the
+/// lane cannot reach a model (`None` when ready). Swift owns the sentence.
 #[derive(uniffi::Record)]
 pub struct CsAgentAvailability {
     /// Whether the assistive lane can reach a model right now.
     pub available: bool,
-    /// Actionable reason the lane is unreachable; empty when `available`.
-    pub detail: String,
+    /// Why the lane is unreachable; `None` when `available`.
+    pub reason: Option<crate::config::CsLlmLaneUnavailable>,
 }
 
 /// Approval payload forwarded as one typed FFI record, preserving the exact
@@ -260,21 +260,17 @@ impl CodescribeAgent {
     }
 
     /// Availability of the assistive lane as one record: `available` mirrors
-    /// [`Self::is_available`]; `detail` carries the actionable, user-facing
-    /// reason when the lane cannot reach a model (which lane, endpoint or key
-    /// is missing — never a generic "add an API key"). Empty when ready.
+    /// [`Self::is_available`] (the same request-time verdict); `reason` names
+    /// what is missing (which lane, endpoint or key — never a generic "add an
+    /// API key"). `None` when ready.
     pub fn availability(&self) -> CsAgentAvailability {
         let settings = self.current_settings();
-        let lane = settings.llm_lanes().assistive();
-        match codescribe::agent::assistive_unavailable_reason(lane) {
-            None => CsAgentAvailability {
-                available: true,
-                detail: String::new(),
-            },
-            Some(detail) => CsAgentAvailability {
-                available: false,
-                detail,
-            },
+        let reason = settings.llm_lanes().assistive().request_unavailable();
+        CsAgentAvailability {
+            available: reason.is_none(),
+            reason: reason
+                .as_ref()
+                .map(crate::config::CsLlmLaneUnavailable::from),
         }
     }
 
