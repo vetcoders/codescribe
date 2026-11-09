@@ -444,6 +444,28 @@ private struct OnboardingPermissionRow: View {
         comment: "Open this permission's native macOS privacy pane"))
   }
 
+  private var noteIsAdvisory: Bool {
+    kind.repairNoteIsAdvisory(
+      for: state, requested: model.requestedPermissions.contains(kind))
+  }
+
+  /// Visible label: the row already names the scope.
+  private var shortActionTitle: String {
+    String(
+      localized: LocalizedStringResource(
+        "Allow", locale: model.interfaceLocale,
+        comment: "Short permission row action; the row already names the macOS privacy scope"))
+  }
+
+  private var openSettingsAccessibilityTitle: String {
+    String(
+      localized: LocalizedStringResource(
+        "Open System Settings for \(kind.displayName(locale: model.interfaceLocale))",
+        locale: model.interfaceLocale,
+        comment: "VoiceOver label of the row's System Settings action; the placeholder is a macOS privacy scope"
+      ))
+  }
+
   var body: some View {
     HStack(alignment: .top, spacing: 12) {
       VStack(alignment: .leading, spacing: 4) {
@@ -467,15 +489,23 @@ private struct OnboardingPermissionRow: View {
             .fixedSize(horizontal: false, vertical: true)
         }
         if let note = model.permissionRepairNote(for: kind) {
-          // A required grant blocks setup, so its note is a problem; an
-          // optional one only explains a choice left open.
+          // A required grant blocks setup, so a failure note is a problem; the
+          // reopen hint is guidance, so it reads as neutral help with its own
+          // sign. An optional one only explains a choice left open.
           Group {
-            if kind.isRequiredForSetup {
+            if kind.isRequiredForSetup, !noteIsAdvisory {
               OnboardingProblemText(text: note)
             } else {
-              Text(note)
-                .font(CSFont.ui(12))
-                .foregroundStyle(CSColor.secondaryInk)
+              HStack(alignment: .firstTextBaseline, spacing: 5) {
+                if noteIsAdvisory {
+                  CSIconView(icon: .info, size: 11, weight: .semibold, color: CSColor.secondaryInk)
+                    .accessibilityHidden(true)
+                }
+                Text(note)
+                  .font(CSFont.ui(12))
+                  .foregroundStyle(CSColor.secondaryInk)
+              }
+              .accessibilityElement(children: .combine)
             }
           }
           .fixedSize(horizontal: false, vertical: true)
@@ -483,17 +513,22 @@ private struct OnboardingPermissionRow: View {
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
+      // Actions keep their natural width, so a long label in the text column
+      // wraps instead of squeezing or truncating a button.
       VStack(alignment: .trailing, spacing: 6) {
         CSStatusBadge(
-          text: state.label(locale: model.interfaceLocale),
+          text: kind.statusLabel(for: state, locale: model.interfaceLocale),
           mark: state.isGranted ? .verified : .none)
         if !state.isGranted {
           let repair = kind.repair(for: state)
+          // The row names the permission, so the visible label stays short;
+          // VoiceOver keeps the specific one.
           if repair.requestsNatively {
-            Button(actionTitle) { model.grantPermission(for: kind) }
+            Button(shortActionTitle) { model.grantPermission(for: kind) }
               .csAction()
               .controlSize(.small)
               .disabled(model.pendingPermissionRequests.contains(kind))
+              .accessibilityLabel(Text(actionTitle))
           }
           if repair.opensSettings {
             Button {
@@ -508,9 +543,11 @@ private struct OnboardingPermissionRow: View {
             }
             .csAction()
             .controlSize(.small)
+            .accessibilityLabel(Text(openSettingsAccessibilityTitle))
           }
         }
       }
+      .fixedSize(horizontal: true, vertical: false)
     }
     .padding(.vertical, 4)
     .accessibilityElement(children: .contain)

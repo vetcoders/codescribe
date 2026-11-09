@@ -258,6 +258,9 @@ struct CreatorPanel: View {
         kind: kind,
         state: model.permissions.state(kind),
         note: model.permissionRepairNote(for: kind),
+        noteIsAdvisory: kind.repairNoteIsAdvisory(
+          for: model.permissions.state(kind),
+          requested: model.requestedPermissions.contains(kind)),
         onRequested: { model.notePermissionRequested(kind) },
         // A grant can change recording admission, not only this row.
         onStateChanged: { model.refreshDictationReadiness() }
@@ -853,6 +856,8 @@ private struct PermissionChecklistRow: View {
   let state: PermissionState
   /// Shown under the name when the row's own button cannot fix the scope.
   var note: String? = nil
+  /// The note is the reopen hint: neutral guidance, not a failure.
+  var noteIsAdvisory = false
   /// Records that this scope was asked for, so a later miss can explain itself.
   var onRequested: (() -> Void)? = nil
   /// Re-probe after an in-app request (Speech Recognition dialog).
@@ -869,24 +874,40 @@ private struct PermissionChecklistRow: View {
         Text(kind.displayName)
           .font(CSFont.ui(14, .medium))
           .foregroundStyle(Color.primary)
-          .accessibilityValue(granted ? "" : state.label)
-        if kind == .spotifyAutomation {
+          .accessibilityValue(granted ? "" : kind.statusLabel(for: state))
+        if kind.isOptionalForSetup {
           Text("Optional")
             .font(.caption)
             .foregroundStyle(CSColor.secondaryInk)
         }
         if let note {
-          Text(note)
-            .font(.caption)
-            .foregroundStyle(kind.isRequiredForSetup ? CSColor.dangerLight : CSColor.secondaryInk)
-            .fixedSize(horizontal: false, vertical: true)
+          let isProblem = kind.isRequiredForSetup && !noteIsAdvisory
+          HStack(alignment: .firstTextBaseline, spacing: 4) {
+            if noteIsAdvisory {
+              CSIconView(icon: .info, size: 10, weight: .semibold, color: CSColor.secondaryInk)
+                .accessibilityHidden(true)
+            }
+            Text(note)
+              .font(.caption)
+              .foregroundStyle(isProblem ? CSColor.dangerLight : CSColor.secondaryInk)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          .accessibilityElement(children: .combine)
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       if granted {
         CSStatusBadge(text: state.label, mark: .verified)
       } else {
-        missingMark
+        // The state is written out beside the disc, so a missing scope reads
+        // as name + state + action without relying on VoiceOver or colour.
+        HStack(spacing: 6) {
+          missingMark
+          Text(kind.statusLabel(for: state))
+            .font(CSFont.ui(11, .medium))
+            .foregroundStyle(CSColor.secondaryInk)
+            .fixedSize()
+        }
         let repair = kind.repair(for: state)
         // Repair actions read through their chip shape, not through bold text
         // (Founder D2, 2026-10-26): the same neutral chip as every other flat

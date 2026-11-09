@@ -78,6 +78,36 @@ enum PermissionKind: String, CaseIterable, Identifiable {
     self == .accessibility || self == .inputMonitoring || self == .screenRecording
   }
 
+  /// Status text for a row. The one owner of this wording for Settings and the
+  /// wizard. Accessibility, Screen Recording and Full Disk Access are read by
+  /// probes that only report whether Codescribe has effective access now, so a
+  /// miss there is "No access", not a denial the user chose. The other scopes
+  /// expose a real macOS decision and keep "Denied".
+  var statusLabelUsesNoAccess: Bool {
+    self == .accessibility || self == .screenRecording || self == .fullDiskAccess
+  }
+
+  func statusLabel(for state: PermissionState) -> String {
+    statusLabel(
+      for: state, locale: Locale(identifier: Bundle.main.preferredLocalizations.first ?? "en"))
+  }
+
+  func statusLabel(for state: PermissionState, locale: Locale) -> String {
+    guard state == .denied, statusLabelUsesNoAccess else { return state.label(locale: locale) }
+    return String(
+      localized: LocalizedStringResource(
+        "No access", locale: locale,
+        comment:
+          "Permission row status: the probe only shows that Codescribe has no effective access, not that the user refused"
+      ))
+  }
+
+  /// True when the note is the reopen hint ("Already turned on?"): guidance,
+  /// not a failure, so rows render it as neutral help rather than a problem.
+  func repairNoteIsAdvisory(for state: PermissionState, requested: Bool) -> Bool {
+    !state.isGranted && requested && grantMayNeedReopen
+  }
+
   /// One sentence for a missing grant the row's own button cannot fix: a
   /// denial macOS never asks about again, or a grant requested in this process
   /// that macOS may apply only after Codescribe reopens. `nil` otherwise.
