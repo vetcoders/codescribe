@@ -49,6 +49,71 @@ final class OverlayResizePreviewTests: XCTestCase {
     }
   }
 
+  private final class CapturePatternView: NSView {
+    let flipped: Bool
+    var paints = 0
+    override var isFlipped: Bool { flipped }
+
+    init(flipped: Bool) {
+      self.flipped = flipped
+      super.init(frame: NSRect(x: 0, y: 0, width: 240, height: 200))
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+      paints += 1
+      NSColor.blue.setFill()
+      bounds.fill()
+      NSColor.green.setFill()
+      NSRect(x: 0, y: flipped ? 0 : 160, width: 240, height: 40).fill()
+      NSColor.red.setFill()
+      NSRect(x: 0, y: flipped ? 180 : 0, width: 240, height: 20).fill()
+    }
+  }
+
+  func testExpandedSnapshotCapturesHeaderAndBodyInOneRender() throws {
+    for flipped in [false, true] {
+      let window = NSPanel(
+        contentRect: NSRect(x: 80, y: 80, width: 240, height: 200),
+        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      let source = CapturePatternView(flipped: flipped)
+      window.contentView = source
+      let initial = window.frame
+      let before = source.paints
+      let preview = OverlayResizePreview(
+        windows: [window], group: false, headerHeight: 40,
+        palette: .resolve(ColorScheme.dark), capturesContent: true)
+      defer {
+        preview.finish()
+        window.close()
+      }
+      XCTAssertEqual(
+        source.paints - before, 1,
+        "A gesture must not render the same source separately for its header and body")
+      preview.update(frame: initial.insetBy(dx: -40, dy: -30))
+      let header = try XCTUnwrap(previewDrawing().headers.compactMap { $0 }.first)
+      let body = try XCTUnwrap(header.content)
+      XCTAssertEqual(header.image.size, NSSize(width: 240, height: 40))
+      XCTAssertEqual(body.size, NSSize(width: 240, height: 160))
+      func colour(_ image: NSImage, yFromTop: CGFloat) throws -> NSColor {
+        let bitmap = try XCTUnwrap(
+          image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
+        return try XCTUnwrap(
+          bitmap.colorAt(
+            x: bitmap.pixelsWide / 2,
+            y: Int(yFromTop * CGFloat(bitmap.pixelsHigh) / image.size.height))?
+            .usingColorSpace(.deviceRGB))
+      }
+      XCTAssertGreaterThan(try colour(header.image, yFromTop: 20).greenComponent, 0.9)
+      XCTAssertGreaterThan(try colour(body, yFromTop: 10).blueComponent, 0.9)
+      XCTAssertGreaterThan(try colour(body, yFromTop: 150).redComponent, 0.9)
+      XCTAssertEqual(
+        window.frame, initial, "Capturing and preview updates keep source layout fixed")
+    }
+  }
+
   func testFrozenContentDoesNotRecaptureOrResizeTheSourceDuringDrag() throws {
     let window = NSPanel(
       contentRect: NSRect(x: 80, y: 80, width: 400, height: 300),
