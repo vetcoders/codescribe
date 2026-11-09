@@ -209,6 +209,11 @@ final class OverlayGlassRenderingProbeTests: XCTestCase {
     BackgroundTestWindow.present(panel)
     settle(panel)
     RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+    if QualityCaptureHost.interactiveWindows() {
+      XCTAssertTrue(panel.isVisible && panel.alphaValue == 1)
+      XCTAssertTrue(
+        panel.occlusionState.contains(.visible), "Full-panel compositor probe needs a real GUI")
+    }
     let initialHeight = panel.frame.height
     XCTAssertEqual(state.presentationMode, mini ? .mini : .expanded)
     XCTAssertFalse(panel.isFrameTransitioning)
@@ -284,6 +289,10 @@ final class OverlayGlassRenderingProbeTests: XCTestCase {
     XCTAssertEqual(state.compactProjection?.sequence, UInt64(ticks))
     XCTAssertEqual(state.presentationMode, mini ? .mini : .expanded)
     XCTAssertTrue(state.showsMyDictation)
+    if QualityCaptureHost.interactiveWindows() {
+      XCTAssertTrue(panel.isVisible && panel.alphaValue == 1)
+      XCTAssertTrue(panel.occlusionState.contains(.visible))
+    }
     let native = try XCTUnwrap(panel.contentView.flatMap { firstText(in: $0) })
     XCTAssertEqual(native.string, inputs.last, "Even mini must actually exercise the mounted text")
     if append && !mini { XCTAssertGreaterThan(panel.frame.height, initialHeight) }
@@ -301,6 +310,7 @@ final class OverlayGlassRenderingProbeTests: XCTestCase {
       "start_unix_ms": wallStarted * 1000,
       "end_unix_ms": Date().timeIntervalSince1970 * 1000,
       "initial_height": initialHeight, "final_height": panel.frame.height,
+      "window_number": panel.windowNumber,
       "panel_visible": panel.isVisible,
       "occlusion_visible": panel.occlusionState.contains(.visible),
       "update_p50_ms": sorted[sorted.count / 2], "update_p95_ms": sorted[sorted.count - 1],
