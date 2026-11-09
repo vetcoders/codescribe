@@ -492,8 +492,9 @@ fn observe_follower_facts(
 /// Provider sessions whose follower is live right now: lease schema, `active`,
 /// and a heartbeat no older than the shared TTL — the same convention the
 /// helper's `--status` reports. Pairs are `(provider, provider_session_id)`
-/// with the provider as [`provider_token`] gives it, matching what the lease
-/// writer stores.
+/// with the provider as [`provider_token`] gives it and the native session
+/// byte for byte, never trimmed, matching what the lease writer stores and
+/// what [`follower_lease_id`] hashes.
 pub fn live_follower_sessions_at(
     root: &Path,
     now: f64,
@@ -517,8 +518,8 @@ pub fn live_follower_hosts_at(
     for_each_fresh_lease(root, now, ttl_seconds, |lease| {
         if let (Some(provider), Some(session)) = (
             lease.provider.as_deref().and_then(provider_token),
-            lease.provider_session_id.as_deref().map(str::trim),
-        ) && !session.is_empty()
+            lease.provider_session_id.as_deref(),
+        ) && !session.trim().is_empty()
         {
             let hosts = sessions.entry((provider, session.to_string())).or_default();
             hosts.frame_pane |= lease.has_frame_pane();
@@ -531,7 +532,9 @@ pub fn live_follower_hosts_at(
 /// Every provider session whose newest lease (highest `heartbeat_unix`)
 /// names a Codex app thread, whether or not its follower is alive: Codex app
 /// followers are usually dead between turns, and opening the thread needs no
-/// follower. Pairs are keyed like [`live_follower_hosts_at`].
+/// follower. Pairs are keyed like [`live_follower_hosts_at`]: the native
+/// session byte for byte, as [`follower_lease_id`] hashes it, so two sessions
+/// that differ only by surrounding whitespace never share a thread.
 pub fn codex_threads_at(root: &Path) -> HashMap<(String, String), CodexThread> {
     let mut newest: HashMap<(String, String), (f64, Option<CodexThread>)> = HashMap::new();
     for_each_lease_summary(root, |summary| {
@@ -568,12 +571,12 @@ pub fn unread_backlog_since_at(
     for_each_fresh_lease(root, now, ttl_seconds, |lease| {
         let (Some(provider), Some(session), Some(lease_id)) = (
             lease.provider.as_deref().and_then(provider_token),
-            lease.provider_session_id.as_deref().map(str::trim),
+            lease.provider_session_id.as_deref(),
             lease.lease_id.as_deref().map(str::trim),
         ) else {
             return;
         };
-        if session.is_empty() || lease_id.is_empty() {
+        if session.trim().is_empty() || lease_id.is_empty() {
             return;
         }
         let since = oldest_unread(root, lease_id, lease);
@@ -690,8 +693,8 @@ fn for_each_lease_summary(root: &Path, mut visit: impl FnMut(&LeaseSummary)) {
         if !current {
             let summary = read_lease(&path).and_then(|lease| {
                 let provider = provider_token(lease.provider.as_deref()?)?;
-                let session = lease.provider_session_id.as_deref()?.trim();
-                if session.is_empty() || !lease.heartbeat_unix.is_finite() {
+                let session = lease.provider_session_id.as_deref()?;
+                if session.trim().is_empty() || !lease.heartbeat_unix.is_finite() {
                     return None;
                 }
                 Some(LeaseSummary {
@@ -1176,6 +1179,45 @@ mod tests {
             serde_json::Value::Null,
         );
         assert!(codex_threads_at(temp.path()).is_empty());
+    }
+
+    /// The lease identity hashes the native session byte for byte, so `abc`
+    /// and ` abc ` are two owners. The thread map keys them the same way: the
+    /// newer padded lease must not lend its thread to the bare session.
+    #[test]
+    fn sessions_that_differ_only_by_whitespace_keep_their_own_threads() {
+        let temp = tempfile::tempdir().unwrap();
+        write_codex_lease(
+            temp.path(),
+            "bare.json",
+            "codex",
+            "abc-session",
+            900.0,
+            codex_facts("bare-thread-0001", true, false),
+        );
+        write_codex_lease(
+            temp.path(),
+            "padded.json",
+            "codex",
+            " abc-session ",
+            950.0,
+            codex_facts("padded-thread-0002", false, false),
+        );
+        let threads = codex_threads_at(temp.path());
+        let key = |session: &str| ("codex".to_string(), session.to_string());
+        assert_eq!(
+            threads
+                .get(&key("abc-session"))
+                .map(|t| t.thread_id.as_str()),
+            Some("bare-thread-0001")
+        );
+        assert_eq!(
+            threads
+                .get(&key(" abc-session "))
+                .map(|t| t.thread_id.as_str()),
+            Some("padded-thread-0002")
+        );
+        assert_eq!(threads.len(), 2, "{threads:?}");
     }
 
     /// A lease shaped like the helper's: identity plus a mailbox of `padding`
