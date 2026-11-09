@@ -276,6 +276,21 @@ final class OverlayResizePreviewTests: XCTestCase {
     context.cgContext.scaleBy(
       x: clip.width / root.bounds.width, y: clip.height / root.bounds.height)
     layer.render(in: context.cgContext)
+    context.flushGraphics()
+    func describe(_ view: NSView) -> String {
+      "\(type(of: view)) frame=\(view.frame) hidden=\(view.isHidden) alpha=\(view.alphaValue) "
+        + "layerFrame=\(String(describing: view.layer?.frame)) "
+        + "layerBounds=\(String(describing: view.layer?.bounds)) "
+        + "opacity=\(String(describing: view.layer?.opacity)) "
+        + "background=\(String(describing: view.layer?.backgroundColor))"
+    }
+    print("RESIZE_OPAQUE_DIAGNOSTIC clip=\(clip) bitmap=\(bitmap.pixelsWide)x\(bitmap.pixelsHigh)")
+    for item in descendants(root) { print("RESIZE_OPAQUE_DIAGNOSTIC \(describe(item))") }
+    context.cgContext.setFillColor(NSColor.red.cgColor)
+    context.cgContext.fill(NSRect(x: 1, y: 1, width: 2, height: 2))
+    context.flushGraphics()
+    print(
+      "RESIZE_OPAQUE_DIAGNOSTIC writerControl=\(String(describing: bitmap.colorAt(x: 2, y: 2)))")
     let addedArea = try XCTUnwrap(
       bitmap.colorAt(
         x: bitmap.pixelsWide * 4 / 5, y: bitmap.pixelsHigh / 2))
