@@ -50,12 +50,12 @@ final class OverlayResizePreviewTests: XCTestCase {
   }
 
   private final class CapturePatternView: NSView {
-    let flipped: Bool
+    let usesFlippedCoordinates: Bool
     var paints = 0
-    override var isFlipped: Bool { flipped }
+    override var isFlipped: Bool { usesFlippedCoordinates }
 
     init(flipped: Bool) {
-      self.flipped = flipped
+      usesFlippedCoordinates = flipped
       super.init(frame: NSRect(x: 0, y: 0, width: 240, height: 200))
     }
 
@@ -66,9 +66,9 @@ final class OverlayResizePreviewTests: XCTestCase {
       NSColor.blue.setFill()
       bounds.fill()
       NSColor.green.setFill()
-      NSRect(x: 0, y: flipped ? 0 : 160, width: 240, height: 40).fill()
+      NSRect(x: 0, y: usesFlippedCoordinates ? 0 : 160, width: 240, height: 40).fill()
       NSColor.red.setFill()
-      NSRect(x: 0, y: flipped ? 180 : 0, width: 240, height: 20).fill()
+      NSRect(x: 0, y: usesFlippedCoordinates ? 180 : 0, width: 240, height: 20).fill()
     }
   }
 
