@@ -52,6 +52,7 @@ final class OverlayResizePreviewTests: XCTestCase {
   private final class CapturePatternView: NSView {
     let usesFlippedCoordinates: Bool
     var paints = 0
+    var captures = 0
     override var isFlipped: Bool { usesFlippedCoordinates }
 
     init(flipped: Bool) {
@@ -60,6 +61,11 @@ final class OverlayResizePreviewTests: XCTestCase {
     }
 
     required init?(coder: NSCoder) { nil }
+
+    override func cacheDisplay(in rect: NSRect, to bitmap: NSBitmapImageRep) {
+      captures += 1
+      super.cacheDisplay(in: rect, to: bitmap)
+    }
 
     override func draw(_ dirtyRect: NSRect) {
       paints += 1
@@ -81,7 +87,7 @@ final class OverlayResizePreviewTests: XCTestCase {
       let source = CapturePatternView(flipped: flipped)
       window.contentView = source
       let initial = window.frame
-      let before = source.paints
+      let before = source.captures
       let preview = OverlayResizePreview(
         windows: [window], group: false, headerHeight: 40,
         palette: .resolve(ColorScheme.dark), capturesContent: true)
@@ -90,8 +96,8 @@ final class OverlayResizePreviewTests: XCTestCase {
         window.close()
       }
       XCTAssertEqual(
-        source.paints - before, 1,
-        "A gesture must not render the same source separately for its header and body")
+        source.captures - before, 1,
+        "A gesture must not capture the same source separately for its header and body")
       preview.update(frame: initial.insetBy(dx: -40, dy: -30))
       let header = try XCTUnwrap(previewDrawing().headers.compactMap { $0 }.first)
       let body = try XCTUnwrap(header.content)
