@@ -199,7 +199,7 @@ final class CSSidebarMaterialTests: XCTestCase {
 
   // MARK: - Appearance Adaptation
 
-  func testSettingsHeaderKeepsTheSharedHeightAndFullSidebarMaterial() async throws {
+  func testSettingsHeaderUsesItsNativeAllocationAndFullSidebarMaterial() async throws {
     let host = NSHostingController(
       rootView: SettingsView(model: .preview(.creator))
         .environment(\.csReduceTransparencyOverride, false)
@@ -207,9 +207,6 @@ final class CSSidebarMaterialTests: XCTestCase {
     )
     let window = NSWindow(contentViewController: host)
     window.isReleasedWhenClosed = false
-    // The app's Settings scene selects unified chrome. A plain automatic
-    // toolbar has a different native height and is not that scene's fixture.
-    window.toolbarStyle = .unified
     window.setContentSize(NSSize(width: 1120, height: 720))
     BackgroundTestWindow.present(window)
     defer { window.close() }
@@ -236,7 +233,12 @@ final class CSSidebarMaterialTests: XCTestCase {
     let controlsRect = controls.convert(controls.bounds, to: nil)
     XCTAssertEqual(controlsRect.height, rect.height, accuracy: 1)
     XCTAssertEqual(controlsRect.minY, rect.minY, accuracy: 1)
-    XCTAssertEqual(rect.height, 52, accuracy: 1)
+    // This plain hosting window is not the SwiftUI Settings scene. AppKit
+    // may allocate a compact band here; match its actual safe-area boundary.
+    // Agent/Settings window tests separately retain the unified 52 pt cases.
+    XCTAssertEqual(
+      rect.height, window.frame.height - window.contentLayoutRect.maxY, accuracy: 1)
+    XCTAssertEqual(rect.maxY, window.frame.height, accuracy: 1)
     XCTAssertEqual(rect.maxX, window.frame.width, accuracy: 1)
     XCTAssertEqual(rect.minY, window.contentLayoutRect.maxY, accuracy: 1)
     XCTAssertNotNil(glass.contentView)
