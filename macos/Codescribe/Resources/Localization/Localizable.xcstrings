@@ -2126,6 +2126,39 @@
         }
       }
     },
+    "ACP cwd must be inside a configured Agent workspace root." : {
+      "comment" : "Agent lane unavailable: the ACP working directory is outside the workspace roots",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Katalog roboczy ACP (cwd) musi leżeć w jednym ze skonfigurowanych katalogów roboczych Agenta."
+          }
+        }
+      }
+    },
+    "ACP requires absolute program/cwd paths and literal argv without NUL or traversal." : {
+      "comment" : "Agent lane unavailable: the ACP launch command in settings is invalid",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "ACP wymaga bezwzględnych ścieżek programu i katalogu roboczego (cwd) oraz dosłownych argumentów (argv) bez znaku NUL i bez wychodzenia poza katalog."
+          }
+        }
+      }
+    },
+    "ACP requires explicit absolute system.agent_workspace_roots; home expansion and process cwd are not implicit grants." : {
+      "comment" : "Agent lane unavailable: ACP needs workspace roots in settings",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "ACP wymaga jawnie podanych, bezwzględnych katalogów w system.agent_workspace_roots; katalog domowy ani bieżący katalog procesu nie są udostępniane domyślnie."
+          }
+        }
+      }
+    },
     "AI models" : {
       "comment" : "Settings tab: provider and model per function",
       "localizations" : {
@@ -7492,6 +7525,17 @@
         }
       }
     },
+    "Custom provider “%@” no longer exists." : {
+      "comment" : "Request lane unavailable. The placeholder is the removed custom provider's id",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Własny dostawca „%@” już nie istnieje."
+          }
+        }
+      }
+    },
     "Custom providers" : {
       "localizations" : {
         "pl" : {
@@ -12832,6 +12876,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Żaden mikrofon nie jest dostępny"
+          }
+        }
+      }
+    },
+    "No model selected for provider %@." : {
+      "comment" : "Request lane unavailable. The placeholder is a provider name, e.g. OpenAI",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie wybrano modelu dla dostawcy %@."
           }
         }
       }
@@ -20463,6 +20518,34 @@
         }
       }
     },
+    "The %@ lane points at %@ (%@), which requires a credential, but neither Keychain account %@ nor a supported signed-in provider account is available." : {
+      "comment" : "Request lane unavailable. Placeholders: lane name (Formatting or Assistive), provider name, its endpoint URL, Keychain account name such as LLM_OPENAI_API_KEY",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "The %1$@ lane points at %2$@ (%3$@), which requires a credential, but neither Keychain account %4$@ nor a supported signed-in provider account is available."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Ścieżka „%1$@” korzysta z dostawcy %2$@ (%3$@), który wymaga poświadczeń, ale w pęku kluczy nie ma konta %4$@, a obsługiwane konto dostawcy nie jest zalogowane."
+          }
+        }
+      }
+    },
+    "The %@ lane uses Cloud Code Assist, which requires locally provisioned Google account credentials or authorized-user ADC. A public Gemini API key cannot authenticate this endpoint." : {
+      "comment" : "Request lane unavailable. The placeholder is the lane name (Formatting or Assistive)",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Ścieżka „%@” korzysta z Cloud Code Assist, który wymaga lokalnie skonfigurowanych poświadczeń konta Google albo ADC typu authorized-user. Publiczny klucz API Gemini nie uwierzytelni tego adresu."
+          }
+        }
+      }
+    },
     "The %@ pass returned no text" : {
       "comment" : "The placeholder is the name of the engine that ran the pass",
       "localizations" : {
@@ -20559,16 +20642,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Aplikacja Codescribe nie zawiera komponentu Agent Bridge."
-          }
-        }
-      }
-    },
-    "The assistive model isn't reachable yet — open Settings → Engine to configure the assistive lane." : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Model Agenta jest teraz niedostępny — otwórz Ustawienia › Silnik, aby skonfigurować Agenta"
           }
         }
       }

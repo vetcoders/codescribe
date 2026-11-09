@@ -19,9 +19,9 @@ use codescribe_core::config::settings::normalize_agent_workspace_roots;
 use codescribe_core::config::{
     AppDataResetGuard, Config, DEFAULT_ASSISTIVE_PROMPT, DEFAULT_FORMATTING_PROMPT,
     FormattingPolicy, PasteMode, PromptKind, PromptSnapshot, PromptWriteReason, RuntimeLlmLane,
-    RuntimeLlmLaneKind, RuntimeSettingsSnapshot, UserSettings, begin_app_data_reset,
-    prompt_snapshot, prompts, reset_to_defaults, restore_prompt_to_default, write_prompt,
-    write_prompt_bytes_during_reset,
+    RuntimeLlmLaneKind, RuntimeLlmLaneUnavailable, RuntimeSettingsSnapshot, UserSettings,
+    begin_app_data_reset, prompt_snapshot, prompts, reset_to_defaults, restore_prompt_to_default,
+    write_prompt, write_prompt_bytes_during_reset,
 };
 use codescribe_core::llm::account_auth;
 use codescribe_core::llm::key_liveness::{
@@ -680,6 +680,75 @@ impl From<CsLlmLane> for RuntimeLlmLaneKind {
     }
 }
 
+/// Why a lane cannot send a request, as data: Swift composes the sentence
+/// (`LLMLaneUnavailablePresentation.swift`). Provider names, endpoints and
+/// Keychain account names travel verbatim.
+#[derive(uniffi::Enum, Debug, Clone, PartialEq, Eq)]
+pub enum CsLlmLaneUnavailable {
+    /// The lane points at a Custom provider id that no longer exists.
+    CustomProviderMissing { custom_id: String },
+    /// The provider has no model selected.
+    ModelMissing { provider: String },
+    /// No Keychain credential and no supported signed-in provider account.
+    CredentialMissing {
+        lane: CsLlmLane,
+        provider: String,
+        endpoint: String,
+        key_account: String,
+    },
+    /// Cloud Code Assist needs Google account credentials or authorized-user ADC.
+    CloudCodeAssistAccountRequired { lane: CsLlmLane },
+    /// ACP program/cwd not absolute, or argv not literal.
+    AcpLaunchInvalid,
+    /// ACP needs explicit absolute `system.agent_workspace_roots`.
+    AcpWorkspaceRootsMissing,
+    /// ACP cwd is outside every configured Agent workspace root.
+    AcpCwdOutsideWorkspace,
+}
+
+impl From<RuntimeLlmLaneKind> for CsLlmLane {
+    fn from(value: RuntimeLlmLaneKind) -> Self {
+        match value {
+            RuntimeLlmLaneKind::Formatting => Self::Formatting,
+            RuntimeLlmLaneKind::Assistive => Self::Assistive,
+        }
+    }
+}
+
+impl From<&RuntimeLlmLaneUnavailable> for CsLlmLaneUnavailable {
+    fn from(value: &RuntimeLlmLaneUnavailable) -> Self {
+        match value {
+            RuntimeLlmLaneUnavailable::CustomProviderMissing { custom_id } => {
+                Self::CustomProviderMissing {
+                    custom_id: custom_id.clone(),
+                }
+            }
+            RuntimeLlmLaneUnavailable::ModelMissing { provider } => Self::ModelMissing {
+                provider: provider.clone(),
+            },
+            RuntimeLlmLaneUnavailable::CredentialMissing {
+                lane,
+                provider,
+                endpoint,
+                key_account,
+            } => Self::CredentialMissing {
+                lane: (*lane).into(),
+                provider: provider.clone(),
+                endpoint: endpoint.clone(),
+                key_account: key_account.clone(),
+            },
+            RuntimeLlmLaneUnavailable::CloudCodeAssistAccountRequired { lane } => {
+                Self::CloudCodeAssistAccountRequired {
+                    lane: (*lane).into(),
+                }
+            }
+            RuntimeLlmLaneUnavailable::AcpLaunchInvalid => Self::AcpLaunchInvalid,
+            RuntimeLlmLaneUnavailable::AcpWorkspaceRootsMissing => Self::AcpWorkspaceRootsMissing,
+            RuntimeLlmLaneUnavailable::AcpCwdOutsideWorkspace => Self::AcpCwdOutsideWorkspace,
+        }
+    }
+}
+
 /// Complete canonical projection for one sealed LLM lane. Credentials never cross the
 /// bridge: only the owning account name and presence/auth booleans are exposed.
 #[derive(uniffi::Record, Debug, Clone, PartialEq, Eq)]
@@ -694,17 +763,14 @@ pub struct CsRuntimeLlmLane {
     pub key_present: bool,
     pub account_auth: bool,
     pub available: bool,
-    pub unavailable_reason: Option<String>,
+    pub unavailable: Option<CsLlmLaneUnavailable>,
 }
 
 impl From<&RuntimeLlmLane> for CsRuntimeLlmLane {
     /// Secret-free projection outward from the loader-owned lane.
     fn from(value: &RuntimeLlmLane) -> Self {
         Self {
-            lane: match value.lane() {
-                RuntimeLlmLaneKind::Formatting => CsLlmLane::Formatting,
-                RuntimeLlmLaneKind::Assistive => CsLlmLane::Assistive,
-            },
+            lane: value.lane().into(),
             provider_id: value.provider().as_string(),
             provider_display_name: value.provider_display_name().to_string(),
             wire: value.wire_family().as_str().to_string(),
@@ -714,7 +780,7 @@ impl From<&RuntimeLlmLane> for CsRuntimeLlmLane {
             key_present: value.credential().api_key().is_some(),
             account_auth: value.credential().account_auth(),
             available: value.available(),
-            unavailable_reason: value.unavailable_reason().map(str::to_string),
+            unavailable: value.unavailable().map(CsLlmLaneUnavailable::from),
         }
     }
 }

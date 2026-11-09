@@ -251,6 +251,49 @@ Rust prose (B3 territory). The agent lane is named **Agent** on this screen in
 every language (Founder decision 2026-10-04); the Rust `WorkMode::label()`
 "Assistive" is wire presentation only.
 
+### B1b — Lane readiness reason (done; pilot for the 61 prose fields)
+
+`CsRuntimeLlmLane.unavailableReason` (Settings › Providers, the lane's red
+line) and `CsAgentAvailability.detail` (the Agent chat's reply when the Agent
+lane cannot reach a model) carried the same family of Rust sentences, e.g.
+"The formatting lane points at OpenAI (Responses) (…), which requires a
+credential, but neither Keychain account LLM_OPENAI_API_KEY nor a supported
+signed-in provider account is available." Both fields are gone.
+
+The loader seals `RuntimeLlmLaneUnavailable` (`core/config/settings.rs`): one
+variant per real resolution branch — `CustomProviderMissing`, `ModelMissing`,
+`CredentialMissing`, `CloudCodeAssistAccountRequired`, `AcpLaunchInvalid`,
+`AcpWorkspaceRootsMissing`, `AcpCwdOutsideWorkspace` — each with the facts its
+sentence needs (lane kind, provider name, endpoint, Keychain account, custom
+id). Its `Display` is the English diagnostic that error chains and logs keep
+using (`request_unavailable_reason()`); those are B3/B5 seams, not this one.
+The bridge projects it as `CsLlmLaneUnavailable` on
+`CsRuntimeLlmLane.unavailable` and `CsAgentAvailability.reason`; the payload
+strings are classified `data`. Swift composes the sentence once, in
+`Core/LLMLaneUnavailablePresentation.swift`, and names the lane by the
+existing `LLMLane.title` keys (Formatting / Assistive → Formatowanie / Agent).
+Seven catalog keys, Polish in `needs_review`.
+
+Cost (2026-11-06, commit `95c0224d3`): 13 hand-edited files plus the
+generated bindings; about 500 added and 125 removed lines without bindings,
+of which roughly half are the enum, its bridge mapping and tests. Rust 5
+files, Swift 3 app + 2 test files, catalog, classification. Two prose lines
+retired (61 → 59), because the second field carried the same sentence.
+
+The pattern for the next field:
+
+1. Find every producer of the sentence and every field that carries it; the
+   branches in code are the variants, not the wording.
+2. Give core a typed reason whose `Display` keeps the English diagnostic, so
+   logs and error chains do not change; replace the stored `String`.
+3. Project it as a `uniffi::Enum` with data payloads, delete the prose field
+   (no parallel field), reclassify in `l10n-bridge-fields.txt`, regenerate
+   bindings with `make app-bindings`.
+4. Write one Swift function that maps every case to `String(localized:)`,
+   reusing existing keys for names; switch every consumer to it.
+5. On the build host: `make l10n-build`, `make l10n-sync`, drop a row the
+   cut made stale, import only the cut's rows with `l10n-sheet.py import pl … --draft`, then the bridge census, catalog lint and the targeted tests.
+
 ### B2 — Machine meaning carried inside prose (do this before touching the sentences)
 
 Two messages are parsed by Swift for a code hidden in the English text:
@@ -415,18 +458,18 @@ copy. The fields that look authored by the program:
 `CsCapabilityRow.reason` · `CsHotkeyConflict.message` ·
 `CsModelDirectory.detail` · `CsModelDiscovery.message` ·
 `CsPresentationStatusEvent.{statusLabel, message}` ·
-`CsProviderOption.accountStatusMessage` · `CsRuntimeLlmLane.unavailableReason` ·
+`CsProviderOption.accountStatusMessage` ·
 `CsSttLane.title` · `CsToolApprovalRequest.summary` ·
 `CsUnanchoredEvidence.reason`
 
 Rendered today, by screen (established while preparing the Swift side):
 
-| Screen     | Bridge text shown as it arrives                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Settings   | `CsAdmissionReadiness.message` · `CsMcpTestResult.error` · `CsMcpStatusRow.{label, value}` · `CsCapabilityRow.{op, tier, nativeTool, provider}` · `CsSttLane.{title, placeholder}` · `CsProviderOption.{displayName, accountStatusMessage}` · `CsApiKeyProbeResult.message` · `CsHotkeyConflict.message` · `CsModelDirectory.status` · `CsWhisperModelStatus.sizeHint` · `CsPromptSnapshot.readError` · `CsRuntimeLlmLane.unavailableReason` · `CsModelDiscovery.message` · `CsVoiceLabTeachResult.acknowledgement` · `CsVoiceLabSaveResult.lexiconError` · `CsAccountLoginResult.message` |
-| Overlay    | `CsPresentationStatusEvent.{headline, message, statusLabel}` (the status pill, the toast, the error card) · `CsTranscriptProjectionEvent.label` · `CsQualityTeachResult.acknowledgement`                                                                                                                                                                                                                                                                                                                                                                                                   |
-| Agent chat | `agent.availability().detail` (shown as the assistant reply) · `speechAvailability()` · `CsAgentListener.onError` and delivery errors (after an `[error]` marker) · `CsToolApprovalRequest.{risk, summary}`                                                                                                                                                                                                                                                                                                                                                                                |
-| Onboarding | `CsMcpStatusRow.{label, value}` · `CsProviderOption.displayName`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Screen     | Bridge text shown as it arrives                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Settings   | `CsAdmissionReadiness.message` · `CsMcpTestResult.error` · `CsMcpStatusRow.{label, value}` · `CsCapabilityRow.{op, tier, nativeTool, provider}` · `CsSttLane.{title, placeholder}` · `CsProviderOption.{displayName, accountStatusMessage}` · `CsApiKeyProbeResult.message` · `CsHotkeyConflict.message` · `CsModelDirectory.status` · `CsWhisperModelStatus.sizeHint` · `CsPromptSnapshot.readError` · `CsModelDiscovery.message` · `CsVoiceLabTeachResult.acknowledgement` · `CsVoiceLabSaveResult.lexiconError` · `CsAccountLoginResult.message` |
+| Overlay    | `CsPresentationStatusEvent.{headline, message, statusLabel}` (the status pill, the toast, the error card) · `CsTranscriptProjectionEvent.label` · `CsQualityTeachResult.acknowledgement`                                                                                                                                                                                                                                                                                                                                                            |
+| Agent chat | `speechAvailability()` · `CsAgentListener.onError` and delivery errors (after an `[error]` marker) · `CsToolApprovalRequest.{risk, summary}`                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Onboarding | `CsMcpStatusRow.{label, value}` · `CsProviderOption.displayName`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 Vendor and model names in these fields are proper names and need no change.
 Two fields are shown with Swift casing applied to Rust text

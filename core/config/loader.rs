@@ -27,9 +27,10 @@ use super::settings::{
     AGENT_SEND_HOLD_ENV, DEFAULT_AGENT_SEND_HOLD_SEC, DEFAULT_AGENT_WORKSPACE_ROOT,
     DEFAULT_SEAL_LANE_ARMED, FormattingPolicy, RuntimeAiExecution, RuntimeAiRequestTiming,
     RuntimeFormatterExecution, RuntimeLlmCredential, RuntimeLlmLane, RuntimeLlmLaneKind,
-    RuntimeLlmLanes, RuntimeSettingsSnapshot, RuntimeSnapshotParts, SILERO_FUSION_ENV,
-    SettingsSnapshotDigest, SettingsSnapshotProvenance, SettingsSnapshotValidationError,
-    UserSettings, normalize_agent_workspace_roots, parse_agent_workspace_roots,
+    RuntimeLlmLaneUnavailable, RuntimeLlmLanes, RuntimeSettingsSnapshot, RuntimeSnapshotParts,
+    SILERO_FUSION_ENV, SettingsSnapshotDigest, SettingsSnapshotProvenance,
+    SettingsSnapshotValidationError, UserSettings, normalize_agent_workspace_roots,
+    parse_agent_workspace_roots,
 };
 use super::types::{
     ChannelModifier, Config, DeferredInsertShortcut, PasteMode, RecordingKeys, WorkMode,
@@ -790,16 +791,15 @@ impl Config {
             }
         };
         let reference = Self::runtime_provider_reference(lane, input);
-        let (provider, mut unavailable_reason) = match registry.resolve(&reference) {
+        let (provider, mut unavailable) = match registry.resolve(&reference) {
             Some(provider) => (provider, None),
             None => (
                 registry
                     .resolve(&ProviderRef::default())
                     .expect("the default vendor is always registered"),
-                Some(format!(
-                    "custom provider `{}` no longer exists",
-                    reference.custom_id().unwrap_or_default()
-                )),
+                Some(RuntimeLlmLaneUnavailable::CustomProviderMissing {
+                    custom_id: reference.custom_id().unwrap_or_default().to_string(),
+                }),
             ),
         };
         let model = input
@@ -816,11 +816,10 @@ impl Config {
                     .map(|vendor| vendor.default_model(mode).to_string())
             })
             .unwrap_or_default();
-        if model.is_empty() && unavailable_reason.is_none() {
-            unavailable_reason = Some(format!(
-                "no model selected for provider {}",
-                provider.display_name
-            ));
+        if model.is_empty() && unavailable.is_none() {
+            unavailable = Some(RuntimeLlmLaneUnavailable::ModelMissing {
+                provider: provider.display_name.clone(),
+            });
         }
         let captured = input
             .credentials
@@ -837,27 +836,23 @@ impl Config {
             && (provider.wire == WireFamily::GoogleGenerateContent
                 || (provider.wire == WireFamily::OpenAiResponses
                     && provider.oauth_vendor.is_some()));
-        let configuration_fault = unavailable_reason.clone();
+        let configuration_fault = unavailable.clone();
         let credential_required =
             provider.key_required || provider.wire == WireFamily::GoogleGenerateContent;
         let credentialed = api_key.is_some() || account_auth || !credential_required;
-        if !credentialed && unavailable_reason.is_none() {
-            unavailable_reason = Some(
+        if !credentialed && unavailable.is_none() {
+            unavailable = Some(
                 if provider.wire == WireFamily::GoogleGenerateContent
                     && crate::llm::vendors::google::is_cloud_code_assist(&provider.endpoint)
                 {
-                    format!(
-                        "The {} lane uses Cloud Code Assist, which requires locally provisioned Google account credentials or authorized-user ADC. A public Gemini API key cannot authenticate this endpoint.",
-                        lane.as_str()
-                    )
+                    RuntimeLlmLaneUnavailable::CloudCodeAssistAccountRequired { lane }
                 } else {
-                    format!(
-                        "The {} lane points at {} ({}), which requires a credential, but neither Keychain account {} nor a supported signed-in provider account is available.",
-                        lane.as_str(),
-                        provider.display_name,
-                        provider.endpoint,
-                        provider.key_account,
-                    )
+                    RuntimeLlmLaneUnavailable::CredentialMissing {
+                        lane,
+                        provider: provider.display_name.clone(),
+                        endpoint: provider.endpoint.clone(),
+                        key_account: provider.key_account.clone(),
+                    }
                 },
             );
         }
@@ -869,7 +864,7 @@ impl Config {
             model,
             credential,
             configuration_fault,
-            unavailable_reason,
+            unavailable,
         );
         if lane == RuntimeLlmLaneKind::Assistive
             && let Some(launch) = &settings.agent_acp
@@ -892,21 +887,19 @@ impl Config {
                     || !absolute(&launch.cwd)
                     || launch.args.iter().any(|arg| arg.contains('\0'))
                 {
-                    return Err("ACP requires absolute program/cwd paths and literal argv without NUL or traversal".to_string());
+                    return Err(RuntimeLlmLaneUnavailable::AcpLaunchInvalid);
                 }
                 let roots = normalize_agent_workspace_roots(
                     settings.agent_workspace_roots.clone().unwrap_or_default(),
                 );
                 if roots.is_empty() || roots.iter().any(|root| !absolute(root)) {
-                    return Err("ACP requires explicit absolute system.agent_workspace_roots; home expansion and process cwd are not implicit grants".to_string());
+                    return Err(RuntimeLlmLaneUnavailable::AcpWorkspaceRootsMissing);
                 }
                 let workspace_roots: Vec<std::path::PathBuf> =
                     roots.into_iter().map(Into::into).collect();
                 let cwd = std::path::PathBuf::from(&launch.cwd);
                 if !workspace_roots.iter().any(|root| cwd.starts_with(root)) {
-                    return Err(
-                        "ACP cwd must be inside a configured Agent workspace root".to_string()
-                    );
+                    return Err(RuntimeLlmLaneUnavailable::AcpCwdOutsideWorkspace);
                 }
                 Ok(super::settings::RuntimeAcpConfiguration {
                     command: crate::acp::AcpCommand {
@@ -3038,7 +3031,7 @@ mod tests {
             );
             assert!(lane.available(), "signed-in lane must be available");
             assert!(lane.request_available());
-            assert_eq!(lane.unavailable_reason(), None);
+            assert_eq!(lane.unavailable(), None);
         }
     }
 
@@ -3055,11 +3048,23 @@ mod tests {
         let lane = snapshot.llm_lanes().assistive();
         assert!(!lane.credential().account_auth());
         assert!(!lane.available());
+        let reason = lane
+            .unavailable()
+            .expect("the lane must say why it refuses");
         assert!(
-            lane.unavailable_reason()
-                .is_some_and(|reason| reason.contains("signed-in provider account")),
-            "refusal must name the missing account, got {:?}",
-            lane.unavailable_reason()
+            matches!(
+                reason,
+                RuntimeLlmLaneUnavailable::CredentialMissing {
+                    lane: RuntimeLlmLaneKind::Assistive,
+                    key_account,
+                    ..
+                } if key_account == lane.credential().key_account()
+            ),
+            "refusal must name the lane and the missing account, got {reason:?}"
+        );
+        assert!(
+            reason.to_string().contains("signed-in provider account"),
+            "the diagnostic keeps naming the missing account, got {reason}"
         );
     }
 
@@ -3237,10 +3242,16 @@ mod tests {
         let snapshot = seal_lanes();
         let lane = snapshot.llm_lanes().assistive();
         assert!(!lane.available());
+        let reason = lane
+            .unavailable()
+            .expect("a lane without a model is unavailable");
         assert_eq!(
-            lane.unavailable_reason(),
-            Some("no model selected for provider My Box")
+            reason,
+            &RuntimeLlmLaneUnavailable::ModelMissing {
+                provider: "My Box".to_string()
+            }
         );
+        assert_eq!(reason.to_string(), "no model selected for provider My Box");
     }
 
     /// A lane pointing at a Custom id that no longer exists falls back to the
@@ -3258,9 +3269,18 @@ mod tests {
         let lane = snapshot.llm_lanes().assistive();
         assert_eq!(lane.provider(), &ProviderRef::default());
         assert!(!lane.available());
+        let reason = lane
+            .unavailable()
+            .expect("a vanished custom row is unavailable");
         assert_eq!(
-            lane.unavailable_reason(),
-            Some("custom provider `gone` no longer exists")
+            reason,
+            &RuntimeLlmLaneUnavailable::CustomProviderMissing {
+                custom_id: "gone".to_string()
+            }
+        );
+        assert_eq!(
+            reason.to_string(),
+            "custom provider `gone` no longer exists"
         );
     }
 
