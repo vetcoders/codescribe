@@ -9903,7 +9903,6 @@
         }
       }
     },
-
     "In reply to: %@" : {
       "comment" : "Excerpt of the explicitly associated addressed utterance",
       "localizations" : {
@@ -11836,7 +11835,7 @@
       }
     },
     "Model" : {
-      "comment" : "Context panel fact: the conversation's model\nWhisper tab row: the model selector",
+      "comment" : "Whisper tab row: the model selector",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -13332,7 +13331,6 @@
         }
       }
     },
-
     "Not installed" : {
       "comment" : "Whisper tab status: no usable model on disk\nWhisper weights are not yet available locally",
       "localizations" : {
@@ -15774,7 +15772,6 @@
         }
       }
     },
-
     "Recheck" : {
       "comment" : "Recheck local Whisper availability without downloading",
       "localizations" : {
