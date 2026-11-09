@@ -141,7 +141,7 @@ elif name == "xcodebuild":
     config = "Debug" if profile == "debug" else "Release"
     assert args[args.index("-configuration") + 1] == config
     assert args[args.index("-derivedDataPath") + 1] == str(repo / "macos/build")
-    contents = repo / "macos/build/Build/Products" / config / "Codescribe.app/Contents"
+    contents = repo / "macos/build/Build/Products" / config / "X9bus.app/Contents"
     contents.mkdir(parents=True)
     import plistlib
     bundle_id = "com.vetcoders.codescribe.dev" if config == "Debug" else "com.vetcoders.codescribe"
@@ -306,6 +306,12 @@ def run_case(base, profile, layout, mode="success", skip=False, signing_identity
             assert sum(c["tool"] == "cp" and "sha256" in c for c in calls) == (0 if skip else 3)
             if skip:
                 assert not set(names) & {"xcodebuild", "swiftc", "codesign"}
+            else:
+                config = "Debug" if profile == "debug" else "Release"
+                product = repo / "macos/build/Build/Products" / config
+                assert (product / "X9bus.app/Contents/MacOS/Codescribe").is_file()
+                assert not (product / "Codescribe.app").exists()
+                assert str(product / "X9bus.app") in result.stdout
         else:
             assert result.returncode != 0, "failure silently accepted stale artifacts"
             if mode in ("ffi-error", "sidecar-error"):

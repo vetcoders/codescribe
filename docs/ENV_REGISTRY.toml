@@ -65,7 +65,7 @@ default = "4"
 type = "u64"
 reload = "restart"
 category = "runtime"
-description = "Named Tokio async workers owned by Codescribe.app (clamped to 1-16; invalid values fall back to 4)"
+description = "Named Tokio async workers owned by X9bus.app (clamped to 1-16; invalid values fall back to 4)"
 range = "1-16"
 
 # ═══════════════════════════════════════════════════════════════════════════════

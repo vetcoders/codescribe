@@ -323,9 +323,9 @@ if [[ -z "$MOUNT_POINT" || ! -d "$MOUNT_POINT" ]]; then
 fi
 ok "mounted at $MOUNT_POINT"
 
-APP_PATH=$(find "$MOUNT_POINT" -maxdepth 2 -name '*.app' -type d 2>/dev/null | head -1 || true)
+APP_PATH="$MOUNT_POINT/X9bus.app"
 if [[ -z "$APP_PATH" || ! -d "$APP_PATH" ]]; then
-  fail "no .app bundle found inside DMG"
+  fail "X9bus.app missing from DMG root"
 else
   ok "app: $(basename "$APP_PATH")"
 fi
@@ -336,6 +336,20 @@ if [[ -n "${APP_PATH:-}" ]]; then
   if [[ ! -f "$PLIST" ]]; then
     fail "Info.plist missing at $PLIST"
   else
+    for KEY in CFBundleName CFBundleDisplayName; do
+      NAME=$(/usr/libexec/PlistBuddy -c "Print :$KEY" "$PLIST" 2>/dev/null || true)
+      if [[ "$NAME" != "X9bus" ]]; then
+        fail "$KEY='$NAME' must be X9bus"
+      else
+        ok "$KEY == X9bus"
+      fi
+    done
+    ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST" 2>/dev/null || true)
+    if [[ "$ID" != "com.vetcoders.codescribe" ]]; then
+      fail "CFBundleIdentifier='$ID' must preserve com.vetcoders.codescribe"
+    else
+      ok "CFBundleIdentifier preserves com.vetcoders.codescribe"
+    fi
     BUNDLE_VER=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST" 2>/dev/null || true)
     if [[ -z "$BUNDLE_VER" ]]; then
       fail "CFBundleShortVersionString unreadable"

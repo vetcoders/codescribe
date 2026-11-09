@@ -141,9 +141,15 @@ def restart(
     if not running:
         raise Refusal("application_not_running")
     candidates = supported(root, app, running)
+    # During the physical bundle rename, the old process still owns the idle
+    # protocol at its original path. Only a live, owned handshake may select it;
+    # the mere presence of an old bundle never changes the launch destination.
+    if app.name == "X9bus.app":
+        candidates += supported(root, app.with_name("Codescribe.app"), running)
     if len(candidates) != 1:
         raise Refusal("running_process_does_not_support_atomic_restart_or_is_ambiguous")
     ready = candidates[0]
+    running_app = Path(ready["bundle"])
     old_pid = ready["pid"]
     if newer_only:
         # An install replaces the bundle's files, so the running process keeps
@@ -172,7 +178,7 @@ def restart(
     receipt_path = root / f"{request_id}.receipt.json"
     # LaunchServices delivers a request to the application; it never sends Quit.
     dispatched = run(
-        ["/usr/bin/open", "-g", "-a", str(app), f"codescribe://restart-if-idle?request={request_id}"]
+        ["/usr/bin/open", "-g", "-a", str(running_app), f"codescribe://restart-if-idle?request={request_id}"]
     )
     if dispatched.returncode != 0:
         raise Refusal("restart_request_not_delivered")
@@ -233,7 +239,7 @@ def restart(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--app", type=Path, default=Path("/Applications/Codescribe.app"))
+    parser.add_argument("--app", type=Path, default=Path("/Applications/X9bus.app"))
     parser.add_argument(
         "--launch-app",
         type=Path,

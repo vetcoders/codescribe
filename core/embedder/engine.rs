@@ -403,7 +403,7 @@ fn resolve_model_path(explicit: Option<&PathBuf>, repo_override: Option<&str>) -
     ))
 }
 
-/// Resolve `Codescribe.app/Contents/Resources/models/embedder` without assuming
+/// Resolve `X9bus.app/Contents/Resources/models/embedder` without assuming
 /// a fixed install location. CLI/test binaries naturally return `None` and fall
 /// through to the HF cache.
 fn bundled_app_model_path() -> Option<PathBuf> {
@@ -609,7 +609,7 @@ mod tests {
     #[test]
     fn resolves_signed_app_embedder_resource_from_executable_geometry() {
         let temp = tempfile::tempdir().unwrap();
-        let contents = temp.path().join("Codescribe.app/Contents");
+        let contents = temp.path().join("X9bus.app/Contents");
         let executable = contents.join("MacOS/Codescribe");
         let model = contents.join("Resources/models/embedder");
         std::fs::create_dir_all(executable.parent().unwrap()).unwrap();

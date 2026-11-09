@@ -18,7 +18,7 @@ when the underlying check or service is unavailable.
 # 1. Verify local toolchains, env registry, gate ledger, and l10n catalog
 bin/control-codescribe doctor --json
 
-# 2. Verify running Codescribe.app process or live Voice Lab loopback (127.0.0.1:8765)
+# 2. Verify running X9bus.app process or live Voice Lab loopback (127.0.0.1:8765)
 bin/control-codescribe dev --json
 
 # 3. Verify surface map integrity (source file, canonical symbol, and test file)
@@ -35,7 +35,7 @@ bin/control-codescribe execute --code-file scripts/tests/transcript-bus-path-tes
 bin/control-codescribe browse --path macos-overlay --record --json
 
 # 7. Verify running Codescribe process (~/.codescribe/runtime/restart/<pid>.ready.json + lsof inodes)
-#    or installed /Applications/Codescribe.app CSBuildCommit matches <sha> (never git HEAD)
+#    or installed /Applications/X9bus.app CSBuildCommit matches <sha> (never git HEAD)
 bin/control-codescribe health --sha <expected-build-sha> --json
 ```
 
@@ -68,6 +68,6 @@ Before merging any PR:
    running process SHA with `bin/control-codescribe health --sha <build-sha> --json`.
 4. Cite the exact commands and their results under `## Testing` in the PR body,
    and state explicitly what could not be verified (for example when Voice Lab
-   is not running or `/Applications/Codescribe.app` was not reinstalled).
+   is not running or `/Applications/X9bus.app` was not reinstalled).
 
 𝚅𝚒𝚋𝚎𝚌𝚛𝚊𝚏𝚝𝚎𝚍. with AI Agents by Vetcoders (c)2024-2026 LibraxisAI

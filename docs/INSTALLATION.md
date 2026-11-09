@@ -16,11 +16,11 @@ A local app build is not a signed distribution release.
 # Build an optimized local SwiftUI app bundle
 make app PROFILE=local-release
 
-# Build and copy to /Applications/Codescribe.app
+# Build and copy to /Applications/X9bus.app
 make install-app
 ```
 
-**Result**: App bundle installed at `/Applications/Codescribe.app`, with model/cache checks handled by `scripts/build-app.sh`.
+**Result**: App bundle installed at `/Applications/X9bus.app`, with model/cache checks handled by `scripts/build-app.sh`.
 
 **A running app**: the install replaces the bundle and the idle restart swaps
 the running process for the new build at its first idle moment; see
@@ -35,7 +35,7 @@ use the explicit bundle commands below.
 
 ```bash
 make release-standard
-rsync -a --delete macos/build/Build/Products/Release/Codescribe.app/ /Applications/Codescribe.app/
+rsync -a --delete macos/build/Build/Products/Release/X9bus.app/ /Applications/X9bus.app/
 make restart-if-idle
 ```
 
@@ -56,7 +56,7 @@ make install
 to observe the app-owned transcript. `codescribe report` and `codescribe daemon`
 provide the quality workflows. See the [CLI guide](CLI.md) for output, side
 effects and recognition flags. `make release-qube` builds the separate quality
-binaries; it does not install or launch Codescribe.app.
+binaries; it does not install or launch X9bus.app.
 
 **How it runs**: Terminal-only quality/reporting utilities, not the user-facing app.
 
@@ -124,13 +124,13 @@ From the repository root, launch the intended bundle through LaunchServices:
 
 ```bash
 # Installed app
-/usr/bin/open "/Applications/Codescribe.app"
+/usr/bin/open "/Applications/X9bus.app"
 
 # Already-built Debug app (separate dev identity)
-/usr/bin/open "$PWD/macos/build/Build/Products/Debug/Codescribe.app"
+/usr/bin/open "$PWD/macos/build/Build/Products/Debug/X9bus.app"
 ```
 
-Direct execution of `Codescribe.app/Contents/MacOS/Codescribe` from a shell or
+Direct execution of `X9bus.app/Contents/MacOS/Codescribe` from a shell or
 agent host is **unsupported** for native app startup and speech acceptance.
 The launching host can remain responsible for the privacy request even when
 the bundle has the required usage description. See
@@ -151,7 +151,7 @@ Use this only when the intended Debug app is not already running:
 
 ```bash
 codescribe_test_data="$(mktemp -d /private/tmp/codescribe-launch.XXXXXX)" || exit 1
-/usr/bin/open "$PWD/macos/build/Build/Products/Debug/Codescribe.app" \
+/usr/bin/open "$PWD/macos/build/Build/Products/Debug/X9bus.app" \
   --env "CODESCRIBE_DATA_DIR=$codescribe_test_data" \
   --env "RUST_LOG=info"
 ```
@@ -222,7 +222,7 @@ verifies the original PID/path after activation:
 (
   installed_pid="$(swift - <<'SWIFT'
 import AppKit
-let expected = "/Applications/Codescribe.app/Contents/MacOS/Codescribe"
+let expected = "/Applications/X9bus.app/Contents/MacOS/Codescribe"
 let matches = NSRunningApplication.runningApplications(
   withBundleIdentifier: "com.vetcoders.codescribe"
 ).filter { !$0.isTerminated && $0.executableURL?.path == expected }
@@ -233,16 +233,16 @@ guard matches.count == 1 else {
 print(matches[0].processIdentifier)
 SWIFT
   )" || exit 1
-  open /Applications/Codescribe.app || exit 1
+  open /Applications/X9bus.app || exit 1
   executable="$(ps -p "$installed_pid" -o comm=)" || exit 1
-  test "$executable" = /Applications/Codescribe.app/Contents/MacOS/Codescribe || exit 1
+  test "$executable" = /Applications/X9bus.app/Contents/MacOS/Codescribe || exit 1
   printf 'Installed PID: %s; executable: %s\n' "$installed_pid" "$executable"
 )
 ```
 
 For the collision regression, leave the installed app running, run
 `make app-bindings && make test-swift`, and repeat this receipt while the Debug
-host is alive. Also exercise `open -a /Applications/Codescribe.app` and confirm
+host is alive. Also exercise `open -a /Applications/X9bus.app` and confirm
 the same installed PID/path survives. Record both process paths and the host's
 `CFBundleIdentifier`; a successful `open` exit alone is not evidence. Never
 quit, restart, or reinstall the Founder's running app for this check.
@@ -383,7 +383,7 @@ LLM_ASSISTIVE_MODEL=gpt-5.5
 ## Bundle Structure
 
 ```
-Codescribe.app/
+X9bus.app/
 └── Contents/
     ├── Info.plist           # Bundle metadata (icon, identifier, version)
     ├── MacOS/
@@ -469,7 +469,7 @@ which on a fresh host is none. `--agent-clients` adds the selection and
 replaces it exactly as the Settings panel does:
 
 ```bash
-/Applications/Codescribe.app/Contents/MacOS/Codescribe \
+/Applications/X9bus.app/Contents/MacOS/Codescribe \
   --install-agent-bridge --agent-clients claude-code,codex
 ```
 
@@ -558,7 +558,7 @@ Local power requires a usable local model. See the
 - Launch the native app bundle through Finder, Spotlight or LaunchServices;
   the `codescribe` CLI is a separate terminal utility.
 - Check that the bundle's `Info.plist` exists and has `CFBundleIconFile`.
-- **Verify**: `plutil -lint /Applications/Codescribe.app/Contents/Info.plist`
+- **Verify**: `plutil -lint /Applications/X9bus.app/Contents/Info.plist`
 
 ### Empty Tray Icon
 

@@ -17,7 +17,7 @@ cd codescribe
 # Build and install the SwiftUI app over the Rust UniFFI core
 make app PROFILE=local-release
 make install-app
-/usr/bin/open "/Applications/Codescribe.app"
+/usr/bin/open "/Applications/X9bus.app"
 ```
 
 ### 3. Development Mode
@@ -25,13 +25,13 @@ make install-app
 ```bash
 # Build and launch the debug app bundle
 make app PROFILE=debug
-/usr/bin/open "$PWD/macos/build/Build/Products/Debug/Codescribe.app"
+/usr/bin/open "$PWD/macos/build/Build/Products/Debug/X9bus.app"
 ```
 
 Native dev/test launches must open the **app bundle through LaunchServices**.
 `make start` also uses LaunchServices but selects by app name first; use the
 explicit path above when choosing Debug or a particular build. Directly
-executing `Codescribe.app/Contents/MacOS/Codescribe` from a terminal or agent
+executing `X9bus.app/Contents/MacOS/Codescribe` from a terminal or agent
 host is unsupported: TCC may attribute Speech Recognition to that host and
 abort even though the app bundle contains the usage description.
 

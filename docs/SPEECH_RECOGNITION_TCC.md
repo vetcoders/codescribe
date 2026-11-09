@@ -8,12 +8,12 @@ Apple live dictation uses `SFSpeechRecognizer` inside the bundled
 Speech Recognition authorization belongs to the **responsible process's TCC
 identity**, not to the data directory or the shell command's executable path.
 
-| Context                                                     | TCC identity                                                                        |
-| ----------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| Release app bundle via LaunchServices                       | `com.vetcoders.codescribe`                                                          |
-| Debug app bundle via LaunchServices                         | `com.vetcoders.codescribe.dev`                                                      |
-| CLI / terminal probes                                       | Normally the terminal/host; not proof of an app grant                               |
-| Direct `Codescribe.app/Contents/MacOS/Codescribe` execution | Unsupported native app startup; may retain the terminal/agent host's responsibility |
+| Context                                                | TCC identity                                                                        |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------- |
+| Release app bundle via LaunchServices                  | `com.vetcoders.codescribe`                                                          |
+| Debug app bundle via LaunchServices                    | `com.vetcoders.codescribe.dev`                                                      |
+| CLI / terminal probes                                  | Normally the terminal/host; not proof of an app grant                               |
+| Direct `X9bus.app/Contents/MacOS/Codescribe` execution | Unsupported native app startup; may retain the terminal/agent host's responsibility |
 
 Granting Speech for the terminal does **not** authorize the app. That is why
 CLI can probe `speech_auth: authorized` while the installed app fails live
@@ -78,7 +78,7 @@ when the selected probe backend needs SFSpeech.
 
 **Responsible process (D1):** headless bridge under Terminal uses the terminal's
 TCC slot unless respawned with `CODESCRIBE_BRIDGE_DISCLAIM` / app identity.
-Product onboarding must grant Speech for **Codescribe.app**, not the shell.
+Product onboarding must grant Speech for **X9bus.app**, not the shell.
 
 ## Product surfaces (grant path)
 

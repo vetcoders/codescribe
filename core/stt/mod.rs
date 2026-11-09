@@ -190,7 +190,7 @@ pub fn preflight_apple_live_ready() -> anyhow::Result<()> {
     }
     if !apple_stt::is_bridge_resolvable() {
         anyhow::bail!(
-            "Apple STT bridge not found. Use the Codescribe.app build (bridge beside the app) \
+            "Apple STT bridge not found. Use the X9bus.app build (bridge beside the app) \
              or set CODESCRIBE_APPLE_STT_BRIDGE to the bridge binary."
         );
     }

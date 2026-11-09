@@ -102,7 +102,7 @@ record "host-os" "INFO" "macOS ${OS_VER} (${OS_BUILD}) · ${XCODE_VER}· SDK ${S
 record "host-repo" "INFO" "${GIT_BRANCH}@${GIT_HEAD}"
 
 APP_BUNDLE=""
-for candidate in "/Applications/Codescribe.app" "$HOME/Applications/Codescribe.app"; do
+for candidate in "/Applications/X9bus.app" "$HOME/Applications/X9bus.app"; do
   [[ -d "$candidate" ]] && { APP_BUNDLE="$candidate"; break; }
 done
 if [[ -n "$APP_BUNDLE" ]]; then
@@ -111,7 +111,7 @@ if [[ -n "$APP_BUNDLE" ]]; then
   APP_RUNNING="$(pgrep -f "$APP_BUNDLE/Contents/MacOS/Codescribe" >/dev/null 2>&1 && echo 'running' || echo 'not running')"
   record "host-app" "INFO" "${APP_BUNDLE} ${APP_SHORT} (${APP_BUILD}), ${APP_RUNNING}"
 else
-  record "host-app" "SKIP" "no installed Codescribe.app found; UI-dependent rows cannot be judged against a build id"
+  record "host-app" "SKIP" "no installed X9bus.app found; UI-dependent rows cannot be judged against a build id"
 fi
 
 # ---------------------------------------------------------------------------

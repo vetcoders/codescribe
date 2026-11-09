@@ -69,8 +69,8 @@ CODESCRIBE_DIST_LICENSE_KEY = $(if $(CODESCRIBE_LICENSE_PUBLIC_KEY_HEX),$(CODESC
 # after codesigning, notarisation and stapling had already been paid for.
 CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE ?= $(firstword $(wildcard $(HOME)/.codescribe/config/dev/keys/sparkle-public.b64 $(HOME)/.vibecrafted/secrets/codescribe/sparkle-public.b64))
 CODESCRIBE_DIST_SPARKLE_KEY = $(if $(SPARKLE_ED_PUBLIC_KEY),$(SPARKLE_ED_PUBLIC_KEY),$(shell cat $(CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE) 2>/dev/null | tr -d '[:space:]'))
-CODESCRIBE_APP_NAME ?= Codescribe
-CODESCRIBE_DISPLAY_NAME ?= Codescribe
+CODESCRIBE_APP_NAME ?= X9bus
+CODESCRIBE_DISPLAY_NAME ?= X9bus
 # SwiftUI app build profile for `make app` / `make app-bindings`
 # (debug|local-release|release). `release` is distribution-only and requires
 # the operator-owned production license verification key.
@@ -94,7 +94,7 @@ CORPUS_REFERENCE_POLICY ?= human
 CORPUS_PROFILES ?= apple-layer0,apple-layer1-inprocess
 CORPUS_RUNS ?= 1
 CORPUS_MAX_RECORDINGS ?= 1
-CORPUS_APPLE_BRIDGE ?= /Applications/Codescribe.app/Contents/MacOS/codescribe-stt-bridge
+CORPUS_APPLE_BRIDGE ?= /Applications/X9bus.app/Contents/MacOS/codescribe-stt-bridge
 CORPUS_RUN_ID ?= $(shell date +%Y%m%d-%H%M%S)
 CORPUS_OUT ?= $(HOME)/.vibecrafted/artifacts/vetcoders/codescribe/$(shell date +%Y_%m%d)/reports/corpus-$(CORPUS_RUN_ID)
 
@@ -145,7 +145,7 @@ release-codescribe-embedded: dist-preflight ensure-models
 # Full verified pipeline: cargo (ffi dylib) → uniffi-bindgen → xcodegen → xcodebuild.
 # `app-bindings` stops after xcodegen (no Xcode needed) for fast Rust-side iteration.
 app:
-	@echo "Building Codescribe.app (SwiftUI, PROFILE=$(PROFILE))..."
+	@echo "Building X9bus.app (SwiftUI, PROFILE=$(PROFILE))..."
 	@./scripts/build-app.sh $(PROFILE)
 
 app-bindings:
@@ -225,7 +225,7 @@ RESTART_IDLE_WAIT ?= 21600
 RESTART_IDLE_INTERVAL ?= 30
 RESTART_AFTER_INSTALL ?= 1
 INSTALL_ANNOUNCE ?= 1
-RESTART_IF_IDLE = ./scripts/restart-if-idle --newer-only --wait $(RESTART_IDLE_WAIT) --interval $(RESTART_IDLE_INTERVAL) --announce --detach
+RESTART_IF_IDLE = ./scripts/restart-if-idle --app "/Applications/$(CODESCRIBE_APP_NAME).app" --newer-only --wait $(RESTART_IDLE_WAIT) --interval $(RESTART_IDLE_INTERVAL) --announce --detach
 
 .PHONY: restart-if-idle
 restart-if-idle:
@@ -252,7 +252,7 @@ install-app: install-voice-lab
 	  CODESCRIBE_INSTALL_LANE=1 \
 	  SPARKLE_ED_PUBLIC_KEY="$$SPARKLE" \
 	  $(MAKE) --no-print-directory app PROFILE=local-release
-	@APP_SRC="macos/build/Build/Products/Release/Codescribe.app"; \
+	@APP_SRC="macos/build/Build/Products/Release/X9bus.app"; \
 	if [ ! -d "$$APP_SRC" ]; then \
 		echo "Build product missing: $$APP_SRC — 'make app PROFILE=local-release' did not produce the app."; \
 		exit 1; \
@@ -292,13 +292,12 @@ install-app: install-voice-lab
 # ============================================================================
 
 start:
-	@open -a "$(CODESCRIBE_APP_NAME)" 2>/dev/null \
-		|| open "/Applications/$(CODESCRIBE_APP_NAME).app" 2>/dev/null \
+	@open "/Applications/$(CODESCRIBE_APP_NAME).app" 2>/dev/null \
 		|| { echo "$(CODESCRIBE_APP_NAME).app not found — build it with 'make app' or install with 'make install-app'."; exit 1; }
 	@echo "$(CODESCRIBE_APP_NAME) launched"
 
 stop:
-	@pkill -x "$(CODESCRIBE_APP_NAME)" 2>/dev/null || true
+	@./scripts/restart-if-idle --app "/Applications/$(CODESCRIBE_APP_NAME).app" --quit-only
 	@rm -f ~/.codescribe/codescribe.pid 2>/dev/null || true
 	@echo "Stopped"
 
@@ -307,8 +306,7 @@ restart: stop
 	@$(MAKE) start
 
 status:
-	@echo "=== Codescribe Status ==="
-	@pgrep -fl codescribe 2>/dev/null || echo "Not running"
+	@bin/control-codescribe dev --json
 
 logs:
 	@tail -50 /tmp/codescribe.log 2>/dev/null || echo "No logs"
@@ -719,7 +717,7 @@ $(ENGINE_BRIDGE): core/stt/apple_stt/codescribe-stt-bridge.swift core/stt/apple_
 	@# TCC attributes a privacy prompt to a BUNDLE, not to a loose executable: an
 	@# embedded __info_plist alone still aborts the process. Mirroring the binary
 	@# into a minimal .app gives it a bundle identity, so `make engine-auth` can
-	@# raise the dialog. Inside Codescribe.app the bridge inherits the app grant
+	@# raise the dialog. Inside X9bus.app the bridge inherits the app grant
 	@# and this wrapper is unused.
 	@mkdir -p $(ENGINE_BRIDGE_APP)/Contents/MacOS
 	@cp core/stt/apple_stt/bridge-Info.plist $(ENGINE_BRIDGE_APP)/Contents/Info.plist
@@ -729,7 +727,7 @@ $(ENGINE_BRIDGE): core/stt/apple_stt/codescribe-stt-bridge.swift core/stt/apple_
 
 # One-time: raise the macOS Speech Recognition dialog for the standalone bridge.
 # Needed before `make test-engine-apple` or scripts/e2e-blackhole-dictation.sh
-# when the bridge runs outside Codescribe.app (inside the app it inherits the
+# when the bridge runs outside X9bus.app (inside the app it inherits the
 # app's grant).
 .PHONY: engine-auth
 engine-auth: $(ENGINE_BRIDGE)

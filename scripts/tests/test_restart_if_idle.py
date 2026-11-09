@@ -25,7 +25,7 @@ class RestartIfIdleTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         # main() resolves --app; /var/folders resolves under /private.
         self.root = Path(self.temporary.name).resolve()
-        self.app = self.root / "Codescribe.app"
+        self.app = self.root / "X9bus.app"
         self.handshakes = self.root / "restart-if-idle"
         self.handshakes.mkdir()
         self.main = self.app / "Contents/MacOS/Codescribe"
@@ -132,6 +132,36 @@ class RestartIfIdleTests(unittest.TestCase):
         self.assertTrue(result["signature_verified"])
         self.assertEqual(result["commit"], "expected")
         self.assertFalse(any("osascript" in str(call) or "kill" in str(call) for call in self.calls))
+
+    def test_bundle_migration_requests_old_owner_and_launches_x9bus(self):
+        old_app = self.app.with_name("Codescribe.app")
+        path = self.handshakes / "123.ready.json"
+        ready = json.loads(path.read_text())
+        ready["bundle"] = str(old_app)
+        path.write_text(json.dumps(ready))
+        self.stale_pids = {123}
+        with patch.object(restart, "run", self.run_command):
+            result = restart.restart(self.app, self.handshakes, 0.01, False, newer_only=True)
+        self.assertEqual(result["status"], "restarted")
+        opens = [call for call in self.calls if Path(call[0]).name == "open"]
+        self.assertEqual(opens[0][3], str(old_app))
+        self.assertEqual(opens[1][-1], str(self.app))
+
+    def test_two_live_bundle_owners_refuse_migration_without_request(self):
+        self.running.add(789)
+        self.publish_ready(789, "legacy-generation")
+        path = self.handshakes / "789.ready.json"
+        ready = json.loads(path.read_text())
+        ready["bundle"] = str(self.app.with_name("Codescribe.app"))
+        path.write_text(json.dumps(ready))
+        with self.assertRaisesRegex(restart.Refusal, "ambiguous"):
+            self.invoke()
+        self.assertEqual([Path(call[0]).name for call in self.calls], ["pgrep"])
+
+    def test_old_bundle_on_disk_without_live_handshake_does_not_block_current(self):
+        self.app.with_name("Codescribe.app").mkdir()
+        code, result, _ = self.invoke_main("--newer-only")
+        self.assertEqual((code, result["status"]), (0, "current"))
 
     def test_stale_loaded_payload_is_not_a_successful_restart(self):
         self.loaded_is_current = False

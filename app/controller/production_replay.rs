@@ -871,7 +871,7 @@ mod tests {
 
         if std::env::var_os("CODESCRIBE_APPLE_STT_BRIDGE").is_none() {
             let installed =
-                Path::new("/Applications/Codescribe.app/Contents/MacOS/codescribe-stt-bridge");
+                Path::new("/Applications/X9bus.app/Contents/MacOS/codescribe-stt-bridge");
             if installed.is_file() {
                 unsafe {
                     std::env::set_var("CODESCRIBE_APPLE_STT_BRIDGE", installed);
@@ -1100,7 +1100,7 @@ mod tests {
     async fn forensic_saved_pcm_produces_authenticated_projection() {
         if std::env::var_os("CODESCRIBE_APPLE_STT_BRIDGE").is_none() {
             let installed =
-                Path::new("/Applications/Codescribe.app/Contents/MacOS/codescribe-stt-bridge");
+                Path::new("/Applications/X9bus.app/Contents/MacOS/codescribe-stt-bridge");
             if installed.is_file() {
                 unsafe {
                     std::env::set_var("CODESCRIBE_APPLE_STT_BRIDGE", installed);

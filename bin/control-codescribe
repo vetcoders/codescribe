@@ -3,7 +3,7 @@
 
 Commands:
   doctor                          Verify local toolchains, hooks, env registry, and gates
-  dev                             Verify running Codescribe.app process or live Voice Lab loopback
+  dev                             Verify running X9bus.app process or live Voice Lab loopback
   login                           Verify local ~/.codescribe bus bridge and settings.json state
   request METHOD /path [options]  Send real loopback HTTP request to Voice Lab (--contains, --dump)
   execute [--code-file <path>]    Run a local verification fixture or hermetic contract suite
@@ -28,7 +28,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_APP = Path("/Applications/Codescribe.app")
+DEFAULT_APP = Path("/Applications/X9bus.app")
 DEFAULT_RESTART_ROOT = Path.home() / ".codescribe/agent-bridge/runtime/restart-if-idle"
 
 SURFACES: dict[str, dict[str, str]] = {
@@ -569,7 +569,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_doc.add_argument("--json", action="store_true")
     p_doc.set_defaults(func=cmd_doctor)
 
-    p_dev = sub.add_parser("dev", help="Verify running Codescribe.app or live Voice Lab status")
+    p_dev = sub.add_parser("dev", help="Verify running X9bus.app or live Voice Lab status")
     p_dev.add_argument("--json", action="store_true")
     p_dev.set_defaults(func=cmd_dev)
 

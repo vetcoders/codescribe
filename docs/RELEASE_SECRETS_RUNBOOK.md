@@ -319,7 +319,7 @@ app from the mounted volume the way a user does, then let the idle restart
 swap the running application:
 
 ```bash
-rsync -a --delete "/Volumes/<verified-rehearsal-volume>/Codescribe.app/" /Applications/Codescribe.app/
+rsync -a --delete "/Volumes/<verified-rehearsal-volume>/X9bus.app/" /Applications/X9bus.app/
 make restart-if-idle
 ```
 

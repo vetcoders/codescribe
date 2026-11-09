@@ -175,7 +175,7 @@ dispatchMain()
 ///
 /// Gated by `CODESCRIBE_BRIDGE_DISCLAIM=1` (set by `make engine-auth` /
 /// `test-engine-apple` / the BlackHole harness). The production path — bridge
-/// spawned by Codescribe.app — must NOT disclaim: there the bridge inherits
+/// spawned by X9bus.app — must NOT disclaim: there the bridge inherits
 /// the app's Speech Recognition grant, which is the one users actually see.
 private func respawnSelfResponsibleIfRequested() {
     let env = ProcessInfo.processInfo.environment

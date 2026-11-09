@@ -36,8 +36,8 @@ SH
 set -eu
 [[ "$*" == 'app PROFILE=release' ]] || exit 91
 [[ "${SCENARIO:-}" != build-failure ]] || exit 41
-mkdir -p "$FIXTURE/macos/build/Build/Products/Release/Codescribe.app"
-payload="$FIXTURE/macos/build/Build/Products/Release/Codescribe.app/Contents/Resources/agent-bridge"
+mkdir -p "$FIXTURE/macos/build/Build/Products/Release/X9bus.app"
+payload="$FIXTURE/macos/build/Build/Products/Release/X9bus.app/Contents/Resources/agent-bridge"
 mkdir -p "$payload/bin"
 printf 'fixture publisher\n' > "$payload/bin/codescribe"
 chmod +x "$payload/bin/codescribe"
@@ -66,7 +66,7 @@ set -eu
 destination="${!#}"
 while [[ $# -gt 0 ]]; do
   if [[ "$1" == -srcfolder ]]; then
-    [[ -f "$2/Codescribe.app/.notary-stapled" ]] || exit 93
+    [[ -f "$2/X9bus.app/.notary-stapled" ]] || exit 93
   fi
   shift
 done

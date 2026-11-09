@@ -27,6 +27,7 @@ packages:
 targets:
   Codescribe:
     type: application
+    productName: X9bus
     platform: macOS
     sources: [Codescribe]
     dependencies:
@@ -37,15 +38,9 @@ targets:
     info:
       path: Codescribe/Info.plist
       properties:
-        # Technical bundle name: matches the on-disk bundle (Codescribe.app),
-        # the executable and every script that looks for them. The visible
-        # product name is x9bus: InfoPlist.xcstrings localizes both keys, and
-        # LSHasLocalizedDisplayName lets Finder, Dock, the menu bar app menu and
-        # System Settings show it. LaunchServices uses the localized name only
-        # while the raw CFBundleDisplayName equals the bundle's file name, so
-        # this value changes together with the bundle path, never alone.
-        CFBundleDisplayName: Codescribe
-        CFBundleName: Codescribe
+        # Product, physical bundle and localized system name agree.
+        CFBundleDisplayName: X9bus
+        CFBundleName: X9bus
         LSHasLocalizedDisplayName: true
         CFBundleDevelopmentRegion: en
         CFBundleLocalizations:
@@ -90,6 +85,10 @@ targets:
         NSScreenCaptureUsageDescription: "x9bus captures the screen when you ask the assistant to look at what is currently on screen."
     settings:
       base:
+        PRODUCT_NAME: X9bus
+        # Keep process identity and Swift imports stable across the bundle move.
+        EXECUTABLE_NAME: Codescribe
+        PRODUCT_MODULE_NAME: Codescribe
         # Dock/app icon — AppIcon.appiconset in Codescribe/Assets.xcassets.
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # Build-provenance defaults for bare `xcodebuild` / Xcode runs; the
@@ -156,6 +155,7 @@ targets:
       - target: Codescribe
     settings:
       base:
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/X9bus.app/Contents/MacOS/Codescribe
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: 6.0
         SWIFT_STRICT_CONCURRENCY: complete

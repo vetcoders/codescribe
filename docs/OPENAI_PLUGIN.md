@@ -10,7 +10,7 @@ existing owners. There is no new agent runner or microphone.
 
 Use the matching Codescribe BUS package. For a source build, `make install-bus`
 stages and installs the complete managed payload without replacing or restarting
-Codescribe.app or existing followers. It also materializes the portable plugin
+X9bus.app or existing followers. It also materializes the portable plugin
 with its Python server dependencies and local marketplace. Python 3.9+ and the
 Codex CLI are prerequisites; the app's canonical Rust publisher must be installed.
 

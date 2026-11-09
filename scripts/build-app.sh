@@ -12,7 +12,7 @@
 #   2. install_name_tool -id @rpath/... -> make the dylib relocatable
 #   3. uniffi-bindgen generate          -> Swift bindings into macos/Codescribe/Bridge
 #   4. xcodegen generate                -> macos/Codescribe.xcodeproj + Info.plist
-#   5. xcodebuild                        -> Codescribe.app
+#   5. xcodebuild                        -> X9bus.app
 #   6. embed runtime artifacts so the bundle is self-contained
 #   7. sign with a stable identifier so macOS TCC grants survive rebuilds
 #
@@ -337,6 +337,7 @@ if [[ "${SKIP_XCODEBUILD:-0}" != "1" \
 fi
 
 SCHEME="Codescribe"
+APP_BUNDLE_NAME="X9bus"
 BRIDGE_DIR="macos/Codescribe/Bridge"
 DYLIB="$TARGET_DIR/libcodescribe_ffi.dylib"
 BINDGEN="$TARGET_DIR/uniffi-bindgen"
@@ -508,8 +509,8 @@ if ! run_app_xcodebuild > >(tee "$XCODEBUILD_LOG") 2>&1; then
 fi
 rm -f "$XCODEBUILD_LOG"
 
-APP="$DERIVED/Build/Products/$CONFIG/$SCHEME.app"
-echo "==> [6/7] Embedding runtime artifacts into $SCHEME.app"
+APP="$DERIVED/Build/Products/$CONFIG/$APP_BUNDLE_NAME.app"
+echo "==> [6/7] Embedding runtime artifacts into $APP_BUNDLE_NAME.app"
 FRAMEWORKS="$APP/Contents/Frameworks"
 MACOS_DIR="$APP/Contents/MacOS"
 mkdir -p "$FRAMEWORKS" "$MACOS_DIR"
@@ -606,7 +607,7 @@ if swiftc -O -target "$STT_BRIDGE_TARGET" -o "$STT_BRIDGE_BIN" "$STT_BRIDGE_SRC"
   STT_BRIDGE_BUNDLED=1
 else
   echo "warning: Apple STT bridge helper skipped; this SDK may not include SpeechAnalyzer/SpeechTranscriber." >&2
-  echo "warning: Codescribe.app will build without the bundled helper and use runtime STT fallback resolution." >&2
+  echo "warning: X9bus.app will build without the bundled helper and use runtime STT fallback resolution." >&2
 fi
 
 # Install/release lanes only (`make install-app`, scripts/build-dmg.sh set
@@ -670,10 +671,10 @@ else
   codesign --force --sign - --identifier "$BUNDLE_ID.publisher" "$AGENT_BRIDGE_BUNDLE_DIR/bin/codescribe"
 fi
 if [ -n "$SIGN_ID" ] && [ "$SIGN_ID" != "-" ]; then
-  echo "==> [7/7] Signing $SCHEME.app with stable identity: $SIGN_ID"
+  echo "==> [7/7] Signing $APP_BUNDLE_NAME.app with stable identity: $SIGN_ID"
   sign --force --deep --options runtime --timestamp --entitlements "$ENTITLEMENTS_PATH" --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
 else
-  echo "==> [7/7] Ad-hoc signing $SCHEME.app (TCC re-grants per build)"
+  echo "==> [7/7] Ad-hoc signing $APP_BUNDLE_NAME.app (TCC re-grants per build)"
   codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$APP"
 fi
 python3 "$REPO_ROOT/scripts/lib/refresh-agent-publisher-manifest.py" "$AGENT_BRIDGE_BUNDLE_DIR"

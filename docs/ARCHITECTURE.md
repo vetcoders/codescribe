@@ -767,7 +767,7 @@ weights, and must pass config plus safetensors-header checks proving that it is
 not quantized. Q8 has no runtime fallback path.
 
 MiniLM resolution: `CODESCRIBE_EMBEDDER_PATH`, then
-`Codescribe.app/Contents/Resources/models/embedder`, then the configured/default
+`X9bus.app/Contents/Resources/models/embedder`, then the configured/default
 Hugging Face cache snapshot. `CODESCRIBE_EMBED_EMBEDDER=1` is the explicit
 binary-embed escape hatch.
 

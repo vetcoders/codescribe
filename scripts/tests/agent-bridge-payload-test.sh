@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
-PAYLOAD="$WORKDIR/Codescribe.app/Contents/Resources/agent-bridge"
+PAYLOAD="$WORKDIR/X9bus.app/Contents/Resources/agent-bridge"
 
 "$ROOT/scripts/build-app.sh" --stage-agent-bridge "$PAYLOAD" 9.8.7
 FIRST_MANIFEST="$(shasum -a 256 "$PAYLOAD/manifest.json" | awk '{print $1}')"
@@ -46,7 +46,7 @@ expected = {
 expected.add("bin/bus-demux.py")
 expected.update({"bin/cs-bus", "bin/cs-say", "bin/cs-junie", "bin/bus-mcp.py",
                  "bin/bus-mcp-agent.py", "bin/bus-mcp-events.py", "bin/bus-mcp-runtime.py",
-                 "bin/bus-mcp-key-store.py"})
+                 "bin/bus-mcp-key-store.py", "bin/bus-mcp-sessions.py"})
 expected.update({
     "plugins/.claude-plugin/marketplace.json",
     "plugins/codescribe/.claude-plugin/plugin.json",
@@ -56,12 +56,25 @@ expected.update({
     "plugins/codescribe/hooks/session.py",
     "plugins/codescribe/hooks/pre/codescribe-omp.ts",
     "plugins/codescribe/skills/codescribe/SKILL.md",
+    "plugins/.agents/plugins/marketplace.json",
+    "plugins/codescribe/plugin.json",
+    "plugins/codescribe/mcp.json",
+    "plugins/codescribe/hooks/codex.json",
+    "plugins/codescribe/scripts/openai.py",
+    "plugins/codescribe/server/manifest.json",
+})
+expected.update({
+    "plugins/codescribe/server/" + name for name in (
+        "bus-demux.py", "cs-bus", "cs-say", "cs-junie", "bus-mcp.py",
+        "bus-mcp-agent.py", "bus-mcp-events.py", "bus-mcp-runtime.py",
+        "bus-mcp-key-store.py", "bus-mcp-sessions.py",
+    )
 })
 listed = {entry["path"] for entry in manifest["files"]}
 actual = {
     path.relative_to(payload).as_posix()
     for path in payload.rglob("*")
-    if path.is_file() and path.name != "manifest.json"
+    if path.is_file() and path != payload / "manifest.json"
 }
 assert listed == expected == actual, (listed ^ expected, actual ^ expected)
 
@@ -91,7 +104,7 @@ mkdir -p "$FAKE_ROOT/scripts" "$FAKE_ROOT/skills/codescribe"
 cp "$ROOT/scripts/build-app.sh" "$FAKE_ROOT/scripts/build-app.sh"
 cp "$ROOT/scripts/bus-demux.py" "$FAKE_ROOT/scripts/bus-demux.py"
 cp "$ROOT/scripts/cs-bus" "$ROOT/scripts/cs-say" "$ROOT/scripts/cs-junie" "$ROOT/scripts/bus-mcp.py" "$FAKE_ROOT/scripts/"
-cp "$ROOT/scripts/bus-mcp-agent.py" "$ROOT/scripts/bus-mcp-events.py" "$ROOT/scripts/bus-mcp-runtime.py" "$ROOT/scripts/bus-mcp-key-store.py" "$FAKE_ROOT/scripts/"
+cp "$ROOT/scripts/bus-mcp-agent.py" "$ROOT/scripts/bus-mcp-events.py" "$ROOT/scripts/bus-mcp-runtime.py" "$ROOT/scripts/bus-mcp-key-store.py" "$ROOT/scripts/bus-mcp-sessions.py" "$FAKE_ROOT/scripts/"
 cp -R "$ROOT/plugins" "$FAKE_ROOT/plugins"
 cp "$ROOT/skills/codescribe/SKILL.md" "$FAKE_ROOT/skills/codescribe/SKILL.md"
 if "$FAKE_ROOT/scripts/build-app.sh" --stage-agent-bridge "$FAKE_ROOT" 9.8.7 \

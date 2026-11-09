@@ -4,7 +4,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-APP_NAME="${CODESCRIBE_APP_NAME:-Codescribe}"
+APP_NAME="${CODESCRIBE_APP_NAME:-X9bus}"
 DISPLAY_NAME="${CODESCRIBE_DISPLAY_NAME:-$APP_NAME}"
 BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-com.vetcoders.codescribe}"
 MIN_MACOS="${CODESCRIBE_MIN_MACOS:-}"

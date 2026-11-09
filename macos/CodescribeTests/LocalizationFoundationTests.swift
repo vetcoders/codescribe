@@ -7,7 +7,7 @@ import XCTest
 /// development language, and catalog-resolved copy reaches a lookup.
 /// Contract: docs/LOCALIZATION.md.
 final class LocalizationFoundationTests: XCTestCase {
-  /// The test bundle is hosted by the app, so `Bundle.main` is Codescribe.app.
+  /// The test bundle is hosted by the app, so `Bundle.main` is X9bus.app.
   private let app = Bundle.main
 
   func testEnglishIsTheDevelopmentLanguage() {
@@ -35,16 +35,17 @@ final class LocalizationFoundationTests: XCTestCase {
     }
   }
 
-  /// The product is x9bus on every system surface, while the bundle keeps its
-  /// technical name: LaunchServices shows the localized display name only
-  /// while the raw CFBundleDisplayName equals the bundle's file name.
-  func testProductNameIsLocalizedOverTheTechnicalBundleName() throws {
+  /// The physical product and every localized system name agree.
+  func testProductNameMatchesThePhysicalBundle() throws {
     let localized = try XCTUnwrap(app.localizedInfoDictionary)
-    XCTAssertEqual(localized["CFBundleDisplayName"] as? String, "x9bus")
-    XCTAssertEqual(localized["CFBundleName"] as? String, "x9bus")
-    XCTAssertEqual(app.infoDictionary?["CFBundleDisplayName"] as? String, "Codescribe")
-    XCTAssertEqual(app.infoDictionary?["CFBundleName"] as? String, "Codescribe")
-    XCTAssertEqual(app.infoDictionary?["LSHasLocalizedDisplayName"] as? Bool, true)
+    XCTAssertEqual(localized["CFBundleDisplayName"] as? String, "X9bus")
+    XCTAssertEqual(localized["CFBundleName"] as? String, "X9bus")
+    XCTAssertEqual(app.infoDictionary?["CFBundleDisplayName"] as? String, "X9bus")
+    XCTAssertEqual(app.infoDictionary?["CFBundleName"] as? String, "X9bus")
+    XCTAssertEqual(app.bundleURL.lastPathComponent, "X9bus.app")
+    XCTAssertEqual(app.infoDictionary?["CFBundleExecutable"] as? String, "Codescribe")
+    XCTAssertTrue(
+      ["com.vetcoders.codescribe", "com.vetcoders.codescribe.dev"].contains(app.bundleIdentifier ?? ""))
   }
 
   /// Counted phrases pick their noun in the catalog, never in code (R4).

@@ -541,7 +541,7 @@ fn keychain_disabled_by_signals(disable_keychain: bool, data_dir_set: bool, ci_s
 ///
 /// This is the harness shape every other signal in `is_test_env` misses, and missing it is
 /// not free. `make test-swift` hosts the tests inside the app itself, so the executable is
-/// `Codescribe.app/Contents/MacOS/Codescribe` (not `target/**/deps/*`) and libtest never
+/// `X9bus.app/Contents/MacOS/Codescribe` (not `target/**/deps/*`) and libtest never
 /// runs, so `RUST_TEST_THREADS` is unset. The core therefore classified a test run as
 /// production and issued real Keychain calls from a binary whose ad-hoc signature changes on
 /// every rebuild, so macOS re-evaluated the item ACL instead of reusing a cached decision.
@@ -891,7 +891,7 @@ mod tests {
             );
         }
         for shipped in [
-            "/Applications/Codescribe.app/Contents/MacOS/Codescribe",
+            "/Applications/X9bus.app/Contents/MacOS/Codescribe",
             "/repo/target/debug/codescribe",
             "/usr/local/bin/codescribe",
             "/repo/deps/codescribe",

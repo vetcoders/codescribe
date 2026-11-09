@@ -34,7 +34,7 @@ There are three distinct operations:
 
 - **Calibration handoff:** the agent plays a file; the Founder clicks calibration
   in Settings. Do not click native Start or Stop on their behalf.
-- **Native acceptance:** Codescribe.app Start → file playback → Stop → terminal
+- **Native acceptance:** X9bus.app Start → file playback → Stop → terminal
   event and actual delivery. This is the required app test.
 - **Engine harness:** `scripts/e2e-blackhole-dictation.sh` runs Cargo capture tests.
   It does not prove the installed app, overlay or native delivery works.

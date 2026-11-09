@@ -410,7 +410,7 @@ mod tests {
     #[test]
     fn app_bundle_detection_matches_bundle_layout() {
         assert!(executable_is_app_bundle(std::path::Path::new(
-            "/Applications/Codescribe.app/Contents/MacOS/codescribe"
+            "/Applications/X9bus.app/Contents/MacOS/codescribe"
         )));
         assert!(!executable_is_app_bundle(std::path::Path::new(
             "/Users/tester/.cargo/bin/codescribe"

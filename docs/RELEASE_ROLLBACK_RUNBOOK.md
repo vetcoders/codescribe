@@ -84,10 +84,10 @@ If the defect in `vX.Y.Z` aborts on launch before Sparkle's updater initializes:
 
 1. User data (`~/.codescribe/config/settings.json`, `~/.codescribe/agent-bridge/`,
    history, and custom lexicon) and macOS Keychain credentials live outside
-   `/Applications/Codescribe.app` and remain intact across bundle replacement.
+   `/Applications/X9bus.app` and remain intact across bundle replacement.
 2. Direct affected users to download `Codescribe_vX.Y.(Z+1).dmg` (or
    `vX.Y.(Z-1)`) from `https://github.com/vetcoders/codescribe/releases/latest`
-   and drag `Codescribe.app` into `/Applications` (replacing the broken bundle).
+   and drag `X9bus.app` into `/Applications` (replacing the broken bundle).
 3. Verify the recovered local installation:
    ```sh
    bin/control-codescribe health --sha <expected-commit-sha> --json
