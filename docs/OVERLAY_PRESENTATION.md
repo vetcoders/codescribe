@@ -16,6 +16,8 @@ capture temporarily hides that owner and restores its original visibility, so
 the bitmap cannot retain an old-sized canvas and its rounded corners. A separate
 instance of the same backdrop follows the preview's current bounds, including
 newly exposed space, with the source's appearance, tint and accessibility policy.
+Reduce Transparency and Increase Contrast remove the native sampling view;
+the opaque veil remains, rather than leaving a hidden material in the hierarchy.
 The foreground bitmap stays at its original pixel size, anchored top-left below
 the header and clipped when smaller. No text stretches and no Markdown layout
 runs at pointer frequency. Each buffered foreground repaint clears its dirty

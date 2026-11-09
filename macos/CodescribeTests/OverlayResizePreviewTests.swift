@@ -267,6 +267,11 @@ final class OverlayResizePreviewTests: XCTestCase {
     XCTAssertEqual(resizedBacking.configuration, backing.configuration)
     XCTAssertTrue(
       resizedBacking.configuration.opaque, "Respect the source override, not desktop defaults")
+    if #available(macOS 26, *) {
+      XCTAssertFalse(descendants(resizedBacking).contains { $0 is NSGlassEffectView })
+    } else {
+      XCTAssertFalse(descendants(resizedBacking).contains { $0 is NSVisualEffectView })
+    }
     // Verify the complete native backdrop owner. A flattened render of the
     // whole AppKit tree replays foreground drawing into a shared export context;
     // it is not a WindowServer-composition oracle. Foreground alpha/painting

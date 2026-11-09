@@ -110,21 +110,15 @@ final class OverlayCanvasBackdropView: NSView {
   }
 
   private(set) var configuration: Configuration
-  private let material: NSView
+  private var material: NSView?
   private let veil = NSView()
 
   init(configuration: Configuration) {
     self.configuration = configuration
-    if #available(macOS 26, *) {
-      material = OverlayDesktopGlassView()
-    } else {
-      material = OverlayDesktopEffectView()
-    }
     super.init(frame: .zero)
     identifier = NSUserInterfaceItemIdentifier("overlay-canvas-backdrop")
     wantsLayer = true
     veil.wantsLayer = true
-    addSubview(material)
     addSubview(veil)
     applyConfiguration()
   }
@@ -143,7 +137,21 @@ final class OverlayCanvasBackdropView: NSView {
     appearance = NSAppearance(named: value.palette.appearance == .dark ? .darkAqua : .aqua)
     layer?.cornerRadius = value.cornerRadius
     layer?.masksToBounds = true
-    material.isHidden = value.opaque
+    if value.opaque {
+      // Opaque accessibility must remove desktop sampling, not just hide it.
+      material?.removeFromSuperview()
+      material = nil
+    } else if material == nil {
+      let view: NSView
+      if #available(macOS 26, *) {
+        view = OverlayDesktopGlassView()
+      } else {
+        view = OverlayDesktopEffectView()
+      }
+      material = view
+      addSubview(view, positioned: .below, relativeTo: veil)
+    }
+    material?.appearance = appearance
     veil.isHidden = !value.opaque && value.role == .chrome
     veil.layer?.backgroundColor =
       (value.opaque
@@ -177,7 +185,7 @@ final class OverlayCanvasBackdropView: NSView {
   }
 
   private func sizeLayers() {
-    material.frame = bounds
+    material?.frame = bounds
     veil.frame = bounds
   }
 
