@@ -55,42 +55,63 @@ final class OverlayResizePreview {
     sources = windows.map { ($0, $0.alphaValue, $0.ignoresMouseEvents) }
     self.freezesMouse = freezesMouse
     self.restore = restore
+    var backdropConfiguration: OverlayCanvasBackdropView.Configuration?
     let headers: [OverlayResizePreviewView.Header?] = windows.map { window in
       guard let view = window.contentView else { return nil }
+      let backdrops = capturesContent ? OverlayCanvasBackdropView.all(in: view) : []
+      if backdropConfiguration == nil { backdropConfiguration = backdrops.first?.configuration }
+      let visibility = backdrops.map { ($0, $0.isHidden) }
+      for backdrop in backdrops { backdrop.isHidden = true }
+      defer { for (backdrop, hidden) in visibility { backdrop.isHidden = hidden } }
       let height = min(headerHeight, view.bounds.height)
       let rect = NSRect(
         x: view.bounds.minX,
         y: view.isFlipped ? view.bounds.minY : view.bounds.maxY - height,
         width: view.bounds.width, height: height)
+      let captureRect = capturesContent ? view.bounds : rect
       guard !rect.isEmpty,
-        let bitmap = view.bitmapImageRepForCachingDisplay(in: rect)
+        let bitmap = view.bitmapImageRepForCachingDisplay(in: captureRect)
       else { return nil }
-      view.cacheDisplay(in: rect, to: bitmap)
-      guard let image = bitmap.cgImage else { return nil }
+      // Replaying the layer tree separately for header and body also repeats
+      // its CPU blur work. Capture once, then split the frozen pixels.
+      view.cacheDisplay(in: captureRect, to: bitmap)
+      guard let capturedImage = bitmap.cgImage else { return nil }
+      let image: CGImage
+      var frozenContent: NSImage?
+      if capturesContent {
+        let headerPixels = min(
+          capturedImage.height,
+          max(1, Int((CGFloat(capturedImage.height) * height / captureRect.height).rounded())))
+        guard
+          let header = capturedImage.cropping(
+            to: CGRect(
+              x: 0, y: 0, width: CGFloat(capturedImage.width), height: CGFloat(headerPixels)))
+        else { return nil }
+        image = header
+        let bodyHeight = max(0, captureRect.height - height)
+        if bodyHeight > 0,
+          let body = capturedImage.cropping(
+            to: CGRect(
+              x: 0, y: CGFloat(headerPixels), width: CGFloat(capturedImage.width),
+              height: CGFloat(capturedImage.height - headerPixels)))
+        {
+          frozenContent = NSImage(
+            cgImage: body, size: NSSize(width: captureRect.width, height: bodyHeight))
+        }
+      } else {
+        image = capturedImage
+      }
       let anchor = OverlayResizeAnchorView.find(in: view)
       // The one-point cut is in the existing gap after the name/spacer, so
       // only empty chrome stretches; labels and right controls stay 1:1.
       let splitX = anchor.map { $0.convert($0.bounds, to: view).maxX - rect.minX + 1 }
-      var frozenContent: NSImage?
-      if capturesContent {
-        let body = NSRect(
-          x: view.bounds.minX,
-          y: view.isFlipped ? rect.maxY : view.bounds.minY,
-          width: view.bounds.width, height: max(0, view.bounds.height - height))
-        if !body.isEmpty, let bitmap = view.bitmapImageRepForCachingDisplay(in: body) {
-          view.cacheDisplay(in: body, to: bitmap)
-          if let image = bitmap.cgImage {
-            frozenContent = NSImage(cgImage: image, size: body.size)
-          }
-        }
-      }
       return OverlayResizePreviewView.Header(
         image: NSImage(cgImage: image, size: rect.size),
         splitX: min(rect.width, max(0, splitX ?? rect.width)), content: frozenContent)
     }
     drawing = OverlayResizePreviewView(
       headers: headers, group: group, headerHeight: headerHeight, palette: palette,
-      cornerRadius: cornerRadius)
+      cornerRadius: cornerRadius, paintsCanvas: !capturesContent || group)
     panel = NSPanel(
       contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
       backing: .buffered, defer: false)
@@ -104,7 +125,19 @@ final class OverlayResizePreview {
       windows.map(\.level).max(by: { $0.rawValue < $1.rawValue })
       ?? OverlayIntercomPanel.passiveLevel
     panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-    panel.contentView = drawing
+    if capturesContent && !group {
+      let configuration =
+        backdropConfiguration
+        ?? .init(
+          palette: palette, cornerRadius: cornerRadius, role: .readingCanvas,
+          opaque: NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+            || NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast,
+          tintColor: nil)
+      panel.contentView = OverlayResizePreviewContainer(
+        drawing: drawing, backdrop: OverlayCanvasBackdropView(configuration: configuration))
+    } else {
+      panel.contentView = drawing
+    }
     for source in sources {
       if freezesMouse { source.window.ignoresMouseEvents = true }
       source.window.alphaValue = 0
@@ -114,8 +147,11 @@ final class OverlayResizePreview {
   func update(frame: CGRect) {
     guard !finished else { return }
     self.frame = frame
-    panel.setFrame(frame, display: true)
+    // Set both native layers to the new geometry before painting either one.
+    panel.setFrame(frame, display: false)
+    panel.contentView?.layoutSubtreeIfNeeded()
     drawing.needsDisplay = true
+    drawing.displayIfNeeded()
     if !panel.isVisible { panel.orderFrontRegardless() }
   }
 
@@ -134,6 +170,39 @@ final class OverlayResizePreview {
   }
 }
 
+/// Only the native background follows pointer geometry. The foreground keeps
+/// its captured pixels and the real source window/Markdown keeps its frame.
+private final class OverlayResizePreviewContainer: NSView {
+  private let drawing: OverlayResizePreviewView
+  private let backdrop: OverlayCanvasBackdropView
+
+  init(drawing: OverlayResizePreviewView, backdrop: OverlayCanvasBackdropView) {
+    self.drawing = drawing
+    self.backdrop = backdrop
+    super.init(frame: .zero)
+    wantsLayer = true
+    addSubview(backdrop)
+    addSubview(drawing)
+  }
+
+  required init?(coder: NSCoder) { nil }
+
+  override func setFrameSize(_ newSize: NSSize) {
+    super.setFrameSize(newSize)
+    sizeLayers()
+  }
+
+  override func layout() {
+    super.layout()
+    sizeLayers()
+  }
+
+  private func sizeLayers() {
+    backdrop.frame = bounds
+    drawing.frame = bounds
+  }
+}
+
 final class OverlayResizePreviewView: NSView {
   struct Header {
     let image: NSImage
@@ -145,21 +214,29 @@ final class OverlayResizePreviewView: NSView {
   let headerHeight: CGFloat
   let palette: OverlayAppearancePalette
   let cornerRadius: CGFloat
+  let paintsCanvas: Bool
 
   init(
     headers: [Header?], group: Bool, headerHeight: CGFloat,
-    palette: OverlayAppearancePalette, cornerRadius: CGFloat
+    palette: OverlayAppearancePalette, cornerRadius: CGFloat, paintsCanvas: Bool = true
   ) {
     self.headers = headers
     self.group = group
     self.headerHeight = headerHeight
     self.palette = palette
     self.cornerRadius = cornerRadius
+    self.paintsCanvas = paintsCanvas
     super.init(frame: .zero)
+    // Clear only this foreground backing store, never the material below it.
+    wantsLayer = true
   }
   required init?(coder: NSCoder) { return nil }
   override var isOpaque: Bool { false }
   override func draw(_ dirtyRect: NSRect) {
+    // Buffered nonopaque views must replace the old frame, including pixels
+    // exposed by a changed corner/clip. Source-over alpha would retain trails.
+    NSColor.clear.setFill()
+    dirtyRect.fill(using: .copy)
     let count = max(0, headers.count - 1)
     let rowHeight =
       group && count > 0
@@ -172,12 +249,14 @@ final class OverlayResizePreviewView: NSView {
       guard height > 0 else { continue }
       let path = NSBezierPath(
         roundedRect: rect.insetBy(dx: 1, dy: 1), xRadius: cornerRadius, yRadius: cornerRadius)
-      palette.desktopBackground.nsColor.withAlphaComponent(0.92).setFill()
-      path.fill()
-      // The preview edge is chrome, not a voice state.
-      palette.primaryText.nsColor.withAlphaComponent(0.45).setStroke()
-      path.lineWidth = 1
-      path.stroke()
+      if paintsCanvas {
+        // Header-only detached-card feedback retains its existing canvas.
+        palette.desktopBackground.nsColor.withAlphaComponent(0.92).setFill()
+        path.fill()
+        palette.primaryText.nsColor.withAlphaComponent(0.45).setStroke()
+        path.lineWidth = 1
+        path.stroke()
+      }
       if let header {
         NSGraphicsContext.saveGraphicsState()
         path.addClip()

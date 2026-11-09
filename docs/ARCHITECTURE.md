@@ -333,13 +333,17 @@ the floating sidebar or titlebar blocks its view of the scene behind the window.
 In Agent it fills the conversation only; in Settings it fills the detail below
 the titlebar. Neither paints an opaque sheet underneath the header glass.
 
-Agent and Settings share `CSWindowTopHeader`: one top titlebar accessory,
-52 pt high, whose rectangular `NSGlassEffectView.contentView` hosts the actual
-branding and controls. Native window controls and the sidebar toggle remain
-owned by AppKit. Both window owners disable the additional titlebar separator;
+Agent and Settings share `CSWindowTopHeader`: a single passive native-glass
+background spans the header, and a trailing accessory holds the actual branding
+and controls. The background reaches the full window width when the sidebar is
+collapsed while the accessory excludes AppKit's leading controls. They use
+independent bounds and coordinate conversion, so visual coverage cannot reserve
+the native toolbar's pointer region. The glass background alone extends into
+the top safe area; reading canvases do not. Both window owners disable the additional titlebar separator;
 the material retains its native optical edge. See
-[the window glass ADR](ADR/2026-11-08-WINDOW_GLASS_OWNERSHIP.md) for the geometry
-assumptions, attachment diagnostics and revalidation triggers.
+[the glass contract](ADR/2026-11-08-WINDOW_GLASS_OWNERSHIP.md) for the product
+requirements, STOP rule, geometry assumptions, attachment diagnostics and
+optical/performance acceptance. Current geometry is not proof of that acceptance.
 
 - **Width** is a named parameter, not a number per window:
   `CSSidebarWidth.navigation` is 196 / 216 / 300 and both windows use it;
@@ -369,6 +373,29 @@ size their detail floor from the rail's ideal width, because that is the width
 the split view opens it at: Agent is 640 × 440 with a 424 pt conversation
 column beside the 216 pt rail, Settings 880 × 620 with its 664 pt detail
 column.
+
+`AgentWindowChrome` owns the Agent floor through two required minimum
+constraints on its app-owned hosting content view. Width constrains the whole
+split view; height constrains the hosting view's `safeAreaLayoutGuide`, so the
+440 pt readable floor includes the native titlebar allowance in the resulting
+window minimum. A full-size host height of 440 pt alone admitted a physically
+resized window that clipped both columns. Programmatic `setFrame` enlarged
+the fixture and initially concealed that incorrect fitting floor. AppKit ignores
+`minSize` / `contentMinSize` when Auto Layout owns sizing. The production
+`NSHostingController` deliberately keeps `sizingOptions = []` to prevent an
+AppKit display-cycle crash; that protection must not be removed to obtain a
+minimum-size pass. The explicit constraints use the same readable root floor as
+the SwiftUI layout; native titlebar allocation stays with AppKit. The hosting
+view's public safe-area guide expresses that relationship without a fixed
+titlebar height. The window's content-layout guide remains an output rather
+than a second constraint owner. Reapplying
+chrome updates the same identified constraints rather than adding more owners.
+
+Physical-resize acceptance on Silver (2026-11-09): the Founder repeated shrinking
+the Agent window with the sidebar expanded and collapsed in the stable-signed
+`ec605c02f` preview (build 3803) and confirmed that the bottom no longer clips.
+This accepts the Agent bottom-clipping repair; it does not establish acceptance
+of the separate header optics, overlay tone transitions or overlay resize lag.
 
 ### The Settings scale
 

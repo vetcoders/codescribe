@@ -5,15 +5,17 @@ import SwiftUI
 private let windowHeaderLog = Logger(
   subsystem: "com.vetcoders.codescribe", category: "window-header")
 
-/// One real-content glass surface in the existing titlebar band. AppKit owns
-/// the accessory slot and native window controls; the split owns its boundary.
+/// One passive glass surface and one foreground accessory in the same band.
+/// Material coverage never defines the native controls' pointer exclusion.
 struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
   @ViewBuilder let header: Header
 
   func makeCoordinator() -> Coordinator { Coordinator(header: header) }
 
   func makeNSView(context: Context) -> Marker {
-    let marker = Marker()
+    let marker = Marker(frame: .zero)
+    context.coordinator.marker = marker
+    marker.refresh = { [weak owner = context.coordinator] in owner?.updateGeometry() }
     marker.updateWindow = { [weak owner = context.coordinator] window in
       owner?.attach(to: window)
     }
@@ -27,56 +29,75 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
 
   static func dismantleNSView(_ view: Marker, coordinator: Coordinator) {
     view.updateWindow = nil
+    view.refresh = nil
     coordinator.detach()
   }
 
+  /// App-owned background under the native titlebar. It never receives input,
+  /// even where its material extends behind the window buttons and sidebar item.
   final class Marker: NSView {
+    let viewport = NSView()
+    let glass = NSGlassEffectView()
     var updateWindow: ((NSWindow?) -> Void)?
+    var refresh: (() -> Void)?
+
+    override init(frame: NSRect) {
+      super.init(frame: frame)
+      identifier = NSUserInterfaceItemIdentifier("codescribe-header-material-host")
+      clipsToBounds = false
+      viewport.identifier = NSUserInterfaceItemIdentifier("codescribe-header-viewport")
+      viewport.clipsToBounds = true
+      glass.identifier = NSUserInterfaceItemIdentifier("codescribe-header-glass")
+      glass.style = .regular
+      glass.cornerRadius = 0
+      glass.contentView = NSView()
+      viewport.addSubview(glass)
+      addSubview(viewport)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
     override func viewDidMoveToWindow() {
       super.viewDidMoveToWindow()
       updateWindow?(window)
-      // Settings adopts its scene window through HostingWindowReader on the
-      // same turn. Retry after that owner has established full-size content.
       DispatchQueue.main.async { [weak self] in
         guard let self else { return }
         updateWindow?(window)
       }
     }
+
+    override func layout() {
+      super.layout()
+      refresh?()
+    }
+
+    func setVisibleFrame(_ rect: NSRect) {
+      if viewport.frame != rect { viewport.frame = rect }
+      let bleed = CSSpace.sm
+      let material = NSRect(
+        x: -bleed, y: -bleed, width: rect.width + bleed, height: rect.height + bleed)
+      if glass.frame != material { glass.frame = material }
+      if glass.contentView?.frame != glass.bounds { glass.contentView?.frame = glass.bounds }
+    }
+
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
   }
 
-  /// A titlebar accessory's allocated frame excludes the native traffic-light
-  /// margin. Convert the split boundary into this coordinate system instead
-  /// of counting that margin twice. The detail glass reaches the window edge.
+  /// Only real foreground content occupies the trailing native accessory.
+  /// Its public container stays outside AppKit's leading control region.
   final class HeaderHost: NSView {
-    /// Native glass rims belong outside the joined sidebar and content seams.
-    /// This is material bleed, not a painted line or an opaque cover.
-    static var joinedEdgeBleed: CGFloat { CSSpace.sm }
-    let viewport = NSView()
-    let glass = NSGlassEffectView()
     let content: NSHostingView<Header>
-    private let glassContent = NSView()
     var refresh: (() -> Void)?
 
     init(header: Header) {
       content = NSHostingView(rootView: header)
       super.init(frame: .zero)
       identifier = NSUserInterfaceItemIdentifier("codescribe-window-top-header")
-      clipsToBounds = false
-      autoresizingMask = [.width]
-      viewport.identifier = NSUserInterfaceItemIdentifier("codescribe-header-viewport")
-      viewport.clipsToBounds = true
-      glass.identifier = NSUserInterfaceItemIdentifier("codescribe-header-glass")
-      glass.style = .regular
-      glass.cornerRadius = 0
       content.sizingOptions = []
       content.identifier = NSUserInterfaceItemIdentifier("codescribe-header-content")
       content.safeAreaRegions = []
-      content.autoresizingMask = [.width, .minYMargin]
-      glassContent.addSubview(content)
-      glass.contentView = glassContent
-      viewport.addSubview(glass)
-      addSubview(viewport)
+      content.autoresizingMask = [.width, .height]
+      addSubview(content)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -87,20 +108,13 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
     }
 
     func setVisibleFrame(_ rect: NSRect) {
-      if viewport.frame != rect { viewport.frame = rect }
-      let bleed = Self.joinedEdgeBleed
-      let material = NSRect(
-        x: -bleed, y: -bleed, width: rect.width + bleed, height: rect.height + bleed)
-      if glass.frame != material { glass.frame = material }
-      if glassContent.frame != glass.bounds { glassContent.frame = glass.bounds }
-      let controls = NSRect(x: bleed, y: bleed, width: rect.width, height: rect.height)
-      if content.frame != controls { content.frame = controls }
+      if content.frame != rect { content.frame = rect }
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
       let local = convert(point, from: superview)
-      guard viewport.frame.contains(local) else { return nil }
-      return viewport.hitTest(local)
+      guard content.frame.contains(local) else { return nil }
+      return content.hitTest(local)
     }
   }
 
@@ -108,6 +122,7 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
   final class Coordinator: NSObject {
     let accessory = NSTitlebarAccessoryViewController()
     let host: HeaderHost
+    weak var marker: Marker?
     private weak var window: NSWindow?
     private weak var split: NSSplitViewController?
     private var attachmentIssue: String?
@@ -115,7 +130,10 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
     init(header: Header) {
       host = HeaderHost(header: header)
       super.init()
-      accessory.layoutAttribute = .top
+      // A top accessory container spans the native sidebar toggle even when
+      // HeaderHost returns nil there. A trailing slot gives that region back
+      // to AppKit instead of forwarding clicks or changing private views.
+      accessory.layoutAttribute = .right
       // Glass sampling and scroll-edge legibility are separate system effects.
       // Keep scrolled document content on the native soft edge, without adding
       // a custom opacity strip or changing the desktop-sampling material.
@@ -139,12 +157,16 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
       if window !== target {
         detach()
         guard
-          !target.titlebarAccessoryViewControllers.contains(where: { $0.layoutAttribute == .top })
+          !target.titlebarAccessoryViewControllers.contains(where: {
+            $0.layoutAttribute == .top || $0.layoutAttribute == .right
+          })
         else {
-          reportAttachmentIssue("Another top titlebar accessory owns the header slot", error: true)
+          reportAttachmentIssue("Another titlebar accessory owns the header region", error: true)
           return
         }
-        host.frame = NSRect(x: 0, y: 0, width: target.frame.width, height: 52)
+        host.frame = NSRect(
+          x: 0, y: 0, width: max(0, target.frame.width - CSSidebarWidth.navigation.ideal),
+          height: 52)
         target.toolbar?.isVisible = true
         target.addTitlebarAccessoryViewController(accessory)
         window = target
@@ -174,7 +196,7 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
       split = nil
     }
 
-    private func updateGeometry() {
+    func updateGeometry() {
       guard let window else { return }
       // SwiftUI can restore automatic separators while adopting its toolbar.
       // The accessory owns this band, including the absence of a second edge.
@@ -189,28 +211,45 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
             object: split.splitView)
         }
       }
+      // Fullscreen reveal can place native toolbar views in a separate
+      // window. Compare screen-converted frames, never unrelated local spaces.
+      func frameInWindow(_ view: NSView) -> NSRect? {
+        guard let source = view.window else { return nil }
+        return window.convertFromScreen(source.convertToScreen(view.convert(view.bounds, to: nil)))
+      }
       let leading: CGFloat
-      if let sidebar = split?.splitViewItems.first, !sidebar.isCollapsed {
-        let view = sidebar.viewController.view
-        leading = view.convert(view.bounds, to: nil).maxX
+      let materialLeading: CGFloat
+      if let sidebar = split?.splitViewItems.first, !sidebar.isCollapsed,
+        let frame = frameInWindow(sidebar.viewController.view)
+      {
+        leading = frame.maxX
+        materialLeading = frame.maxX
       } else {
         let lights = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
           .compactMap { window.standardWindowButton($0) }
         let controls = lights + (window.toolbar?.items.compactMap(\.view) ?? [])
-        leading =
-          (controls.filter { $0.window === window }
-            .map { $0.convert($0.bounds, to: nil).maxX }.max() ?? 0) + CSSpace.sm
+        leading = (controls.compactMap(frameInWindow).map(\.maxX).max() ?? 0) + CSSpace.sm
+        materialLeading = 0
       }
-      let origin = host.convert(NSPoint.zero, to: nil)
-      let minY = min(0, window.contentLayoutRect.maxY - origin.y)
-      let maxY = max(52, window.frame.height - origin.y)
+      let width = max(0, window.frame.width - leading)
+      if abs(host.frame.width - width) > 0.5 {
+        host.setFrameSize(NSSize(width: width, height: host.frame.height))
+      }
+      guard let source = host.window else { return }
+      let origin = window.convertPoint(
+        fromScreen: source.convertPoint(toScreen: host.convert(NSPoint.zero, to: nil)))
       let rect = NSRect(
-        x: leading - origin.x,
-        y: minY,
-        width: max(0, window.frame.width - leading),
-        height: max(52, maxY - minY)
-      )
+        x: leading - origin.x, y: 0, width: width, height: host.bounds.height)
       host.setVisibleFrame(rect)
+      if let marker, let materialWindow = marker.window {
+        let materialOrigin = window.convertPoint(
+          fromScreen: materialWindow.convertPoint(toScreen: marker.convert(.zero, to: nil)))
+        marker.setVisibleFrame(
+          NSRect(
+            x: materialLeading - materialOrigin.x,
+            y: window.frame.height - host.bounds.height - materialOrigin.y,
+            width: max(0, window.frame.width - materialLeading), height: host.bounds.height))
+      }
     }
 
     @objc private func splitResized(_ notification: Notification) {
@@ -235,6 +274,7 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
         }
       }
       window = nil
+      marker?.setVisibleFrame(.zero)
     }
 
     private static func navigationSplit(in view: NSView) -> NSSplitViewController? {

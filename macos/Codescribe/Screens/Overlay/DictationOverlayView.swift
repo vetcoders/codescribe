@@ -737,7 +737,8 @@ struct DictationOverlayView: View {
   @ViewBuilder private var overlayBody: some View {
     OverlayCanvasSurface(
       palette: palette,
-      glassRole: state.presentationMode == .expanded ? .readingCanvas : .chrome
+      glassRole: state.presentationMode == .expanded ? .readingCanvas : .chrome,
+      readingTopInset: headerHeight
     ) {
       // The rail reads the live transcript (intents, versions, history
       // refusal). Scoped, a capture tick re-renders the rail, not the root.

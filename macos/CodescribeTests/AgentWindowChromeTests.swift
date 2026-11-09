@@ -11,7 +11,81 @@ import XCTest
 @MainActor
 final class AgentWindowChromeTests: XCTestCase {
   private let sidebarKey = "AgentChat.sidebarExpanded.v1"
-  private let panelKey = AgentContextPanelPreference.defaultsKey
+
+  @MainActor
+  private final class FrameMutationProbe: NSObject {
+    var events: [String] = []
+
+    @objc func changed(_ notification: Notification) {
+      guard let view = notification.object as? NSView else { return }
+      events.append("\(view.identifier?.rawValue ?? "unidentified")=\(view.frame)")
+    }
+  }
+
+  /// Bounds stability only. A pass cannot certify compositor pixels or
+  /// pointer-hover drawing; a failure identifies avoidable app-owned churn.
+  func testHeaderFramesStayStableAcrossUpdatesAndWindowMoves() throws {
+    let previous = UserDefaults.standard.object(forKey: sidebarKey)
+    defer { restoreSidebarDefault(previous) }
+    var evidence: [String] = []
+    for expanded in [true, false] {
+      UserDefaults.standard.set(expanded, forKey: sidebarKey)
+      let scale = TextScaleController(key: "AgentWindowChromeTests.frameProbeScale")
+      let root = TextScaleRoot(controller: scale) {
+        AgentChatView(store: AgentChatStore(engine: nil))
+          .environment(\.csReduceTransparencyOverride, false)
+          .environment(\.csContrastOverride, .standard)
+      }
+      let hosting = NSHostingController(rootView: root)
+      hosting.sizingOptions = []
+      let window = AgentWindowChrome.makeWindow(content: hosting)
+      defer {
+        window.orderOut(nil)
+        window.close()
+      }
+      BackgroundTestWindow.present(window)
+      pump(window) {
+        let split = self.splitView(in: window)?.delegate as? NSSplitViewController
+        return split?.splitViewItems.first?.isCollapsed == !expanded
+          && self.rectangularHeaderGlass(in: window) != nil
+      }
+      let theme = try XCTUnwrap(window.contentView?.superview)
+      theme.layoutSubtreeIfNeeded()
+      NotificationCenter.default.post(name: NSWindow.didUpdateNotification, object: window)
+      let probe = FrameMutationProbe()
+      let identifiers = [
+        "codescribe-header-material-host", "codescribe-header-viewport",
+        "codescribe-header-glass", "codescribe-header-content",
+        "codescribe-window-top-header",
+      ]
+      for identifier in identifiers {
+        let view = try XCTUnwrap(first(in: theme) { $0.identifier?.rawValue == identifier })
+        view.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(
+          probe, selector: #selector(FrameMutationProbe.changed(_:)),
+          name: NSView.frameDidChangeNotification, object: view)
+      }
+      defer { NotificationCenter.default.removeObserver(probe) }
+      for _ in 0..<50 {
+        NotificationCenter.default.post(name: NSWindow.didUpdateNotification, object: window)
+      }
+      let idleEvents = probe.events
+      probe.events.removeAll()
+      let origin = window.frame.origin
+      for delta in [0.125, 0.25, 0.5, 1.0, 7.0, 31.0] {
+        window.setFrameOrigin(NSPoint(x: origin.x + delta, y: origin.y + delta))
+        NotificationCenter.default.post(name: NSWindow.didUpdateNotification, object: window)
+      }
+      evidence.append(
+        "expanded=\(expanded) repeatedUpdateEvents=\(idleEvents) moveEvents=\(probe.events)")
+      XCTAssertTrue(idleEvents.isEmpty, "stable window updates must not mutate header frames")
+      XCTAssertTrue(probe.events.isEmpty, "moving the window preserves local header geometry")
+    }
+    let attachment = XCTAttachment(string: evidence.joined(separator: "\n"))
+    attachment.name = "App-owned header frame mutation probe"
+    attachment.lifetime = .keepAlways
+    add(attachment)
+  }
 
   func testHeaderAttachmentRetriesWithoutReplacingAnotherOwner() throws {
     let window = NSWindow(
@@ -51,14 +125,11 @@ final class AgentWindowChromeTests: XCTestCase {
 
   /// The approved shape is one rectangular real-content glass view across
   /// the entire upper detail region, with the native window controls intact.
-  func testTopTitlebarOwnerKeepsOneBandAndNativeWindowButtons() throws {
+  func testTrailingTitlebarOwnerKeepsOneBandAndNativeWindowButtons() throws {
     let previousSidebar = UserDefaults.standard.object(forKey: sidebarKey)
-    let previousPanel = UserDefaults.standard.object(forKey: panelKey)
     UserDefaults.standard.set(true, forKey: sidebarKey)
-    UserDefaults.standard.set(false, forKey: panelKey)
     defer {
       restoreSidebarDefault(previousSidebar)
-      restore(previousPanel, forKey: panelKey)
     }
     let window = mount(contentWidth: 1120)
     defer { window.close() }
@@ -72,7 +143,7 @@ final class AgentWindowChromeTests: XCTestCase {
           < 1
         && abs(self.visibleHeaderFrame(glass).maxX - window.frame.width) < 1
     }
-    let owners = window.titlebarAccessoryViewControllers.filter { $0.layoutAttribute == .top }
+    let owners = window.titlebarAccessoryViewControllers.filter { $0.layoutAttribute == .right }
     XCTAssertEqual(owners.count, 1)
     let owner = try XCTUnwrap(owners.first)
     if #available(macOS 26.1, *) {
@@ -124,24 +195,26 @@ final class AgentWindowChromeTests: XCTestCase {
     XCTAssertEqual(frame(glass).maxX, frame(viewport).maxX, accuracy: 0.5)
     XCTAssertEqual(frame(glass).maxY, frame(viewport).maxY, accuracy: 0.5)
     let controls = try XCTUnwrap(
-      first(in: glass) { $0.identifier?.rawValue == "codescribe-header-content" })
+      first(in: try XCTUnwrap(window.contentView?.superview)) {
+        $0.identifier?.rawValue == "codescribe-header-content"
+      })
     XCTAssertEqual(frame(controls).minY, rect.minY, accuracy: 0.5)
     XCTAssertEqual(frame(controls).maxY, rect.maxY, accuracy: 0.5)
     XCTAssertEqual(frame(controls).minX, rect.minX, accuracy: 0.5)
     XCTAssertEqual(frame(controls).maxX, rect.maxX, accuracy: 0.5)
     XCTAssertEqual(window.titlebarSeparatorStyle, .none)
-    XCTAssertNotNil(glass.contentView, "the real information and actions belong inside glass")
+    XCTAssertTrue(controls.isDescendant(of: owner.view), "foreground stays in the native accessory")
+    XCTAssertNil(
+      first(in: glass) { $0.identifier?.rawValue == "codescribe-header-content" },
+      "passive material must not duplicate the real header")
     XCTAssertEqual(lights.count, 3)
     XCTAssertTrue(lights.allSatisfy { !$0.isHiddenOrHasHiddenAncestor })
   }
 
   func testRectangularHeaderAtMinimumAndNormalWidths() throws {
     let previousSidebar = UserDefaults.standard.object(forKey: sidebarKey)
-    let previousPanel = UserDefaults.standard.object(forKey: panelKey)
-    UserDefaults.standard.set(false, forKey: panelKey)
     defer {
       restoreSidebarDefault(previousSidebar)
-      restore(previousPanel, forKey: panelKey)
     }
     for width in [AgentWindowMetrics.minWidth, 1120 as CGFloat] {
       for expanded in [true, false] {
@@ -169,14 +242,19 @@ final class AgentWindowChromeTests: XCTestCase {
         attachment.lifetime = .keepAlways
         add(attachment)
         XCTAssertEqual(
-          window.titlebarAccessoryViewControllers.filter { $0.layoutAttribute == .top }.count, 1)
+          window.titlebarAccessoryViewControllers.filter { $0.layoutAttribute == .right }.count, 1)
         XCTAssertEqual(rect.maxX, window.frame.width, accuracy: 1)
         XCTAssertEqual(rect.minY, window.contentLayoutRect.maxY, accuracy: 1)
         XCTAssertEqual(rect.height, 52, accuracy: 1)
         XCTAssertEqual(glass.cornerRadius, 0)
+        let controls = try XCTUnwrap(
+          first(in: try XCTUnwrap(window.contentView?.superview)) {
+            $0.identifier?.rawValue == "codescribe-header-content"
+          })
+        if !expanded { XCTAssertEqual(rect.minX, 0, accuracy: 1) }
         for light in trafficLights(in: window) {
           XCTAssertFalse(
-            rect.intersects(frame(light)), "detail glass covers a native window button")
+            frame(controls).intersects(frame(light)), "foreground covers a native window button")
         }
       }
     }
@@ -184,7 +262,9 @@ final class AgentWindowChromeTests: XCTestCase {
 
   private func nativeSidebarGlass(in window: NSWindow) -> NSGlassEffectView? {
     guard let content = window.contentView else { return nil }
-    return first(in: content) { $0 is NSGlassEffectView } as? NSGlassEffectView
+    return first(in: content) {
+      $0 is NSGlassEffectView && $0.identifier?.rawValue != "codescribe-header-glass"
+    } as? NSGlassEffectView
   }
 
   private func rectangularHeaderGlass(in window: NSWindow) -> NSGlassEffectView? {
@@ -193,13 +273,143 @@ final class AgentWindowChromeTests: XCTestCase {
       as? NSGlassEffectView
   }
 
+  /// Compare the naturally settled resize path with an explicit layout pass.
+  /// Neither programmatic path establishes acceptance of a physical drag.
+  func testProductionMinimumFrameKeepsComposerActionsInsideWindow() throws {
+    let previous = UserDefaults.standard.object(forKey: sidebarKey)
+    defer { restoreSidebarDefault(previous) }
+    var evidence: [String] = []
+    for expanded in [true, false] {
+      UserDefaults.standard.set(expanded, forKey: sidebarKey)
+      let scale = TextScaleController(key: "AgentWindowChromeTests.minimumFrameScale")
+      let root = TextScaleRoot(controller: scale) {
+        AgentChatView(store: AgentChatStore(engine: nil))
+          .environment(\.csReduceTransparencyOverride, false)
+          .environment(\.csContrastOverride, .standard)
+      }
+      let hosting = NSHostingController(rootView: root)
+      hosting.sizingOptions = []
+      let window = AgentWindowChrome.makeWindow(content: hosting)
+      defer {
+        window.orderOut(nil)
+        window.close()
+      }
+      BackgroundTestWindow.present(window)
+      pump(window) {
+        self.composerInput(in: hosting.view) != nil
+          && self.rectangularHeaderGlass(in: window) != nil
+      }
+      let minimumFrame = hosting.view.fittingSize
+      let actionsBelow =
+        ComposerControlMetrics.spacing + ComposerControlMetrics.hitTargetSize
+        + ComposerControlMetrics.verticalPadding
+      let requestedSizes = [
+        NSSize(width: 1000, height: 680), NSSize(width: 840, height: 580),
+        NSSize(width: 720, height: 500), minimumFrame,
+      ]
+      defer {
+        let attachment = XCTAttachment(string: evidence.joined(separator: "\n"))
+        attachment.name = "Natural resize versus explicit layout and composer clearance"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+      }
+      for requestedSize in requestedSizes {
+        window.setFrame(NSRect(origin: window.frame.origin, size: requestedSize), display: true)
+        // Let AppKit and SwiftUI settle without repairing layout from the test.
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        for explicitLayout in [false, true] {
+          if explicitLayout {
+            window.contentView?.superview?.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+          }
+          let input = try XCTUnwrap(composerInput(in: hosting.view) as? NSTextView)
+          let scroll = try XCTUnwrap(input.enclosingScrollView)
+          let field = frame(scroll)
+          let state =
+            "expanded=\(expanded) requested=\(requestedSize) explicitLayout=\(explicitLayout) "
+            + "fitting=\(minimumFrame) frame=\(window.frame) layout=\(window.contentLayoutRect) "
+            + "field=\(field) actionsBelow=\(actionsBelow)"
+          evidence.append(state)
+          XCTAssertGreaterThanOrEqual(
+            window.contentLayoutRect.height, AgentWindowMetrics.minHeight, state)
+          XCTAssertGreaterThanOrEqual(field.minY, actionsBelow, state)
+        }
+      }
+      XCTAssertTrue(hosting.sizingOptions.isEmpty)
+    }
+  }
+
+  /// Match the app's crash-protected host, not only a bare test controller.
+  func testProductionHostRetainsFittingMinimumAcrossLayoutUpdates() throws {
+    let previous = UserDefaults.standard.object(forKey: sidebarKey)
+    defer { restoreSidebarDefault(previous) }
+    UserDefaults.standard.set(true, forKey: sidebarKey)
+
+    let scale = TextScaleController(key: "AgentWindowChromeTests.productionHostScale")
+    let root = TextScaleRoot(controller: scale) {
+      AgentChatView(store: AgentChatStore(engine: nil))
+        .environment(\.csReduceTransparencyOverride, false)
+        .environment(\.csContrastOverride, .standard)
+    }
+    let hosting = NSHostingController(rootView: root)
+    hosting.sizingOptions = []
+    let window = AgentWindowChrome.makeWindow(content: hosting)
+    defer {
+      window.orderOut(nil)
+      window.close()
+    }
+    BackgroundTestWindow.present(window)
+    var evidence: [String] = []
+    for (expanded, width) in [
+      (true, CGFloat(1120)), (true, AgentWindowMetrics.minWidth),
+      (false, AgentWindowMetrics.minWidth), (true, AgentWindowMetrics.minWidth),
+    ] {
+      UserDefaults.standard.set(expanded, forKey: sidebarKey)
+      window.setContentSize(NSSize(width: width, height: AgentWindowMetrics.minHeight))
+      pump(window) {
+        let split = self.splitView(in: window)?.delegate as? NSSplitViewController
+        return split?.splitViewItems.first?.isCollapsed == !expanded
+          && self.rectangularHeaderGlass(in: window) != nil
+      }
+      window.contentView?.superview?.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      let nativeBandHeight = max(0, hosting.view.bounds.height - window.contentLayoutRect.height)
+      evidence.append(
+        "expanded=\(expanded) width=\(width) frame=\(window.frame) "
+          + "min=\(window.minSize) contentMin=\(window.contentMinSize) "
+          + "layout=\(window.contentLayoutRect) fitting=\(hosting.view.fittingSize) "
+          + "safeArea=\(hosting.view.safeAreaInsets) nativeBandHeight=\(nativeBandHeight)")
+      XCTAssertGreaterThanOrEqual(hosting.view.fittingSize.width, AgentWindowMetrics.minWidth)
+      XCTAssertGreaterThanOrEqual(
+        hosting.view.fittingSize.height, AgentWindowMetrics.minHeight + nativeBandHeight,
+        "the native fitting minimum must reserve readable content below the native titlebar")
+      XCTAssertTrue(hosting.sizingOptions.isEmpty, "retain the display-cycle crash protection")
+    }
+    // AppKit ignores the stored window minimum under Auto Layout. Prove the
+    // actual fitting minimum depends on our two public, app-owned constraints:
+    // removing them reproduces the zero-floor host, restoring them recovers it.
+    let floorIDs = ["codescribe-agent-floor-width", "codescribe-agent-floor-height"]
+    let floor = hosting.view.constraints.filter { floorIDs.contains($0.identifier ?? "") }
+    XCTAssertEqual(floor.count, 2, "one minimum owner per dimension")
+    NSLayoutConstraint.deactivate(floor)
+    let removed = hosting.view.fittingSize
+    NSLayoutConstraint.activate(floor)
+    let restored = hosting.view.fittingSize
+    evidence.append("removed=\(removed) restored=\(restored)")
+    XCTAssertLessThan(removed.width, AgentWindowMetrics.minWidth)
+    XCTAssertLessThan(removed.height, AgentWindowMetrics.minHeight)
+    XCTAssertGreaterThanOrEqual(restored.width, AgentWindowMetrics.minWidth)
+    XCTAssertGreaterThanOrEqual(restored.height, AgentWindowMetrics.minHeight)
+    let attachment = XCTAttachment(string: evidence.joined(separator: "\n"))
+    attachment.name = "Production Agent fitting minimum and negative control"
+    attachment.lifetime = .keepAlways
+    add(attachment)
+  }
+
   func testIntegratedHeaderAtMinimumAndNormalWidths() throws {
     let previous = UserDefaults.standard.object(forKey: sidebarKey)
-    let previousPanel = UserDefaults.standard.object(forKey: panelKey)
-    UserDefaults.standard.set(false, forKey: panelKey)
     defer {
       restoreSidebarDefault(previous)
-      restore(previousPanel, forKey: panelKey)
     }
 
     for width in [AgentWindowMetrics.minWidth, 1120 as CGFloat] {
@@ -258,15 +468,20 @@ final class AgentWindowChromeTests: XCTestCase {
         }
 
         let glass = try XCTUnwrap(rectangularHeaderGlass(in: window))
-        let content = try XCTUnwrap(glass.contentView)
+        let content = try XCTUnwrap(
+          first(in: try XCTUnwrap(theme)) {
+            $0.identifier?.rawValue == "codescribe-header-content"
+          })
         let rect = visibleHeaderFrame(glass)
         XCTAssertEqual(rect.maxX, window.frame.width, accuracy: 1)
         XCTAssertEqual(rect.midY, window.frame.height - 26, accuracy: 1)
         XCTAssertEqual(rect.height, 52, accuracy: 1)
         for light in trafficLights(in: window) {
-          XCTAssertFalse(rect.intersects(frame(light)), "header overlaps native window controls")
+          XCTAssertFalse(frame(content).intersects(frame(light)), "header overlaps native controls")
         }
-        let point = glass.convert(NSPoint(x: rect.midX, y: rect.midY), from: nil)
+        let contentRect = frame(content)
+        let point = try XCTUnwrap(content.superview).convert(
+          NSPoint(x: contentRect.midX, y: contentRect.midY), from: nil)
         XCTAssertNotNil(content.hitTest(point), "real header content must receive pointer events")
         let toggle = window.toolbar?.items.first {
           $0.itemIdentifier.rawValue.localizedCaseInsensitiveContains("sidebar")
@@ -303,12 +518,9 @@ final class AgentWindowChromeTests: XCTestCase {
 
   func testMessagesExtendUnderTheFloatingComposer() throws {
     let previous = UserDefaults.standard.object(forKey: sidebarKey)
-    let previousPanel = UserDefaults.standard.object(forKey: panelKey)
     UserDefaults.standard.set(true, forKey: sidebarKey)
-    UserDefaults.standard.set(false, forKey: panelKey)
     defer {
       restoreSidebarDefault(previous)
-      restore(previousPanel, forKey: panelKey)
     }
     let messages = (0..<30).map {
       ChatMessage(
@@ -342,57 +554,52 @@ final class AgentWindowChromeTests: XCTestCase {
       "messages must continue under the native header")
   }
 
-  // MARK: - Context panel (round 4, UI-59)
+  // MARK: - Context card (replaces the round 4 column, UI-59)
 
-  /// Founder, 2026-10-20: optional, collapsible, closed by default, a fixed
-  /// 260 pt column. The conversation keeps its own floor; an open panel
-  /// raises the window floor by its footprint instead of squeezing the turns.
-  func testContextPanelIsClosedByDefaultAndAFixedColumn() {
-    XCTAssertEqual(AgentContextPanelPreference.defaultsKey, "AgentChat.contextPanelOpen.v1")
-    XCTAssertFalse(AgentContextPanelPreference.defaultIsOpen)
-    let defaults = UserDefaults(suiteName: UUID().uuidString)!
-    XCTAssertFalse(
-      defaults.bool(forKey: AgentContextPanelPreference.defaultsKey),
-      "a missing flag reads as closed")
-
-    XCTAssertEqual(AgentWindowMetrics.contextPanelWidth, 260)
-    XCTAssertEqual(
-      AgentWindowMetrics.contextPanelFootprint,
-      AgentWindowMetrics.contextPanelWidth + AgentWindowMetrics.contextPanelDividerWidth)
-    XCTAssertEqual(
-      AgentWindowMetrics.windowFloorWidth(contextPanelOpen: false), AgentWindowMetrics.minWidth)
-    XCTAssertEqual(
-      AgentWindowMetrics.detailFloorWidth(contextPanelOpen: false),
-      AgentWindowMetrics.detailMinWidth)
-    XCTAssertEqual(
-      AgentWindowMetrics.detailFloorWidth(contextPanelOpen: true)
-        - AgentWindowMetrics.contextPanelFootprint,
-      AgentWindowMetrics.detailMinWidth,
-      "the conversation keeps the same floor with the panel open")
-    XCTAssertEqual(
-      AgentWindowMetrics.windowFloorWidth(contextPanelOpen: true)
-        - AgentWindowMetrics.detailFloorWidth(contextPanelOpen: true),
-      CSSidebarWidth.navigation.ideal,
-      "window floor minus the opening rail is still exactly the detail floor")
+  /// Founders, 2026-11-09: context is a compact card on demand, not a third
+  /// column. It starts closed, is never persisted, and never moves the window
+  /// floor: the floor is the same constant with the card open or closed.
+  func testContextCardStartsClosedAndLeavesTheWindowFloorAlone() throws {
+    XCTAssertFalse(AgentContextCardPresenter().isOpen)
+    XCTAssertLessThanOrEqual(AgentContextCard.preferredWidth, 290)
+    XCTAssertGreaterThanOrEqual(AgentContextCard.preferredWidth, 260)
     XCTAssertGreaterThanOrEqual(
       AgentWindowMetrics.detailMinWidth,
       ChatLayoutPolicy.minimumReadable + 2 * ChatLayoutPolicy.listPadding,
       "the conversation floor fits a readable bubble inside the list padding")
+
+    let previous = UserDefaults.standard.object(forKey: sidebarKey)
+    UserDefaults.standard.set(true, forKey: sidebarKey)
+    defer { restoreSidebarDefault(previous) }
+    let card = AgentContextCardPresenter()
+    let window = mount(contentWidth: AgentWindowMetrics.minWidth, contextCard: card)
+    defer { window.close() }
+    let root = try XCTUnwrap(window.contentView)
+    pump(window) { self.conversationScroll(in: root) != nil }
+    let closedWidth = window.contentRect(forFrameRect: window.frame).width
+    card.open()
+    pump(window) { self.cardAnchor(in: root) != nil }
+    XCTAssertNotNil(cardAnchor(in: root), "the open card is mounted")
+    XCTAssertEqual(window.contentMinSize.width, AgentWindowMetrics.minWidth)
+    XCTAssertEqual(
+      window.contentRect(forFrameRect: window.frame).width, closedWidth, accuracy: 0.5,
+      "opening the card never widens the window")
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Codescribe/Screens/AgentChat/AgentChatView.swift"),
+      encoding: .utf8)
+    XCTAssertFalse(source.contains("contextPanelOpen"), "no persisted open flag remains")
+    XCTAssertFalse(source.contains("growToFloor"), "no window growth on open remains")
   }
 
-  /// Opening and closing is view state: the thread, the draft, the model, the
-  /// staged attachments, the recording and the speech state stay as they were.
-  /// The Context and close buttons write the same persisted flag this test
-  /// writes (pinned at the source below).
-  func testTogglingTheContextPanelChangesOnlyItsFlag() throws {
+  /// Opening and closing is view state: the conversation keeps its width, and
+  /// the thread, the draft, the model, the staged attachments, the recording
+  /// and the speech state stay as they were.
+  func testTogglingTheContextCardChangesNoConversationState() throws {
     let previous = UserDefaults.standard.object(forKey: sidebarKey)
-    let previousPanel = UserDefaults.standard.object(forKey: panelKey)
     UserDefaults.standard.set(true, forKey: sidebarKey)
-    UserDefaults.standard.set(false, forKey: panelKey)
-    defer {
-      restoreSidebarDefault(previous)
-      restore(previousPanel, forKey: panelKey)
-    }
+    defer { restoreSidebarDefault(previous) }
     let messages = [
       ChatMessage(role: .you, timestamp: nil, text: "Plan the project"),
       ChatMessage(role: .assistant, timestamp: nil, text: "Start from the goal."),
@@ -403,11 +610,12 @@ final class AgentWindowChromeTests: XCTestCase {
         ChatThread(title: "Project plan", meta: "", messages: messages, model: "grok-4.5")
       ])
     store.draft = "half-written reply"
-    let window = mount(contentWidth: 1120, store: store, renameTo: nil)
+    let card = AgentContextCardPresenter()
+    let window = mount(contentWidth: 1120, store: store, renameTo: nil, contextCard: card)
     defer { window.close() }
     let root = try XCTUnwrap(window.contentView)
     pump(window) { self.conversationScroll(in: root) != nil }
-    let closedWidth = try XCTUnwrap(conversationScroll(in: root)).frame.width
+    let closedScroll = frame(try XCTUnwrap(conversationScroll(in: root)))
 
     func snapshot() -> [String] {
       [
@@ -423,110 +631,112 @@ final class AgentWindowChromeTests: XCTestCase {
     }
     let before = snapshot()
 
-    UserDefaults.standard.set(true, forKey: panelKey)
-    // The panel slides in over 0.18 s: wait for the width to settle on its
-    // target, not for the first frame that is merely narrower.
-    let target = closedWidth - AgentWindowMetrics.contextPanelFootprint
-    pump(window) {
-      abs((self.conversationScroll(in: root)?.frame.width ?? closedWidth) - target) <= 2
-    }
-    let openWidth = try XCTUnwrap(conversationScroll(in: root)).frame.width
-    XCTAssertEqual(
-      openWidth, closedWidth - AgentWindowMetrics.contextPanelFootprint, accuracy: 2,
-      "the open panel takes exactly its own column from the conversation")
-    XCTAssertEqual(snapshot(), before, "opening the panel must not touch conversation state")
+    card.toggle()
+    pump(window) { self.cardAnchor(in: root) != nil }
+    let anchor = try XCTUnwrap(cardAnchor(in: root))
+    let openScroll = frame(try XCTUnwrap(conversationScroll(in: root)))
+    XCTAssertEqual(openScroll.width, closedScroll.width, accuracy: 0.5, "the card takes no width")
+    XCTAssertEqual(snapshot(), before, "opening the card must not touch conversation state")
 
-    UserDefaults.standard.set(false, forKey: panelKey)
-    pump(window) {
-      (self.conversationScroll(in: root)?.frame.width ?? 0) > closedWidth - 2
-    }
-    XCTAssertEqual(
-      try XCTUnwrap(conversationScroll(in: root)).frame.width, closedWidth, accuracy: 2)
-    XCTAssertEqual(snapshot(), before, "closing the panel must not touch conversation state")
-
-    let codescribe = URL(fileURLWithPath: #filePath)
-      .deletingLastPathComponent().deletingLastPathComponent()
-      .appendingPathComponent("Codescribe")
-    let panel = try String(
-      contentsOf: codescribe.appendingPathComponent("Screens/AgentChat/AgentContextPanel.swift"),
-      encoding: .utf8)
-    let toggle = try XCTUnwrap(
-      panel.range(of: "struct AgentContextToggle").map { String(panel[$0.lowerBound...]) })
-    XCTAssertTrue(toggle.contains("Button {\n      isOpen.toggle()\n    } label:"))
-    let agent = try String(
-      contentsOf: codescribe.appendingPathComponent("Screens/AgentChat/AgentChatView.swift"),
-      encoding: .utf8)
-    XCTAssertTrue(agent.contains("close: { isContextOpen = false }"))
-  }
-
-  /// At the window floor with the rail open, opening the panel widens the
-  /// window to the raised floor: the composer stays whole inside the window and
-  /// the conversation never drops below its own floor.
-  func testOpenPanelAtTheWindowFloorKeepsComposerAndConversationFloor() throws {
-    let previous = UserDefaults.standard.object(forKey: sidebarKey)
-    let previousPanel = UserDefaults.standard.object(forKey: panelKey)
-    UserDefaults.standard.set(true, forKey: sidebarKey)
-    UserDefaults.standard.set(true, forKey: panelKey)
-    defer {
-      restoreSidebarDefault(previous)
-      restore(previousPanel, forKey: panelKey)
-    }
-    let openFloor = AgentWindowMetrics.windowFloorWidth(contextPanelOpen: true)
-    let window = mount(contentWidth: AgentWindowMetrics.minWidth)
-    defer { window.close() }
-    let root = try XCTUnwrap(window.contentView)
-    pump(window) {
-      window.contentRect(forFrameRect: window.frame).width >= openFloor - 1
-        && self.composerInput(in: root) != nil
-        && self.conversationScroll(in: root) != nil
-    }
-    XCTAssertEqual(window.contentMinSize.width, openFloor)
-    XCTAssertGreaterThanOrEqual(
-      window.contentRect(forFrameRect: window.frame).width, openFloor - 1,
-      "a window below the raised floor widens when the panel opens")
-
-    let input = try XCTUnwrap(composerInput(in: root))
-    let bounds = NSRect(origin: .zero, size: window.contentRect(forFrameRect: window.frame).size)
-    XCTAssertTrue(
-      bounds.insetBy(dx: -1, dy: -1).contains(frame(input)),
-      "composer must stay fully inside the window: \(frame(input))")
-    let scroll = try XCTUnwrap(conversationScroll(in: root))
-    XCTAssertGreaterThanOrEqual(scroll.frame.width, AgentWindowMetrics.detailMinWidth - 1)
+    let cardFrame = frame(anchor)
+    XCTAssertLessThanOrEqual(cardFrame.width, AgentContextCard.preferredWidth + 1)
     XCTAssertLessThanOrEqual(
-      frame(input).maxX, frame(scroll).maxX + 1, "the panel never sits over the composer")
+      cardFrame.maxY, window.contentLayoutRect.maxY + 0.5, "the card stays under the header")
+    XCTAssertEqual(
+      openScroll.maxX - cardFrame.maxX, AgentContextCard.inset, accuracy: 1,
+      "the card sits at the conversation's trailing edge")
+
+    card.toggle()
+    pump(window) { self.cardAnchor(in: root) == nil }
+    XCTAssertNil(cardAnchor(in: root))
+    XCTAssertEqual(snapshot(), before, "closing the card must not touch conversation state")
   }
 
-  /// The panel is a fixed column: a short and a very long conversation title
-  /// leave it exactly as wide. The long title wraps inside it.
-  func testContextPanelDoesNotGrowWithItsContent() throws {
+  /// At the window floor with the rail open the column is narrow: the card
+  /// narrows to the column instead of overrunning it or widening the window.
+  func testContextCardFitsTheNarrowestColumn() throws {
     let previous = UserDefaults.standard.object(forKey: sidebarKey)
-    let previousPanel = UserDefaults.standard.object(forKey: panelKey)
-    UserDefaults.standard.set(true, forKey: sidebarKey)
-    UserDefaults.standard.set(true, forKey: panelKey)
-    defer {
-      restoreSidebarDefault(previous)
-      restore(previousPanel, forKey: panelKey)
-    }
-    var panelWidths: [CGFloat] = []
-    for title in ["Plan", String(repeating: "A very long conversation title ", count: 12)] {
-      let store = AgentChatStore(
-        engine: nil,
-        threads: [ChatThread(title: title, meta: "", messages: [], model: "grok-4.5")])
-      let window = mount(contentWidth: 1120, store: store, renameTo: nil)
+    defer { restoreSidebarDefault(previous) }
+    for expanded in [true, false] {
+      UserDefaults.standard.set(expanded, forKey: sidebarKey)
+      let card = AgentContextCardPresenter()
+      let window = mount(contentWidth: AgentWindowMetrics.minWidth, contextCard: card)
       defer { window.close() }
       let root = try XCTUnwrap(window.contentView)
-      pump(window) {
-        self.conversationScroll(in: root) != nil && self.detailColumn(in: window) != nil
-      }
-      let detail = try XCTUnwrap(detailColumn(in: window))
-      let scroll = try XCTUnwrap(conversationScroll(in: root))
-      panelWidths.append(frame(detail).width - frame(scroll).width)
+      pump(window) { self.conversationScroll(in: root) != nil }
+      card.open()
+      pump(window) { self.cardAnchor(in: root) != nil }
+      let cardFrame = frame(try XCTUnwrap(cardAnchor(in: root)))
+      let scroll = frame(try XCTUnwrap(conversationScroll(in: root)))
+      XCTAssertGreaterThanOrEqual(
+        cardFrame.minX, scroll.minX + AgentContextCard.inset - 1, "expanded \(expanded)")
+      XCTAssertLessThanOrEqual(cardFrame.maxX, scroll.maxX, "expanded \(expanded)")
+      XCTAssertEqual(
+        window.contentRect(forFrameRect: window.frame).width, AgentWindowMetrics.minWidth,
+        accuracy: 0.5, "expanded \(expanded)")
     }
-    XCTAssertEqual(panelWidths.count, 2)
-    for width in panelWidths {
-      XCTAssertEqual(width, AgentWindowMetrics.contextPanelFootprint, accuracy: 2)
+  }
+
+  /// Escape closes the card and is consumed; a click outside closes it and
+  /// still reaches its target; clicks on the card or on the Context button
+  /// (which closes it by its own action) leave it; other windows are ignored.
+  func testEscapeAndOutsideClicksCloseTheCard() throws {
+    let card = AgentContextCardPresenter()
+    let window = mount(contentWidth: 1120, contextCard: card)
+    defer { window.close() }
+    let root = try XCTUnwrap(window.contentView)
+    pump(window) { self.conversationScroll(in: root) != nil }
+    let number = window.windowNumber
+    func open() throws -> NSRect {
+      card.open()
+      pump(window) { self.cardAnchor(in: root) != nil }
+      return frame(try XCTUnwrap(cardAnchor(in: root)))
     }
-    XCTAssertEqual(panelWidths[0], panelWidths[1], accuracy: 1, "a long title never widens it")
+
+    var cardFrame = try open()
+    XCTAssertTrue(
+      card.handle(
+        .init(windowNumber: number, kind: .click(NSPoint(x: cardFrame.midX, y: cardFrame.midY)))))
+    XCTAssertTrue(card.isOpen, "a click on the card keeps it")
+    XCTAssertTrue(card.handle(.init(windowNumber: number + 1, kind: .escape)))
+    XCTAssertTrue(card.isOpen, "another window's Escape is not ours")
+
+    XCTAssertTrue(card.handle(.init(windowNumber: number, kind: .click(NSPoint(x: 300, y: 200)))))
+    XCTAssertFalse(card.isOpen, "an outside click closes the card and passes through")
+
+    cardFrame = try open()
+    XCTAssertFalse(card.handle(.init(windowNumber: number, kind: .escape)))
+    XCTAssertFalse(card.isOpen, "Escape closes the card and is consumed")
+    XCTAssertTrue(
+      card.handle(.init(windowNumber: number, kind: .escape)), "Escape passes once it is closed")
+  }
+
+  /// Showing the Agent window again shows it without the card: closing or
+  /// ordering the window out closes it. Re-activating a window that stayed
+  /// on screen keeps the card as it was.
+  func testHidingTheWindowClosesTheCardAndReactivationKeepsIt() throws {
+    let card = AgentContextCardPresenter()
+    let window = mount(contentWidth: 1120, contextCard: card)
+    defer { window.close() }
+    let root = try XCTUnwrap(window.contentView)
+    pump(window) { self.conversationScroll(in: root) != nil }
+    card.open()
+    pump(window) { self.cardAnchor(in: root) != nil }
+
+    NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+    NotificationCenter.default.post(
+      name: NSWindow.didChangeOcclusionStateNotification, object: window)
+    XCTAssertTrue(card.isOpen, "a visible window's activation keeps the card")
+
+    window.orderOut(nil)
+    pump(window) { !card.isOpen }
+    XCTAssertFalse(card.isOpen, "ordering the window out closes the card")
+
+    BackgroundTestWindow.present(window)
+    card.open()
+    pump(window) { self.cardAnchor(in: root) != nil }
+    window.close()
+    XCTAssertFalse(card.isOpen, "closing the window closes the card")
   }
 
   /// One identity plane and one bar: the toolbar holds no principal item, the
@@ -550,7 +760,7 @@ final class AgentWindowChromeTests: XCTestCase {
       agent.range(of: "private var trailingCluster").map { String(agent[$0.lowerBound...]) })
     XCTAssertTrue(cluster.contains("DeveloperPowerMark()"))
     XCTAssertTrue(cluster.contains("AgentWidthModeButton()"))
-    XCTAssertTrue(cluster.contains("AgentContextToggle(isOpen: $isContextOpen)"))
+    XCTAssertTrue(cluster.contains("AgentContextToggle(presenter: contextCard)"))
     let header = try source("Screens/AgentChat/AgentContextPanel.swift")
     let row = try XCTUnwrap(
       header.range(of: "struct AgentConversationHeader").map { String(header[$0.lowerBound...]) })
@@ -580,7 +790,8 @@ final class AgentWindowChromeTests: XCTestCase {
   }
 
   private func mount(
-    contentWidth: CGFloat, store: AgentChatStore? = nil, renameTo title: String? = "Probe"
+    contentWidth: CGFloat, store: AgentChatStore? = nil, renameTo title: String? = "Probe",
+    contextCard: AgentContextCardPresenter = AgentContextCardPresenter()
   )
     -> NSWindow
   {
@@ -590,7 +801,7 @@ final class AgentWindowChromeTests: XCTestCase {
     }
     let window = AgentWindowChrome.makeWindow(
       content: NSHostingController(
-        rootView: AgentChatView(store: store)
+        rootView: AgentChatView(store: store, contextCard: contextCard)
           .environment(\.csReduceTransparencyOverride, false)
           .environment(\.csContrastOverride, .standard)
       ))
@@ -701,6 +912,11 @@ final class AgentWindowChromeTests: XCTestCase {
     let data = try JSONSerialization.data(
       withJSONObject: rows, options: [.prettyPrinted, .sortedKeys])
     return String(decoding: data, as: UTF8.self)
+  }
+
+  /// The open card's inert frame anchor; nil while the card is closed.
+  private func cardAnchor(in root: NSView) -> NSView? {
+    first(in: root) { $0 is AgentContextHitAnchor.AnchorView }
   }
 
   private func frame(_ view: NSView) -> NSRect {

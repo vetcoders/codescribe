@@ -49,7 +49,10 @@ struct SettingsView: View {
     .csSidebarToggle(expanded: $sidebarExpanded)
     .toolbarVisibility(.visible, for: .windowToolbar)
     .modifier(CSWindowHeaderChrome())
-    .background { CSWindowTopHeader { headerContent } }
+    .background {
+      CSWindowTopHeader { headerContent }
+        .ignoresSafeArea(.container, edges: .top)
+    }
     .csFocusPolicy()
     .controlSize(.regular)
     .frame(maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)

@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Agent window: **Context** opens a compact card under the header instead of a 260 pt column beside the conversation. The card shows the message count, the last update, queued turns when there are any, and **Tool settings**; the title, model and live status stay in the header only. The conversation keeps its full width, the window no longer widens when Context opens, and the card closes with Escape, a click elsewhere or the button. It starts closed whenever the Agent window is shown again and is no longer remembered between launches.
 - Agent Chat: conversations can execute independently. Each conversation keeps its own FIFO queue and Stop target; accepted messages retain their provider, model and reasoning choice through queueing and restart recovery. The rail, header and context panel use the conversation's live execution state.
 - Google conversations resume after screenshot attachments have been saved and reloaded. Image-context validation still rejects changed or missing assets.
 - Dictation: Notes Mode saves a note independently of Safe / Comfort / Off. Deferred insertion retains the latest nonempty transcript for the current app process until another deferred payload replaces it; the 120-second expiry is gone. Automatic paste and Insert retain the attempted text because posting Cmd+V is not confirmation that the destination accepted it.
@@ -29,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Expanded overlay and Bus resizing retains a single frozen image of the content instead of an empty panel. Text is clipped without scaling during the gesture; Markdown still lays out only after release, and cancellation restores the original window.
 
-- Agent and Settings: use one continuous native glass header and the system-owned sidebar material. The Agent context column has its own glass surface, while the conversation retains its reading canvas. The additional titlebar separator is disabled; active/inactive optical integration remains under review.
+- Agent and Settings: use one continuous native glass header and the system-owned sidebar material. The conversation retains its reading canvas. The additional titlebar separator is disabled; active/inactive optical integration remains under review.
 - Developer builds: Lab offers independent native **Glass tint** controls for onboarding, mini/MIDI and the Bus header. These controls do not change Agent/Settings or add an opaque veil.
 
 - Overlay and Bus window: the card that previews an agent's last messages shows the agent's presence dot between its number and its name, as in the agents list under ✦ and the roster's rows; channel 0 and your inbox keep their plain title.

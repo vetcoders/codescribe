@@ -7,13 +7,37 @@ alternative arrangements; this document does not select one as the final UI.
 
 ## Start with the visual owner
 
+The [glass contract](ADR/2026-11-08-WINDOW_GLASS_OWNERSHIP.md) owns the product
+requirements, material/reading roles, STOP rule and optical/performance
+acceptance, including continuity between mini, MIDI and expanded chrome. This
+document owns overlay presentation mechanics; a layout change must respect both.
+
 ### Resize feedback and performance boundary (2026-11-08)
 
 Expanded resize keeps the source window's frame fixed until release. The
-lightweight `OverlayResizePreview` captures header and content once, then paints
-only those images while the pointer moves. The content bitmap stays at its
-original pixel size, anchored top-left below the header, clipped when smaller;
-extra space shows the canvas until the final layout. Finish commits once;
+lightweight `OverlayResizePreview` captures the source in one AppKit render per
+gesture, then splits its frozen pixels into header and foreground regions at
+the backing-pixel boundary. Capturing the two regions separately replays the
+same layer tree and its CPU blur work twice at the start of a gesture. Region
+images retain their original point size and orientation for flipped and
+unflipped source views; pointer updates never capture either region again.
+`OverlayCanvasBackdropView` owns both the system material and the reading veil;
+capture temporarily hides that owner and restores its original visibility, so
+the bitmap cannot retain an old-sized canvas and its rounded corners. A separate
+instance of the same backdrop follows the preview's current bounds, including
+newly exposed space, with the source's appearance, tint and accessibility policy.
+In the expanded overlay the reading material and veil start below the measured
+live header. Their shared native configuration carries this top inset into the
+resize preview; neither reading layer may back the independently owned header
+glass. Mini and MIDI retain full-window chrome. The window perimeter stays on
+the outer backdrop, so the inset creates no new border or rounded notch at the
+header/content join. Reading veil opacity and developer tint values are unchanged.
+Reduce Transparency and Increase Contrast remove the native sampling view;
+the opaque veil remains, rather than leaving a hidden material in the hierarchy.
+The foreground bitmap stays at its original pixel size, anchored top-left below
+the header and clipped when smaller. No text stretches and no Markdown layout
+runs at pointer frequency. Each buffered foreground repaint clears its dirty
+region before compositing, preventing old frames from accumulating. Finish commits once;
 cancel restores the original frame, alpha and input policy. Grouped detached
 cards retain their header-only feedback. Divider gestures still move only a
 guide and commit width at release.

@@ -2942,17 +2942,6 @@
         }
       }
     },
-    "Agent context" : {
-      "comment" : "Title of the Agent window's context panel",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Kontekst Agenta"
-          }
-        }
-      }
-    },
     "Agent delivery is no longer available" : {
       "localizations" : {
         "pl" : {
@@ -11560,7 +11549,7 @@
       }
     },
     "Model" : {
-      "comment" : "Context panel fact: the conversation's model\nWhisper tab row: the model selector",
+      "comment" : "Whisper tab row: the model selector",
       "localizations" : {
         "pl" : {
           "stringUnit" : {

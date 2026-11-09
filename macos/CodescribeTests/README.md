@@ -2,6 +2,38 @@
 
 Swift unit tests for the SwiftUI front-end, executed by `make test-swift`.
 
+The Agent window-floor diagnostic in `AgentWindowChromeTests` also mounts the
+production `TextScaleRoot` and keeps `NSHostingController.sizingOptions = []`.
+That setting protects against a display-cycle crash and is not enabled merely
+to obtain a window-size pass. The diagnostic asserts the host's fitting minimum
+and retains frame, ignored window-minimum fields and fitting-size evidence
+across layout and sidebar updates. Removing and restoring only the app-owned
+minimum constraints provides the native negative control.
+The fitting height must reserve the readable minimum plus the actual native
+titlebar allocation; a content-only floor can admit a user-resized frame whose
+SwiftUI split view extends beyond the window. The programmatic frame path may
+enlarge such a frame automatically and conceal that incorrect fitting floor.
+It does not simulate a pointer resize or certify the minimum enforced during a
+real drag; the recorded desktop gesture remains a separate acceptance check.
+The production owner supplies required width and readable-height minima on
+the public hosting content view and its safe-area guide, respectively; it does
+not restore automatic SwiftUI sizing. Native optical and physical-drag
+acceptance remain separate from these constraint tests.
+
+The header frame-mutation diagnostic watches only app-owned material and
+foreground views. It checks repeated native window-update notifications and
+same-screen moves, including fractional origins, with production hosting sizing
+disabled. A pass rules out only frame churn in those probes; it does not prove
+that hover drawing, live resize or the compositor is free of optical artifacts.
+
+The production minimum-frame test shrinks the native window in several steps
+down to the host's fitting minimum. At every step it records the naturally
+settled layout before an explicit layout pass, then checks the remaining
+content-layout height and the native composer's clearance for its action row
+again after that pass. This distinguishes a test-induced layout repair from
+the naturally settled programmatic resize. It still does not simulate a
+physical drag or refute persistent clipping observed in the running app.
+
 ```bash
 make test-swift                                    # whole suite
 make test-swift SWIFT_TEST_ARGS='-only-testing:CodescribeTests/OverlayStateTests'

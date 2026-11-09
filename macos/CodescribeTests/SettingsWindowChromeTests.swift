@@ -55,14 +55,14 @@ final class SettingsWindowChromeTests: XCTestCase {
           } as? NSGlassEffectView)
         let rect = visibleHeaderFrame(glass)
         XCTAssertEqual(
-          window.titlebarAccessoryViewControllers.filter { $0.layoutAttribute == .top }.count, 1)
+          window.titlebarAccessoryViewControllers.filter { $0.layoutAttribute == .right }.count, 1)
         XCTAssertEqual(rect.maxX, window.frame.width, accuracy: 1)
         XCTAssertEqual(rect.maxY, window.frame.height, accuracy: 1)
         XCTAssertEqual(rect.height, 52, accuracy: 1)
         XCTAssertEqual(window.titlebarSeparatorStyle, .none)
         if #available(macOS 26.1, *) {
           let owner = try XCTUnwrap(
-            window.titlebarAccessoryViewControllers.first { $0.layoutAttribute == .top })
+            window.titlebarAccessoryViewControllers.first { $0.layoutAttribute == .right })
           XCTAssertEqual(owner.preferredScrollEdgeEffectStyle, .soft)
         }
         XCTAssertEqual(rect.minY, window.contentLayoutRect.maxY, accuracy: 1)
@@ -71,12 +71,19 @@ final class SettingsWindowChromeTests: XCTestCase {
             (splitView(in: window)?.delegate as? NSSplitViewController)?.splitViewItems.first)
           XCTAssertEqual(rect.minX, frame(sidebar.viewController.view).maxX, accuracy: 1)
         }
+        let content = try XCTUnwrap(
+          first(in: root) {
+            $0.identifier?.rawValue == "codescribe-header-content"
+          })
+        if !expanded { XCTAssertEqual(rect.minX, 0, accuracy: 1) }
         for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
           let control = try XCTUnwrap(window.standardWindowButton(type))
-          XCTAssertFalse(rect.intersects(frame(control)))
+          XCTAssertFalse(frame(content).intersects(frame(control)))
         }
-        let content = try XCTUnwrap(glass.contentView)
-        XCTAssertNotNil(content.hitTest(NSPoint(x: rect.width / 2, y: rect.height / 2)))
+        let contentRect = frame(content)
+        let point = try XCTUnwrap(content.superview).convert(
+          NSPoint(x: contentRect.midX, y: contentRect.midY), from: nil)
+        XCTAssertNotNil(content.hitTest(point))
       }
     }
   }
@@ -162,7 +169,9 @@ final class SettingsWindowChromeTests: XCTestCase {
 
   private func sidebarMaterial(in window: NSWindow) -> NSGlassEffectView? {
     guard let content = window.contentView else { return nil }
-    return first(in: content) { $0 is NSGlassEffectView } as? NSGlassEffectView
+    return first(in: content) {
+      $0 is NSGlassEffectView && $0.identifier?.rawValue != "codescribe-header-glass"
+    } as? NSGlassEffectView
   }
 
   /// Visible geometry stays 52 pt; the native optical rim bleeds below it.

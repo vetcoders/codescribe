@@ -3,7 +3,7 @@ import SwiftUI
 
 /// Reading surfaces retain their quiet canvas; window chrome exposes the
 /// native optical material without an additional opaque backing.
-enum OverlayGlassRole {
+enum OverlayGlassRole: Equatable {
   case readingCanvas
   case chrome
 }
@@ -17,6 +17,7 @@ struct OverlayCanvasSurface<Content: View>: View {
   @Environment(\.csContrastOverride) private var contrastOverride
   let palette: OverlayAppearancePalette
   var glassRole: OverlayGlassRole = .readingCanvas
+  var readingTopInset: CGFloat = 0
   @ViewBuilder let content: Content
 
   var body: some View {
@@ -26,16 +27,10 @@ struct OverlayCanvasSurface<Content: View>: View {
           palette: palette,
           reduceTransparency: reduceTransparencyOverride ?? reduceTransparency,
           increasedContrast: (contrastOverride ?? contrast) == .increased,
-          role: glassRole)
+          role: glassRole, showsBorder: glassRole == .readingCanvas,
+          topInset: glassRole == .readingCanvas ? readingTopInset : 0)
       }
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous))
-      .overlay {
-        if glassRole == .readingCanvas {
-          RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous)
-            .strokeBorder(palette.border.color, lineWidth: 1)
-            .allowsHitTesting(false)
-        }
-      }
       .shadow(
         color: .black.opacity(palette.shadowOpacity),
         radius: 20,
@@ -55,30 +50,21 @@ struct OverlayCanvasBackdrop: View {
   var increasedContrast = false
   var cornerRadius: CGFloat = CSRadius.window
   var role: OverlayGlassRole = .readingCanvas
+  var showsBorder = false
+  var topInset: CGFloat = 0
   var tuningSurface: ChromeGlassSurface = .compactOverlay
   var glassPreferences = ChromeGlassPreferences()
 
   var body: some View {
-    ZStack {
-      if (reduceTransparencyOverride ?? reduceTransparency) || increasedContrast
-        || (contrastOverride ?? contrast) == .increased
-      {
-        Rectangle().fill(palette.desktopBackground.color)
-      } else {
-        OverlayDesktopMaterial(
-          palette: palette, cornerRadius: cornerRadius,
-          tintColor: role == .chrome && glassPreferences.tint(for: tuningSurface) > 0
-            ? palette.desktopBackground.nsColor.withAlphaComponent(
-              glassPreferences.tint(for: tuningSurface))
-            : nil)
-        if role == .readingCanvas {
-          Rectangle()
-            .fill(Color(nsColor: Self.glassVeil(palette)))
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-        }
-      }
-    }
+    OverlayDesktopMaterial(
+      configuration: .init(
+        palette: palette, cornerRadius: cornerRadius, role: role,
+        opaque: (reduceTransparencyOverride ?? reduceTransparency) || increasedContrast
+          || (contrastOverride ?? contrast) == .increased,
+        tintColor: role == .chrome && glassPreferences.tint(for: tuningSurface) > 0
+          ? palette.desktopBackground.nsColor.withAlphaComponent(
+            glassPreferences.tint(for: tuningSurface))
+          : nil, showsBorder: showsBorder, topInset: topInset))
   }
 
   /// The shared sheet colour over the native glass: near-black on ink,
@@ -87,7 +73,7 @@ struct OverlayCanvasBackdrop: View {
   /// 2026-10-14 still took the page's brightness; the macOS Liquid Glass slider
   /// does not darken it.
   ///
-  /// The veil is a SwiftUI layer above the glass, not the glass's `tintColor`:
+  /// The veil is a separate layer owned with the glass, not its `tintColor`:
   /// Liquid Glass drops its tint and brightens when the window is not key, so a
   /// tinted sheet read #09 active and #50 inactive on the same wizard (Maciej's
   /// screenshots, 2026-10-15 17:36). A layer above the glass keeps 84 % of the
@@ -102,45 +88,125 @@ struct OverlayCanvasBackdrop: View {
 /// Sample the desktop behind the non-activating panel, not its empty content.
 /// Keep the material active while the user types into another application.
 private struct OverlayDesktopMaterial: NSViewRepresentable {
-  let palette: OverlayAppearancePalette
-  let cornerRadius: CGFloat
-  var tintColor: NSColor? = nil
+  let configuration: OverlayCanvasBackdropView.Configuration
 
-  func makeNSView(context: Context) -> NSView {
-    if #available(macOS 26, *) {
-      let view = OverlayDesktopGlassView()
-      view.style = .regular
-      view.cornerRadius = cornerRadius
-      applyAppearance(to: view)
-      return view
-    }
-    let view = OverlayDesktopEffectView()
-    view.material = .hudWindow
-    view.blendingMode = .behindWindow
-    view.state = .active
-    applyAppearance(to: view)
-    return view
+  func makeNSView(context: Context) -> OverlayCanvasBackdropView {
+    OverlayCanvasBackdropView(configuration: configuration)
   }
 
-  func updateNSView(_ nsView: NSView, context: Context) {
-    if #available(macOS 26, *), let glass = nsView as? OverlayDesktopGlassView,
-      glass.cornerRadius != cornerRadius
-    {
-      glass.cornerRadius = cornerRadius
-    }
-    applyAppearance(to: nsView)
+  func updateNSView(_ view: OverlayCanvasBackdropView, context: Context) {
+    view.configure(configuration)
+  }
+}
+
+/// The canvas material and its reading veil have one native owner. A resize
+/// capture temporarily excludes this owner, so a frozen foreground image never
+/// carries an old-sized sheet. The preview reuses the same material policy.
+final class OverlayCanvasBackdropView: NSView {
+  struct Configuration: Equatable {
+    let palette: OverlayAppearancePalette
+    let cornerRadius: CGFloat
+    let role: OverlayGlassRole
+    let opaque: Bool
+    let tintColor: NSColor?
+    var showsBorder = false
+    var topInset: CGFloat = 0
   }
 
-  private func applyAppearance(to view: NSView) {
-    let name: NSAppearance.Name = palette.appearance == .dark ? .darkAqua : .aqua
-    if view.appearance?.name != name {
-      view.appearance = NSAppearance(named: name)
+  private(set) var configuration: Configuration
+  private var material: NSView?
+  private let veil = NSView()
+
+  init(configuration: Configuration) {
+    self.configuration = configuration
+    super.init(frame: .zero)
+    identifier = NSUserInterfaceItemIdentifier("overlay-canvas-backdrop")
+    wantsLayer = true
+    veil.wantsLayer = true
+    addSubview(veil)
+    applyConfiguration()
+  }
+
+  required init?(coder: NSCoder) { nil }
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+  func configure(_ value: Configuration) {
+    guard configuration != value else { return }
+    configuration = value
+    applyConfiguration()
+  }
+
+  private func applyConfiguration() {
+    let value = configuration
+    appearance = NSAppearance(named: value.palette.appearance == .dark ? .darkAqua : .aqua)
+    layer?.cornerRadius = value.cornerRadius
+    layer?.cornerCurve = .continuous
+    layer?.masksToBounds = true
+    // Keep the existing window perimeter, without drawing a new border along
+    // the reading/header boundary when the reading layers start below it.
+    layer?.borderWidth = value.showsBorder ? 1 : 0
+    layer?.borderColor = value.palette.border.nsColor.cgColor
+    if value.opaque {
+      // Opaque accessibility must remove desktop sampling, not just hide it.
+      material?.removeFromSuperview()
+      material = nil
+    } else if material == nil {
+      let view: NSView
+      if #available(macOS 26, *) {
+        view = OverlayDesktopGlassView()
+      } else {
+        view = OverlayDesktopEffectView()
+      }
+      material = view
+      addSubview(view, positioned: .below, relativeTo: veil)
     }
-    if #available(macOS 26, *), let glass = view as? OverlayDesktopGlassView,
-      glass.tintColor != tintColor
-    {
-      glass.tintColor = tintColor
+    material?.appearance = appearance
+    veil.isHidden = !value.opaque && value.role == .chrome
+    veil.layer?.backgroundColor =
+      (value.opaque
+      ? value.palette.desktopBackground.nsColor
+      : OverlayCanvasBackdrop.glassVeil(value.palette)).cgColor
+    if #available(macOS 26, *), let glass = material as? OverlayDesktopGlassView {
+      glass.style = .regular
+      glass.tintColor = value.tintColor
+    } else if let effect = material as? OverlayDesktopEffectView {
+      effect.material = .hudWindow
+      effect.blendingMode = .behindWindow
+      effect.state = .active
     }
+    sizeLayers()
+  }
+
+  override func setFrameSize(_ newSize: NSSize) {
+    super.setFrameSize(newSize)
+    sizeLayers()
+  }
+
+  override func layout() {
+    super.layout()
+    sizeLayers()
+  }
+
+  private func sizeLayers() {
+    let inset = min(bounds.height, max(0, configuration.topInset))
+    let readingBounds = NSRect(
+      x: bounds.minX, y: bounds.minY + (isFlipped ? inset : 0),
+      width: bounds.width, height: bounds.height - inset)
+    material?.frame = readingBounds
+    veil.frame = readingBounds
+    // The window clip owns the lower corners. Rounding the new top edge
+    // would cut notches into the join beneath the independently owned header.
+    let radius = inset > 0 ? 0 : configuration.cornerRadius
+    veil.layer?.cornerCurve = .continuous
+    veil.layer?.cornerRadius = radius
+    if #available(macOS 26, *), let glass = material as? OverlayDesktopGlassView {
+      glass.cornerRadius = radius
+    }
+  }
+
+  static func all(in view: NSView) -> [OverlayCanvasBackdropView] {
+    if let backdrop = view as? OverlayCanvasBackdropView { return [backdrop] }
+    return view.subviews.flatMap { all(in: $0) }
   }
 }
 

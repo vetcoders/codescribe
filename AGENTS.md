@@ -34,6 +34,10 @@ Avoid introducing `shim`, `compat`, `legacy`, `adapter-for-old`,
 - `docs/DELIVERY_ROUTE.md` — destination selection.
 - `docs/OVERLAY_PRESENTATION.md` — the bus window: bar, Agents panel,
   conversation and Intercom.
+- `docs/ADR/2026-11-08-WINDOW_GLASS_OWNERSHIP.md` — the canonical glass contract:
+  product requirements, surface owners, forbidden masking fixes and optical/
+  performance acceptance. Read it before changing glass, chrome, reading
+  backgrounds or resize feedback, including layout changes to their bounds.
 - `docs/ENV_REGISTRY.toml` — every environment variable the app reads.
 - `docs/LOCALIZATION.md` — String Catalogs and UI copy rules.
 - `docs/PRIMITIVES.md` — workspace roots and runtime building blocks.
@@ -41,6 +45,11 @@ Avoid introducing `shim`, `compat`, `legacy`, `adapter-for-old`,
 - `docs/RELEASE_ROLLBACK_RUNBOOK.md` — Sparkle `appcast.xml`, GitHub Release and client rollback procedure.
 - `.agents/skills/control-codescribe/SKILL.md` — local control CLI (`bin/control-codescribe`) for self-verification.
 - `.agents/skills/ship-pr/SKILL.md` — deterministic PR shipping loop (`npx kcd-skills@latest autopilot ship-pr`).
+
+Glass changes must satisfy the contract's G1–G7 and STOP rule. Preserve live
+native glass and foreground legibility; do not mask seams or tone changes with
+opaque backing. A structural test pass alone does not establish optical or
+resize-performance acceptance. Keep accessibility reading surfaces intact.
 
 After changing the Rust bridge API, regenerate the Swift bindings with
 `make app-bindings`. Do not edit `macos/Codescribe/Bridge/codescribe_ffi.swift`

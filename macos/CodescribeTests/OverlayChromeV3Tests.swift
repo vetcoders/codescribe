@@ -218,4 +218,67 @@ final class OverlayChromeV3Tests: XCTestCase {
     XCTAssertEqual(ChromeGlassTuning.effectiveTint(0, developerEnabled: false), 0)
     XCTAssertEqual(ChromeGlassTuning.effectiveTint(0.35, developerEnabled: false), 0)
   }
+
+  func testExpandedReadingBackdropDoesNotBackTheLiveHeaderAcrossModeChanges() throws {
+    for scheme in [ColorScheme.light, .dark] {
+      let state = OverlayState.previewFormatted()
+      let host = NSHostingView(
+        rootView: DictationOverlayView(state: state)
+          .environment(\.colorScheme, scheme)
+          .environment(\.csReduceTransparencyOverride, false)
+          .environment(\.csContrastOverride, .standard))
+      host.sizingOptions = []
+      let panel = NSPanel(
+        contentRect: NSRect(x: 80, y: 80, width: 640, height: 400),
+        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+      panel.isReleasedWhenClosed = false
+      panel.isOpaque = false
+      panel.backgroundColor = .clear
+      panel.contentView = host
+      BackgroundTestWindow.present(panel)
+      defer { panel.close() }
+
+      for mode in [
+        OverlayPresentationMode.mini, .expanded, .midi, .expanded, .mini,
+      ] {
+        state.setPresentationMode(mode)
+        panel.setContentSize(NSSize(width: 640, height: mode == .expanded ? 400 : 80))
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+        host.layoutSubtreeIfNeeded()
+        let backdrop = try XCTUnwrap(OverlayCanvasBackdropView.all(in: host).first)
+        let header = try XCTUnwrap(
+          descendants(of: host).first {
+            $0.accessibilityIdentifier() == "overlay-header-drag-region"
+          })
+        let headerRect = header.convert(header.bounds, to: backdrop)
+        XCTAssertGreaterThan(headerRect.height, 0)
+        let material = try XCTUnwrap(
+          backdrop.subviews.first {
+            $0 is OverlayDesktopGlassView || $0 is OverlayDesktopEffectView
+          })
+        let veil = try XCTUnwrap(backdrop.subviews.first { $0 !== material })
+        if mode == .expanded {
+          XCTAssertEqual(backdrop.configuration.role, .readingCanvas)
+          XCTAssertFalse(veil.isHidden)
+          XCTAssertTrue(
+            material.frame.intersection(headerRect).isEmpty,
+            "Expanded header glass must not sample a second material behind it")
+          XCTAssertTrue(
+            veil.frame.intersection(headerRect).isEmpty,
+            "The quiet reading veil belongs below the measured live header")
+          XCTAssertGreaterThan(material.frame.height, 0)
+          XCTAssertEqual(material.frame, veil.frame)
+        } else {
+          XCTAssertEqual(backdrop.configuration.role, .chrome)
+          XCTAssertTrue(veil.isHidden)
+          XCTAssertEqual(material.frame, backdrop.bounds)
+        }
+      }
+    }
+  }
+
+  private func descendants(of view: NSView) -> [NSView] {
+    [view] + view.subviews.flatMap { descendants(of: $0) }
+  }
 }

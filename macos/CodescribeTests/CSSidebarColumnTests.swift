@@ -70,6 +70,155 @@ final class CSSidebarColumnTests: XCTestCase {
     }
   }
 
+  func testSettingsToolbarPointerRouteSurvivesHeaderAccessory() throws {
+    try assertNativeToolbarRoute(key: keys[0]) {
+      self.mount(NSHostingController(rootView: SettingsView(model: .preview(.creator))))
+    }
+  }
+
+  func testAgentToolbarPointerRouteSurvivesHeaderAccessory() throws {
+    try assertNativeToolbarRoute(key: keys[1]) {
+      self.show(
+        AgentWindowChrome.makeWindow(
+          content: NSHostingController(rootView: AgentChatView(store: AgentChatStore(engine: nil))))
+      )
+    }
+  }
+
+  /// A controlled removal of our own public accessory distinguishes routing
+  /// obstruction from an unavailable synthetic button/action in this fixture.
+  private func assertNativeToolbarRoute(key: String, make: () -> NSWindow) throws {
+    let previous = UserDefaults.standard.object(forKey: key)
+    UserDefaults.standard.set(true, forKey: key)
+    let window = make()
+    defer {
+      window.close()
+      if let previous {
+        UserDefaults.standard.set(previous, forKey: key)
+      } else {
+        UserDefaults.standard.removeObject(forKey: key)
+      }
+    }
+    func pump() {
+      let deadline = Date().addingTimeInterval(0.35)
+      while Date() < deadline {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        window.displayIfNeeded()
+      }
+    }
+    func route(_ phase: String) throws -> Bool {
+      let root = try XCTUnwrap(window.contentView?.superview)
+      let item = try XCTUnwrap(
+        window.toolbar?.items.first {
+          $0.itemIdentifier.rawValue.localizedCaseInsensitiveContains("toggleSidebar")
+        })
+      let view = try XCTUnwrap(item.view)
+      let point = view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: root)
+      let hit = root.hitTest(point)
+      let isNative = hit.map { $0 === view || $0.isDescendant(of: view) } ?? false
+      var ancestry: [String] = []
+      var ancestor = hit
+      while let current = ancestor {
+        ancestry.append("\(type(of: current)) frame=\(current.convert(current.bounds, to: nil))")
+        ancestor = current.superview
+      }
+      let attachment = XCTAttachment(
+        string:
+          "phase=\(phase) item=\(view.convert(view.bounds, to: nil)) native=\(isNative) "
+          + "hit=\(String(describing: hit))\n" + ancestry.joined(separator: "\n"))
+      attachment.name = "Sidebar pointer route \(phase)"
+      attachment.lifetime = .keepAlways
+      add(attachment)
+      return isNative
+    }
+    pump()
+    let before = try route("with-accessory")
+    let index = try XCTUnwrap(
+      window.titlebarAccessoryViewControllers.firstIndex {
+        $0.view.identifier?.rawValue == "codescribe-window-top-header"
+      })
+    let owner = window.titlebarAccessoryViewControllers[index]
+    window.removeTitlebarAccessoryViewController(at: index)
+    pump()
+    let without = try route("without-accessory")
+    // Public side allocation leaves the toolbar's own leading controls out of
+    // the accessory container. Probe it before changing the product owner.
+    owner.layoutAttribute = .right
+    owner.view.setFrameSize(NSSize(width: window.frame.width - 216, height: 52))
+    window.addTitlebarAccessoryViewController(owner)
+    pump()
+    let restored = try route("restored-accessory")
+    XCTAssertTrue(without, "negative control: native toolbar target without our accessory")
+    XCTAssertTrue(before, "our header must leave the system toolbar pointer target reachable")
+    XCTAssertTrue(restored, "side accessory allocation must preserve the native pointer target")
+  }
+
+  func testCollapsedSettingsGlassCoversNativeControls() throws {
+    try assertCollapsedGlassCoverage(key: keys[0]) {
+      self.mount(NSHostingController(rootView: SettingsView(model: .preview(.creator))))
+    }
+  }
+
+  func testCollapsedAgentGlassCoversNativeControls() throws {
+    try assertCollapsedGlassCoverage(key: keys[1]) {
+      self.show(
+        AgentWindowChrome.makeWindow(
+          content: NSHostingController(rootView: AgentChatView(store: AgentChatStore(engine: nil))))
+      )
+    }
+  }
+
+  /// Visual material coverage is independent of the native toolbar event region.
+  /// This cannot certify optical blur, but must reject a geometric hole first.
+  private func assertCollapsedGlassCoverage(key: String, make: () -> NSWindow) throws {
+    let previous = UserDefaults.standard.object(forKey: key)
+    UserDefaults.standard.set(false, forKey: key)
+    let window = make()
+    defer {
+      window.close()
+      if let previous {
+        UserDefaults.standard.set(previous, forKey: key)
+      } else {
+        UserDefaults.standard.removeObject(forKey: key)
+      }
+    }
+    let deadline = Date().addingTimeInterval(1.5)
+    repeat {
+      RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+      window.displayIfNeeded()
+    } while Date() < deadline && window.titlebarAccessoryViewControllers.isEmpty
+    let root = try XCTUnwrap(window.contentView?.superview)
+    let split = try XCTUnwrap(first(in: root) { $0 is NSSplitView } as? NSSplitView)
+    let controller = try XCTUnwrap(split.delegate as? NSSplitViewController)
+    XCTAssertTrue(try XCTUnwrap(controller.splitViewItems.first).isCollapsed)
+    let viewport = try XCTUnwrap(
+      first(in: root) {
+        $0.identifier?.rawValue == "codescribe-header-viewport"
+      })
+    let glass = try XCTUnwrap(
+      first(in: viewport) {
+        $0.identifier?.rawValue == "codescribe-header-glass"
+      })
+    let band = viewport.convert(viewport.bounds, to: nil)
+    let visible = glass.convert(glass.visibleRect, to: nil)
+    let evidence = XCTAttachment(
+      string:
+        "key=\(key) viewport=\(band) effectiveGlass=\(visible) window=\(window.frame)")
+    evidence.name = "Collapsed header material coverage"
+    evidence.lifetime = .keepAlways
+    add(evidence)
+    XCTAssertEqual(
+      band.minX, 0, accuracy: 1, "material must cover the collapsed native-control region")
+    XCTAssertEqual(band.maxX, window.frame.width, accuracy: 1)
+    XCTAssertEqual(
+      visible.minX, 0, accuracy: 1, "ancestor clipping must not erase the leading material")
+    for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+      let button = try XCTUnwrap(window.standardWindowButton(type))
+      let rect = button.convert(button.bounds, to: nil)
+      XCTAssertTrue(band.contains(rect), "the passive material must continue behind \(type)")
+    }
+  }
+
   private func mount(_ host: NSViewController) -> NSWindow {
     let window = NSWindow(
       contentRect: NSRect(x: 80, y: 80, width: 1120, height: 720),
