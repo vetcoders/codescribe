@@ -33,6 +33,18 @@ does not establish the required optical result. Desktop sampling and the
 treatment of content scrolling inside the window are separate checks; one
 cannot stand in for the other.
 
+Prefer standard AppKit/SwiftUI navigation, controls, materials and scroll-edge
+behaviour when they satisfy the product requirements. Before adding a custom
+toolbar/navigation background or composition, document the unmet requirement,
+why the standard component is insufficient, and a controlled comparison of the
+result. The continuous full-width header is a Codescribe product requirement;
+the custom accessory below is the present construction, not an Apple mandate
+or a reason to reject a standard component that meets the same goal. This
+follows Apple's guidance to minimise custom backgrounds that can interfere
+with system adaptation and scroll-edge effects:
+[Adopting Liquid Glass](https://developer.apple.com/documentation/technologyoverviews/adopting-liquid-glass),
+[Toolbars](https://developer.apple.com/design/human-interface-guidelines/toolbars).
+
 ### G2 — Compose one coherent window
 
 Agent and Settings have one header band above the detail, with continuous glass
@@ -63,16 +75,38 @@ strips and hard panel boundaries need evidence about their actual owner.
 | Window buttons and native sidebar toggle | AppKit; never replace them with lookalikes or modify private system views. |
 | Agent conversation / Settings detail | Their reading canvas below the header, respecting leading and top safe areas. |
 | Agent Context | A compact, neutral opaque card over the conversation; no full-height trailing material or decorative glass owner. |
+| Onboarding window, navigation and actions | `OnboardingWindowController` owns the native host; `OnboardingView` owns header/progress and footer navigation, composing its root through the existing `OverlayCanvasBackdrop` owner with `.chrome` and the onboarding tint scope. |
+| Onboarding reading content | `OnboardingView` owns `stepHeading` and the scrollable reading column; `OnboardingSteps.swift` owns the step bodies and their controls. Their reading role does not become chrome merely because the current root supplies glass behind them; see the boundary below. |
 | Overlay canvas material and reading veil | `OverlayCanvasBackdropView` in `OverlayCanvasSurface.swift`; `.chrome` and `.readingCanvas` are distinct roles. |
 | Expanded overlay header material | `OverlayControlGlass` composed by `DictationOverlayView`; mini/MIDI already use their root chrome material and do not add another header sheet. |
 | Overlay resize feedback | `OverlayResizePreview`; temporary frozen foreground plus a live backdrop using the canvas owner's policy. |
 
 Paths in the table are under `macos/Codescribe/DesignSystem/` or
-`macos/Codescribe/Screens/Overlay/`, except the Agent/Settings screen owners.
+`macos/Codescribe/Screens/Overlay/`, except the Agent/Settings screen owners
+and onboarding under `macos/Codescribe/Screens/Onboarding/`.
 The table records responsibilities, not permission to stack all these materials
 over the same pixels. Check the complete backing chain, including ancestors.
 If ownership is wrong, repair the existing owner or replace it coherently;
 do not add a parallel material, alternate header or fallback renderer.
+
+**Onboarding boundary.** Header/progress and Back/Skip/Continue/Finish are the
+orientation, navigation and action layer. Step titles, explanations, permission
+rows, forms and summaries belong to the reading/content layer. Do not add a new
+decorative glass surface around every step, form or card. Apple's
+[Materials](https://developer.apple.com/design/human-interface-guidelines/materials)
+guidance distinguishes Liquid Glass navigation/controls from the content layer,
+where standard materials provide differentiation.
+
+The current `OnboardingView` places a single `.chrome` backdrop behind the whole
+wizard, including reading content; in standard mode that backdrop is not a
+separate opaque reading canvas. Its intent is the requested coherent glass family, not a rule
+that large reading areas should use Liquid Glass. Treat this full-window use as
+a product-specific composition requiring an explicit rationale and the same
+foreground, accessibility and motion evidence as other glass. The scope entry
+alone does not supply that acceptance. Any future material-boundary change must
+preserve the approved live-glass character and name the affected owner; this
+documentation update neither redesigns the wizard nor authorises an opaque mask
+or removal of its glass. Onboarding readability acceptance remains open.
 
 ### G4 — Repair the cause; never paint over chrome defects
 
@@ -97,6 +131,12 @@ This prohibition does not remove quiet reading canvases, the neutral Context
 card, or required accessibility surfaces. They have their own roles and bounds.
 An existing reading veil is not a precedent for putting one behind chrome.
 
+This seam-mask prohibition is a deliberate **Codescribe product rule**. It is
+not a claim that Apple forbids every backing or dimming treatment: Apple's
+[Materials](https://developer.apple.com/design/human-interface-guidelines/materials)
+guidance includes dimming behind clear glass over bright media. That separate
+use case is not approval to conceal a seam or tone defect in our regular chrome.
+
 ### G5 — Preserve header character through presentation changes
 
 Opening content or changing mini → expanded → MIDI must not turn the same
@@ -119,15 +159,46 @@ an experimental setting or a screenshot's current value does not establish one.
 
 ### G6 — Keep accessibility and interaction correct
 
-Preserve Reduce Transparency and Increase Contrast behaviour. An opaque
-accessibility canvas is intentional and is not an opaque-wash workaround in
+Preserve Reduce Transparency, Increase Contrast and Reduce Motion behaviour.
+An opaque accessibility canvas is intentional and is not an opaque-wash workaround in
 normal mode. Do not force transparency to satisfy a glass screenshot, or
 silently turn on an accessibility path to hide a material defect. Record the
 effective policy in evidence and verify both directions of a policy change.
 
+With Reduce Motion enabled, reduce or replace automatic/repetitive animation
+and large spatial morphs without losing state, meaning or actions. Check step
+changes, mini/MIDI/expanded transitions and any affected glass animation, both
+when the preference is set before opening and when it changes while open.
+Turning it off must restore the intended presentation without stale layers or
+duplicate animations. This does not require removing intentional static glass,
+changing direct pointer tracking, or restoring live Markdown reflow. Follow
+[Apple's accessibility guidance](https://developer.apple.com/design/human-interface-guidelines/accessibility).
+
 Passive material must not steal clicks, keyboard focus, text selection,
 scrolling or drag/resize gestures. Native controls and foreground actions stay
 operable at minimum and normal widths, with the sidebar open and closed.
+
+For changed foreground elements, retain objective evidence alongside optical
+review:
+
+- Use semantic system foreground colours where appropriate and evaluate
+  text/icon contrast against the **rendered effective material**, in the
+  relevant themes, activation and accessibility states and contrasting scenes.
+  Record the foreground size/weight and the applicable contrast criterion from
+  [Apple's accessibility guidance](https://developer.apple.com/design/human-interface-guidelines/accessibility).
+  One ratio between palette constants does not certify a moving glass surface.
+- Inspect labels, roles, values, enabled/selected state and hit regions with
+  [Accessibility Inspector](https://developer.apple.com/documentation/accessibility/accessibility-inspector).
+  Retain supported audit results and explain unchecked cases; an audit alone
+  does not establish a fully accessible interaction.
+- Exercise keyboard-only navigation, focus visibility/order, activation and
+  dismissal for the affected controls, and navigate them with VoiceOver to
+  verify meaningful announcements and the intended reading order. Presence in
+  the accessibility tree is not proof that these actions work.
+
+If a platform/tool cannot audit a property, state the limitation and retain the
+corresponding direct check as open until performed. These checks do not permit
+erasing the optical scene to obtain a contrast pass.
 
 ### G7 — Preserve resize and hidden-window performance protections
 
@@ -172,7 +243,8 @@ and performance verification remain the implementer's responsibility.
 For a glass/layout repair, retain a reviewable receipt containing:
 
 1. Exact base/head and build identity, host/macOS, effective appearance,
-   accessibility policy and developer tint, and the trigger being compared.
+   accessibility policy (including Reduce Motion) and developer tint, and the
+   trigger being compared.
 2. The observed defect, the proposed causal mechanism, its owner, and a
    controlled before/after check that could disprove the explanation.
 3. The relevant native/structural regression checks and their actual results.
@@ -181,12 +253,12 @@ For a glass/layout repair, retain a reviewable receipt containing:
 
 | Check | Required evidence for the affected surface |
 | --- | --- |
-| Material and foreground | Light/Dark and active/inactive on neutral/dark and contrasting colour/text backdrops; read and operate the foreground while the scene changes. |
+| Material and foreground | Light/Dark and active/inactive on neutral/dark and contrasting colour/text backdrops; rendered foreground contrast, supported Accessibility Inspector checks, keyboard-only and VoiceOver operation for changed elements (G6). |
 | Scroll interaction | Real content moving beneath the header; inspect the whole window and both horizontal and vertical joins. |
 | Geometry | Minimum/normal widths, sidebar expanded/collapsed, Context open/closed where affected; native controls remain reachable. |
 | Mode continuity | Mini → expanded → MIDI at unchanged settings, recording the scene and activation; inspect transition and settled result. |
 | Resize | Actual drag, growth/shrink, release/cancel and consecutive gestures; inspect new space, clipping, restoration and latency. |
-| Accessibility / OS | Standard, Reduce Transparency and Increase Contrast; exercise affected supported API branches and identify untested versions. |
+| Accessibility / OS | Standard, Reduce Transparency, Increase Contrast and Reduce Motion; check affected transitions with policies set before opening and changed while open, restoration, supported API branches and untested versions. |
 
 Run the relevant changed cases, not an unrelated screenshot campaign. Existing
 checks include `AgentWindowChromeTests`, `SettingsWindowChromeTests`,
@@ -326,6 +398,10 @@ settled root causes:
 - Frozen resize has structural regression coverage and a single-capture repair.
   The reported lag and visual transition quality still require live acceptance;
   targeted tests do not establish a full-suite or release pass.
+- The onboarding root currently extends chrome glass behind reading content.
+  Its rationale, rendered foreground contrast, assistive interaction and Reduce
+  Motion behaviour need the explicit acceptance described in G3/G6. No such
+  runtime audit was performed by this documentation follow-up.
 
 The small multicoloured native rim was explicitly left alone on 2026-11-08.
 That decision does not accept the separately reported notch, seam or uncovered
