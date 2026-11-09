@@ -379,7 +379,7 @@ bump-major:
 # gate: check class=static ci=no -- cargo fmt, prettier, clippy, semgrep, validate-envs, validate-gates, l10n-lint, l10n-bridge-census (with the L10N_BASE prose ratchet); executes ZERO tests
 # gate: lint class=static ci=no -- cargo fmt --check + clippy on the workspace + verify-swift-format; no tests
 # gate: semgrep class=static ci=no -- semgrep scan --config auto --config .semgrep.yaml (semgrep.yml runs semgrep directly, not this target)
-# gate: verify class=hermetic ci=yes -- structural verifier, Bus-path/install guard, workspace tests and doctests under sandbox HOME with a Codescribe write leak check, separate ship-shaped artifact fence check, model-promotion regression, env registry, String Catalog lint tests and ledger harness; rust.yml runs it. The live throne rows (loct context/occurrences) require the Loctree CLI: where `loct` is not on PATH (GitHub-hosted runners) or CODESCRIBE_SKIP_LIVE_THRONE is set (the runner's PATH loct is a dev build without release semantics) they skip loudly and the pure AST/manifest rows keep their teeth; any host with a release loct on PATH runs the full surface.
+# gate: verify class=hermetic ci=yes -- structural verifier, Bus-path/install guard, workspace tests and doctests under sandbox HOME with a Codescribe write leak check, separate ship-shaped artifact fence check, model-promotion regression, env registry, String Catalog lint tests, the build-app pipeline harness (scripts/tests/build-app-target-root-test.sh: production build-app.sh against stub cargo, Xcode, codesign and security in a disposable repo; no compiler, no keychain) and ledger harness; rust.yml runs it. The live throne rows (loct context/occurrences) require the Loctree CLI: where `loct` is not on PATH (GitHub-hosted runners) or CODESCRIBE_SKIP_LIVE_THRONE is set (the runner's PATH loct is a dev build without release semantics) they skip loudly and the pure AST/manifest rows keep their teeth; any host with a release loct on PATH runs the full surface.
 # gate: test-structural-verifier class=hermetic ci=no -- Python unit/mutant suite for the Loctree-only acoustic structural instrument; pure AST/manifest rows read repo files only, live rows shell out to `loct` and skip where the CLI is absent
 # gate: test-transcript-bus-path class=hermetic ci=no -- shell/Python path-precedence and install-guard fail-closed tests in an isolated HOME; never installs the app
 # gate: verify-canaries class=hermetic ci=no -- claim-vs-execution canaries that read repo files only (scripts/canaries.sh); each row is born from a named incident
@@ -1245,6 +1245,8 @@ verify:
 	bash scripts/tests/single-instance-stamp-test.sh; \
 	echo "=== Verify (Voice Lab install follows main) ==="; \
 	bash scripts/tests/install-voice-lab-test.sh; \
+	echo "=== Verify (build-app pipeline against stub tools) ==="; \
+	bash scripts/tests/build-app-target-root-test.sh; \
 	echo "=== Verify (gate ledger) ==="; \
 	bash scripts/validate-gates.sh; \
 	bash scripts/tests/validate-gates-test.sh; \
