@@ -199,7 +199,7 @@ final class AgentWindowChromeTests: XCTestCase {
   }
 
   /// Match the app's crash-protected host, not only a bare test controller.
-  func testProductionHostRetainsWindowFloorAcrossLayoutUpdates() throws {
+  func testProductionHostRetainsFittingMinimumAcrossLayoutUpdates() throws {
     let previous = UserDefaults.standard.object(forKey: sidebarKey)
     defer { restoreSidebarDefault(previous) }
     UserDefaults.standard.set(true, forKey: sidebarKey)
@@ -236,12 +236,27 @@ final class AgentWindowChromeTests: XCTestCase {
         "expanded=\(expanded) width=\(width) frame=\(window.frame) "
           + "min=\(window.minSize) contentMin=\(window.contentMinSize) "
           + "layout=\(window.contentLayoutRect) fitting=\(hosting.view.fittingSize)")
-      XCTAssertGreaterThanOrEqual(window.contentMinSize.width, AgentWindowMetrics.minWidth)
-      XCTAssertGreaterThanOrEqual(window.contentMinSize.height, AgentWindowMetrics.minHeight)
+      XCTAssertGreaterThanOrEqual(hosting.view.fittingSize.width, AgentWindowMetrics.minWidth)
+      XCTAssertGreaterThanOrEqual(hosting.view.fittingSize.height, AgentWindowMetrics.minHeight)
       XCTAssertTrue(hosting.sizingOptions.isEmpty, "retain the display-cycle crash protection")
     }
+    // AppKit ignores the stored window minimum under Auto Layout. Prove the
+    // actual fitting minimum depends on our two public, app-owned constraints:
+    // removing them reproduces the zero-floor host, restoring them recovers it.
+    let floorIDs = ["codescribe-agent-floor-width", "codescribe-agent-floor-height"]
+    let floor = hosting.view.constraints.filter { floorIDs.contains($0.identifier ?? "") }
+    XCTAssertEqual(floor.count, 2, "one minimum owner per dimension")
+    NSLayoutConstraint.deactivate(floor)
+    let removed = hosting.view.fittingSize
+    NSLayoutConstraint.activate(floor)
+    let restored = hosting.view.fittingSize
+    evidence.append("removed=\(removed) restored=\(restored)")
+    XCTAssertLessThan(removed.width, AgentWindowMetrics.minWidth)
+    XCTAssertLessThan(removed.height, AgentWindowMetrics.minHeight)
+    XCTAssertGreaterThanOrEqual(restored.width, AgentWindowMetrics.minWidth)
+    XCTAssertGreaterThanOrEqual(restored.height, AgentWindowMetrics.minHeight)
     let attachment = XCTAttachment(string: evidence.joined(separator: "\n"))
-    attachment.name = "Production Agent host window floor"
+    attachment.name = "Production Agent fitting minimum and negative control"
     attachment.lifetime = .keepAlways
     add(attachment)
   }
