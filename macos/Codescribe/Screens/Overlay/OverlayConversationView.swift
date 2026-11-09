@@ -673,64 +673,67 @@ struct OverlayConversationView: View {
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier("overlay-conversation-navigation")
     } else {
-      HStack(alignment: .center, spacing: 8) {
-        VStack(alignment: .leading, spacing: 2) {
-          HStack(spacing: 6) {
-            Group {
-              if conversation.channel == "0" {
-                Text(verbatim: "0 · " + sharedChannelName)
-              } else {
-                Text(verbatim: conversation.displayTitle)
+      navigationGlassContainer(
+        HStack(alignment: .center, spacing: 8) {
+          VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+              Group {
+                if conversation.channel == "0" {
+                  Text(verbatim: "0 · " + sharedChannelName)
+                } else {
+                  Text(verbatim: conversation.displayTitle)
+                }
               }
-            }
-            .font(.system(size: 13 * textScale, weight: .bold))
-            .lineLimit(1)
-            .truncationMode(.middle)
-            .layoutPriority(-1)
-            navigationIndicators
-              .fixedSize()
-          }
-          if let descriptor = agentDescriptor ?? conversation.owner?.provider, !descriptor.isEmpty {
-            Text(verbatim: descriptor)
-              .font(.system(size: 11 * textScale))
-              .foregroundStyle(palette.mutedText.color)
+              .font(.system(size: 13 * textScale, weight: .bold))
               .lineLimit(1)
               .truncationMode(.middle)
-              .accessibilityIdentifier("overlay-conversation-agent-descriptor")
+              .layoutPriority(-1)
+              navigationIndicators
+                .fixedSize()
+            }
+            if let descriptor = agentDescriptor ?? conversation.owner?.provider, !descriptor.isEmpty
+            {
+              Text(verbatim: descriptor)
+                .font(.system(size: 11 * textScale))
+                .foregroundStyle(palette.mutedText.color)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .accessibilityIdentifier("overlay-conversation-agent-descriptor")
+            }
+          }
+          .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+          .foregroundStyle(palette.primaryText.color)
+          .help(Text(verbatim: conversation.displayTitle))
+          .accessibilityAddTraits(.isHeader)
+          .accessibilityIdentifier("overlay-conversation-name")
+          .modifier(navigationLabelMenu)
+          if let navigationActions {
+            navigationActions
+              .fixedSize()
+          } else if conversation.owner != nil || conversation.channel == "0" {
+            OverlayAgentAudioControls(
+              open: microphoneOpen, muted: playbackMuted,
+              microphoneEnabled: microphoneEnabled, playbackEnabled: playbackEnabled,
+              palette: palette, onMicrophone: onMicrophone, onPlayback: onPlayback,
+              broadcast: conversation.channel == "0", speaking: conversation.replySpeaking,
+              // The header is a glass card: flat glyphs on it, as on the composer.
+              chrome: false, diameter: navigationPillHeight
+            )
+            .fixedSize()
           }
         }
-        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-        .foregroundStyle(palette.primaryText.color)
-        .help(Text(verbatim: conversation.displayTitle))
-        .accessibilityAddTraits(.isHeader)
-        .accessibilityIdentifier("overlay-conversation-name")
-        .modifier(navigationLabelMenu)
-        if let navigationActions {
-          navigationActions
-            .fixedSize()
-        } else if conversation.owner != nil || conversation.channel == "0" {
-          OverlayAgentAudioControls(
-            open: microphoneOpen, muted: playbackMuted,
-            microphoneEnabled: microphoneEnabled, playbackEnabled: playbackEnabled,
-            palette: palette, onMicrophone: onMicrophone, onPlayback: onPlayback,
-            broadcast: conversation.channel == "0", speaking: conversation.replySpeaking,
-            // The header is a glass card: flat glyphs on it, as on the composer.
-            chrome: false, diameter: navigationPillHeight
-          )
-          .fixedSize()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background {
+          if reduceTransparency {
+            RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
+              .fill(palette.desktopBackground.color)
+          }
         }
-      }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.horizontal, 10)
-      .padding(.vertical, 5)
-      .background {
-        if reduceTransparency {
-          RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
-            .fill(palette.desktopBackground.color)
-        }
-      }
-      .modifier(
-        OverlayControlGlass(cornerRadius: CSRadius.composer, isEnabled: !reduceTransparency)
+        .modifier(
+          OverlayControlGlass(cornerRadius: CSRadius.composer, isEnabled: !reduceTransparency)
+        )
       )
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier("overlay-conversation-navigation")

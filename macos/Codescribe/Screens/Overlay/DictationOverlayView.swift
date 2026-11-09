@@ -1033,6 +1033,7 @@ struct DictationOverlayView: View {
               maximumHeight: geometry.size.height, width: drawerWidth,
               windowWidth: geometry.size.width
             )
+            .zIndex(1)
             .transition(.move(edge: .trailing).combined(with: .opacity))
             .onExitCommand { state.hideAgentSidebar() }
           }

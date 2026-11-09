@@ -157,36 +157,48 @@ struct OverlayConversationComposer: View {
     max(cornerLayout().minimumHeight, editorHeight)
   }
 
+  @ViewBuilder
+  private func composerGlassContainer<Content: View>(_ content: Content) -> some View {
+    if #available(macOS 26.0, *) {
+      GlassEffectContainer(spacing: 6) { content }
+    } else {
+      content
+    }
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 4) {
-      composerContent
-        .background {
-          if reduceTransparency {
-            RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
-              .fill(palette.desktopBackground.color)
+      composerGlassContainer(
+        composerContent
+          .background {
+            if reduceTransparency {
+              RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
+                .fill(palette.desktopBackground.color)
+            }
+            if draftSyncActive {
+              RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
+                .fill(
+                  palette.agentAccent.color.opacity(
+                    reduceTransparency
+                      ? ComposerControlMetrics.syncSurfaceTintReducedTransparencyOpacity
+                      : ComposerControlMetrics.syncSurfaceTintOpacity))
+            }
           }
-          if draftSyncActive {
-            RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
-              .fill(
-                palette.agentAccent.color.opacity(
-                  reduceTransparency
-                    ? ComposerControlMetrics.syncSurfaceTintReducedTransparencyOpacity
-                    : ComposerControlMetrics.syncSurfaceTintOpacity))
+          .modifier(
+            OverlayControlGlass(cornerRadius: CSRadius.composer, isEnabled: !reduceTransparency)
+          )
+          .overlay {
+            if draftSyncActive {
+              RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
+                .strokeBorder(
+                  palette.agentAccent.color.opacity(
+                    ComposerControlMetrics.syncSurfaceBorderOpacity),
+                  lineWidth: 1
+                )
+                .allowsHitTesting(false)
+            }
           }
-        }
-        .modifier(
-          OverlayControlGlass(cornerRadius: CSRadius.composer, isEnabled: !reduceTransparency)
-        )
-        .overlay {
-          if draftSyncActive {
-            RoundedRectangle(cornerRadius: CSRadius.composer, style: .continuous)
-              .strokeBorder(
-                palette.agentAccent.color.opacity(ComposerControlMetrics.syncSurfaceBorderOpacity),
-                lineWidth: 1
-              )
-              .allowsHitTesting(false)
-          }
-        }
+      )
       if microphoneHint.visible {
         Text(verbatim: ComposerCaretOwnership.microphoneHint)
           .font(.system(size: 10 * textScale, weight: .medium))

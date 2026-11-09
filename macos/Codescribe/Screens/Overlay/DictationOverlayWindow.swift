@@ -1275,7 +1275,12 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       region in
       containsCursorPoint(point, in: region)
     }.min { lhs, rhs in
-      lhs.bounds.width * lhs.bounds.height < rhs.bounds.width * rhs.bounds.height
+      let lhsResize =
+        lhs.cursor === NSCursor.resizeLeftRight || lhs.cursor === NSCursor.resizeUpDown
+      let rhsResize =
+        rhs.cursor === NSCursor.resizeLeftRight || rhs.cursor === NSCursor.resizeUpDown
+      if lhsResize != rhsResize { return lhsResize }
+      return lhs.bounds.width * lhs.bounds.height < rhs.bounds.width * rhs.bounds.height
     }
   }
 

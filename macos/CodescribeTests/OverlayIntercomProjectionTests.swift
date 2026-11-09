@@ -100,15 +100,25 @@ final class OverlayIntercomProjectionTests: XCTestCase {
       "Detached conversations leave the group")
     controller.toggleGroup()
     for _ in 0..<50 {
-      if ownedWindows.filter(\.isVisible).count == visibleBeforeFold.count - groupRowCount { break }
+      if ownedWindows.filter(\.isVisible).count == 1 { break }
       try await Task.sleep(for: .milliseconds(20))
     }
     let foldedVisible = Set(ownedWindows.filter(\.isVisible).map(ObjectIdentifier.init))
     XCTAssertEqual(
-      foldedVisible.count, visibleBeforeFold.count - groupRowCount,
-      "Every roster row folds; detached windows stay visible")
-    XCTAssertGreaterThan(foldedVisible.count, 1, "Detached windows remain visible")
+      foldedVisible.count, 1,
+      "Folding the Intercom header collapses both grouped rows and detached windows")
     XCTAssertEqual(store.load(), initialDesktop, "Folding the group never docks detached windows")
+    controller.toggleGroup()
+    for _ in 0..<50 {
+      if Set(ownedWindows.filter(\.isVisible).map(ObjectIdentifier.init)) == visibleBeforeFold {
+        break
+      }
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    XCTAssertEqual(
+      Set(ownedWindows.filter(\.isVisible).map(ObjectIdentifier.init)), visibleBeforeFold,
+      "Unfolding the Intercom header restores the exact grouped and detached layout")
+    XCTAssertEqual(store.load(), initialDesktop, "Unfolding preserves exact detached records")
     let reconciliations = controller.reconciliationRequests
     XCTAssertFalse(controller.canRestoreDockedLayout)
     controller.dockAll()
@@ -151,7 +161,7 @@ final class OverlayIntercomProjectionTests: XCTestCase {
         NSApp.windows.filter {
           !existingWindows.contains(ObjectIdentifier($0)) && $0.isVisible
         }.map(ObjectIdentifier.init))
-      if visible == foldedVisible { break }
+      if visible == visibleBeforeFold { break }
       try await Task.sleep(for: .milliseconds(20))
     }
     XCTAssertFalse(controller.canRestoreDockedLayout)
@@ -159,8 +169,8 @@ final class OverlayIntercomProjectionTests: XCTestCase {
       Set(
         NSApp.windows.filter {
           !existingWindows.contains(ObjectIdentifier($0)) && $0.isVisible
-        }.map(ObjectIdentifier.init)), foldedVisible,
-      "Global restore returns the exact detached windows and the previously folded group")
+        }.map(ObjectIdentifier.init)), visibleBeforeFold,
+      "Global restore returns the exact detached windows and the grouped layout")
     XCTAssertEqual(store.load(), initialDesktop, "Closed history and exact geometry are restored")
     XCTAssertEqual(state.conversationDrafts, drafts)
     XCTAssertEqual(state.captureGeneration, generation)

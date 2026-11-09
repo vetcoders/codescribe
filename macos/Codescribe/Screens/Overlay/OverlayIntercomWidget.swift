@@ -420,7 +420,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     #if DEBUG
       if rendersUnpresentedInstanceCards { return !instance.closed }
     #endif
-    return visible && !instance.closed
+    return visible && !presentation.folded && !instance.closed
   }
 
   fileprivate var visibleRows: Range<Int> {
@@ -435,7 +435,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   fileprivate var hasNext: Bool { visibleRows.upperBound < groupIdentities.count }
 
   func presentsConversation(_ conversationID: String?) -> Bool {
-    guard visible, let conversationID else { return false }
+    guard visible, !presentation.folded, let conversationID else { return false }
     if groupCardsShowComposer || !presentation.expanded.isEmpty,
       cards.contains(where: { identity, panel in
         identity.conversationID == conversationID && panel.isPresented
@@ -483,6 +483,12 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       // Replacing the view or resizing its panel before AppKit finishes a drag
       // can interrupt the native surface that started the gesture.
       if instanceDrag?.id == instance.id { continue }
+      guard !presentation.folded else {
+        instancePanels[instance.id]?.resignKey()
+        instancePanels[instance.id]?.setPresented(
+          false, animated: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+        continue
+      }
       let panel: OverlayIntercomPanel
       if let existing = instancePanels[instance.id] {
         panel = existing
@@ -704,6 +710,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
       return
     }
     let wasClosed = desktop.instances[index].closed
+    if presentation.folded { presentation.folded = false }
     desktop.instances[index].recordHistoryOpening(archivedOwners: state.archivedAgentOwners)
     desktop.instances[index].closed = false
     saveDesktop()
@@ -890,6 +897,11 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     let identity = OverlayIntercomCardIdentity(
       digit: conversation.channel, conversation: conversation)
     state.chooseConversation(conversation.id)
+    if presentation.folded {
+      presentation.folded = false
+      materializeInstances()
+      reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
+    }
     if let open = desktop.openInstance(for: identity) {
       showInstance(open.id)
       return
@@ -918,7 +930,15 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     let action: StaticString = presentation.folded ? "intercom.group.unfold" : "intercom.group.fold"
     let interaction = beginInteraction(action: action)
     presentation.folded.toggle()
+    if presentation.folded {
+      for panel in cards.values { panel.resignKey() }
+      for panel in instancePanels.values { panel.resignKey() }
+    }
+    materializeInstances()
     reconcile(chips: state.channelMapLayoutModel.agents, scale: effectiveScale)
+    if !presentation.folded {
+      raisePresentedGroup()
+    }
     interaction.finish(.unverified, effect: .stateChanged, cleanup: .pending)
   }
 
@@ -1698,6 +1718,7 @@ private struct OverlayIntercomHeader: View {
   let state: OverlayState
   let controller: OverlayIntercomWidgetController
   @State private var isMenuHovered = false
+  @State private var isCountHovered = false
 
   var body: some View {
     let chips = state.channelMapLayoutModel.agents
@@ -1761,8 +1782,25 @@ private struct OverlayIntercomHeader: View {
       if content.showsCount {
         Spacer(minLength: IntercomHeaderMetrics.spacerMinimum)
           .background(OverlayResizeAnchor())
-        Text(verbatim: chips.count.formatted()).csMono(10)
-          .frame(width: metrics.countWidth).allowsHitTesting(false)
+        Button {
+          if let broadcast { controller.openMailbox(broadcast.id) }
+        } label: {
+          Text(verbatim: chips.count.formatted()).csMono(10)
+            .scaleEffect(isCountHovered ? 1.24 : 1.0)
+            .animation(.easeOut(duration: 0.14), value: isCountHovered)
+            .frame(width: metrics.countWidth, height: metrics.controlHeight)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(broadcast == nil)
+        .onHover { isCountHovered = $0 }
+        .conversationActionHover(
+          restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+        )
+        .accessibilityLabel(String(localized: "Shared conversation"))
+        .accessibilityValue(Text(verbatim: chips.count.formatted()))
+        .accessibilityIdentifier("overlay-intercom-header-count")
+        .help(String(localized: "Shared conversation"))
       }
       if controller.headerNeedsPaging {
         Button("Previous agents", systemImage: "chevron.up") { controller.scrollGroup(-1) }
@@ -1840,8 +1878,16 @@ private struct OverlayIntercomHeader: View {
   private func intercomMenuActions(
     broadcast: OverlayConversation?, inbox: OverlayConversation?
   ) -> some View {
-    // Frequent actions sit on the first menu. Saved conversations stays
-    // one named submenu; it is a list, not a layout command.
+    // Mailboxes (Shared conversation and Your Inbox) lead at the very top of
+    // the menu (Founder decision, 2026-11-09); Collapse Intercom and Dock all
+    // agents follow as secondary layout controls.
+    mailboxMenuItem(
+      broadcast, title: String(localized: "Shared conversation"),
+      symbol: "bubble.left.and.bubble.right", identifier: "overlay-intercom-all")
+    mailboxMenuItem(
+      inbox, title: String(localized: "Your Inbox"), symbol: "envelope",
+      identifier: "overlay-intercom-inbox")
+    Divider()
     Button(
       controller.presentation.folded
         ? String(localized: "Expand Intercom") : String(localized: "Collapse Intercom")
@@ -1870,13 +1916,6 @@ private struct OverlayIntercomHeader: View {
       }
     }
     .accessibilityIdentifier("overlay-intercom-agents")
-    Divider()
-    mailboxMenuItem(
-      broadcast, title: String(localized: "Shared conversation"),
-      symbol: "bubble.left.and.bubble.right", identifier: "overlay-intercom-all")
-    mailboxMenuItem(
-      inbox, title: String(localized: "Your Inbox"), symbol: "envelope",
-      identifier: "overlay-intercom-inbox")
     let closed = controller.closedInstances
     if !closed.isEmpty {
       Divider()
@@ -3667,7 +3706,6 @@ private func intercomConversation(state: OverlayState, digit: String) -> Overlay
   ).first { $0.channel == digit }
 }
 
-/// Mailboxes (0 and 10) lead the group rows when present in the snapshot, followed by bound agents.
 @MainActor
 func intercomIdentities(state: OverlayState, chips: [OverlayChannelMapChip])
   -> [OverlayIntercomCardIdentity]
@@ -3679,14 +3717,9 @@ func intercomIdentities(state: OverlayState, chips: [OverlayChannelMapChip])
   for conversation in current where byChannel[conversation.channel] == nil {
     byChannel[conversation.channel] = conversation
   }
-  let mailboxes = ["0", "10"].compactMap { digit -> OverlayIntercomCardIdentity? in
-    guard let conversation = byChannel[digit] else { return nil }
-    return OverlayIntercomCardIdentity(digit: digit, conversation: conversation)
+  return chips.map {
+    OverlayIntercomCardIdentity(
+      digit: $0.digit, conversation: byChannel[$0.digit],
+      name: $0.name)
   }
-  return mailboxes
-    + chips.map {
-      OverlayIntercomCardIdentity(
-        digit: $0.digit, conversation: byChannel[$0.digit],
-        name: $0.name)
-    }
 }
