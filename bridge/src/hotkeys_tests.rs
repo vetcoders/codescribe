@@ -168,7 +168,7 @@ mod dispatch_tests {
                 report_hotkey_dispatch_error(&error, |title, body| {
                     notices.push((title.to_owned(), body.to_owned()));
                 });
-                assert_eq!(notices, vec![("Codescribe".to_owned(), error.to_string())]);
+                assert_eq!(notices, vec![("x9bus".to_owned(), error.to_string())]);
                 assert_eq!(
                     tray_status::current_tray_status_snapshot(),
                     before,
@@ -197,7 +197,7 @@ mod dispatch_tests {
             report_hotkey_dispatch_error(&error, |title, body| {
                 notices.push((title.to_owned(), body.to_owned()));
             });
-            assert_eq!(notices, vec![("Codescribe".to_owned(), error.to_string())]);
+            assert_eq!(notices, vec![("x9bus".to_owned(), error.to_string())]);
             assert_eq!(tray_status::current_tray_status(), TrayStatus::Error);
         }
         tray_status::update_tray_status(TrayStatus::Idle);

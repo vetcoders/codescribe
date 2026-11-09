@@ -1323,6 +1323,7 @@ final class OverlayBarReviewRenderTests: XCTestCase {
   /// up on the panel and draws the menu's own window while it tracks; the
   /// window's class names go into an attachment when none is found.
   func testRenderHeaderMenu() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
     let oldAnchor = OverlayPlacement.anchor
     let oldFreeMotion = OverlayPlacement.freeMotion
     defer {

@@ -323,7 +323,7 @@ final class OverlayTranscriptSurfaceTests: XCTestCase {
         range: canvasStart.upperBound..<overlay.endIndex))
     let canvas = String(overlay[canvasStart.lowerBound..<canvasEnd.lowerBound])
     XCTAssertTrue(
-      canvas.contains("let listOnScreen =\n          agentsSurface"))
+      canvas.contains("let listOnScreen = expandedCanvasActive && state.agentListPresented"))
     XCTAssertTrue(
       canvas.contains("let railShown = agentsSurface && expandedCanvasActive && !listOnScreen"))
     XCTAssertTrue(

@@ -1546,7 +1546,13 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       XCTAssertLessThan(outlineCount * 10, neutralCount, "the outline is a hairline, never a fill")
       let viewportMidpoint = Double(viewport.midX) * Double(bitmap.pixelsWide) / host.bounds.width
       XCTAssertGreaterThan(outlineBorderCount, 10, "the outline has visible vertical edges")
-      XCTAssertGreaterThan(outlineBorderX / Double(max(1, outlineBorderCount)), viewportMidpoint)
+      // In the window a bubble spans the header card's measure, 20 pt in on
+      // both sides (72cded822), so the human outline is centred on the
+      // column; the far-side margin that tells the sides apart is the
+      // Intercom's cue. Colour and outline carry it here.
+      XCTAssertEqual(
+        outlineBorderX / Double(max(1, outlineBorderCount)), viewportMidpoint, accuracy: 4,
+        "the human bubble shares the header card's measure")
 
     }
   }

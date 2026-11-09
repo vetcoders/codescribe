@@ -103,13 +103,12 @@ final class OverlayChannelMapPreferenceTests: XCTestCase {
     var reveals = 0
     state.onRevealIntercom = { reveals += 1 }
     let view = DictationOverlayView(state: state)
-    for mode: OverlayPresentationMode in [.mini, .midi, .expanded] {
+    for mode: OverlayPresentationMode in [.mini, .midi] {
       state.setPresentationMode(mode)
-      let counter = try XCTUnwrap(
+      XCTAssertNil(
         view.channelMap(roster: view.channelStatusView),
-        "Floating panels keep their reveal entrance at every overlay width")
-      XCTAssertTrue(counter.stacked)
-      counter.onCounter()
+        "Fiszki mode removes the duplicate channelMap counter from the main overlay")
+      state.toggleAgentSidebar()
       XCTAssertEqual(state.presentationMode, mode, "Reveal must not switch overlay density")
     }
     XCTAssertEqual(reveals, 2)
@@ -121,7 +120,7 @@ final class OverlayChannelMapPreferenceTests: XCTestCase {
     // The expanded window keeps its own Agents control: the press switches
     // the window to its Agents view and never reveals the Intercom group.
     state.setPresentationMode(.expanded)
-    XCTAssertNil(DictationOverlayView(state: state).channelMap)
+    XCTAssertNil(view.channelMap(roster: view.channelStatusView))
     state.toggleAgentSidebar()
     XCTAssertEqual(reveals, 2, "the expanded window is not the Fiszki router")
     XCTAssertEqual(state.presentationMode, .expanded)

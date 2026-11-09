@@ -1407,7 +1407,8 @@ def recipient_matches_lease(
         expected["bus"] = bus
     if any(owner.get(key) != value for key, value in expected.items()):
         return False
-    if channel is not None and owner.get("channel") not in (None, channel):
+    if (channel is not None and owner.get("channel") is not None
+            and str(owner.get("channel")) != str(channel)):
         return False
     return True
 
@@ -1426,7 +1427,10 @@ def event_has_executable_recipient(event: dict[str, Any], *, name: str | None = 
     if not candidates:
         return True
     if channel not in (None, "0"):
-        channel_matches = [item for item in candidates if item.get("channel") == channel]
+        channel_matches = [
+            item for item in candidates
+            if item.get("channel") is not None and str(item.get("channel")) == str(channel)
+        ]
         if channel_matches:
             candidates = channel_matches
     if name:
@@ -4375,7 +4379,15 @@ class SessionLease:
         }
 
     def queue_delivery(self, payload: dict[str, Any], *, draining_journal: bool = False) -> bool:
-        if not event_has_executable_recipient(payload, name=self.name) or not self.admits_channel_event(payload):
+        if not event_has_executable_recipient(payload, name=self.name):
+            return False
+        frozen = payload.get("recipients")
+        if (isinstance(frozen, list)
+                and any(recipient_matches_lease(owner, provider=self.provider,
+                        provider_session_id=self.provider_session_id,
+                        lease_id=self.lease_id, bus=self.bus, executable_only=False)
+                        for owner in frozen)
+                and not self.admits_channel_event(payload)):
             return False
         delivery_id = payload["delivery_id"]
         refusal = self.channel_publication_refusals.get(payload.get("session_id"))

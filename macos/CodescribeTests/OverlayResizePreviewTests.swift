@@ -8,12 +8,16 @@ import XCTest
 @MainActor
 final class OverlayResizePreviewTests: XCTestCase {
   func testSplitBusResizeStopsAtBothPaneFloorsWithoutReflowOrFolding() throws {
+    let suite = "OverlayResizePreviewTests.splitFloor.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
     let state = OverlayState.previewFormatted()
     state.setAgentsLayout(.split)
     state.showAgentMonitor()
     let panel = try XCTUnwrap(
       DictationOverlayWindow.make(
-        state: state, textScale: TextScaleController(key: "ResizePreview.splitFloor"))
+        state: state, textScale: TextScaleController(key: "ResizePreview.splitFloor"),
+        sizeDefaults: defaults)
         as? FloatingOverlayPanel)
     defer {
       panel.invalidatePresence()
@@ -21,6 +25,9 @@ final class OverlayResizePreviewTests: XCTestCase {
     }
     panel.settleFrameTransition()
     let floor = OverlayAgentDrawerLayout.minimumSplitWindowWidth(textScale: 1)
+    if panel.frame.width <= floor {
+      panel.setContentSize(NSSize(width: floor + 120, height: panel.frame.height))
+    }
     XCTAssertGreaterThanOrEqual(panel.presentationMinimumSize.width, floor)
     let initial = panel.frame
     XCTAssertTrue(panel.beginUserResize(edge: .right, at: .zero))

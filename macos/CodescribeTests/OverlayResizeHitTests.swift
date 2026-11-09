@@ -133,7 +133,9 @@ final class OverlayResizeHitTests: XCTestCase {
       return NSEvent(cgEvent: event.cgEvent!.copy()!)!
     }
     for event in events { panel.sendEvent(event) }
-    try await Task.sleep(for: .milliseconds(50))
+    for _ in 0..<30 where panel.resizeGestureFrame.width == initial.width {
+      try await Task.sleep(for: .milliseconds(15))
+    }
     XCTAssertTrue(panel.isUserResizing)
     XCTAssertEqual(panel.resizeGestureFrame.width, initial.width + 30, accuracy: 0.5)
     XCTAssertEqual(panel.frame, initial, "expanded content waits for release behind the preview")

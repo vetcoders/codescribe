@@ -234,10 +234,19 @@ final class OverlayContentSurfaceTests: XCTestCase {
       panel.invalidatePresence()
       panel.contentView = OverlayContentContainer(hosting: host)
       defer { panel.close() }
+      let visible = panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+      if let visible {
+        panel.setFrameOrigin(
+          NSPoint(
+            x: visible.maxX - 510,
+            y: visible.maxY - DictationOverlayWindow.defaultSize.height - 40))
+      }
       BackgroundTestWindow.present(panel)
       @MainActor func foldPoint() throws -> NSPoint {
+        panel.settleFrameTransition()
         host.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.08))
+        panel.settleFrameTransition()
         host.layoutSubtreeIfNeeded()
         let measured = recorder.frames.preview
         let rect = try XCTUnwrap(measured)

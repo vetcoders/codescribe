@@ -278,7 +278,8 @@ final class OverlayHintPanel {
   /// the hover bit from the card's region can trail the pointer by a frame.
   func retainsPointer(owner: OverlayHintAnchor) -> Bool {
     guard self.owner === owner, interactive, let panel = presentedPanel else { return false }
-    return pointerInside || panel.frame.contains(NSEvent.mouseLocation)
+    return pointerInside
+      || (panel.alphaValue > 0 && panel.frame.contains(NSEvent.mouseLocation))
   }
 
   /// The child takes its parent's level and follows the parent's presence
@@ -321,7 +322,7 @@ final class OverlayHintPanel {
     // mode is `self.interactive` (a plain tooltip arriving under the card is
     // exactly the case).
     if self.owner !== owner, self.interactive, panel.isVisible,
-      panel.frame.contains(NSEvent.mouseLocation)
+      panel.alphaValue > 0, panel.frame.contains(NSEvent.mouseLocation)
     {
       return
     }
@@ -390,7 +391,7 @@ final class OverlayHintPanel {
     // where the pager sits, so a shorter page does not pull the card out from
     // under the pointer (which would read as leaving and close it).
     if !opening, interactive, panel.isVisible,
-      pointerInside || panel.frame.contains(NSEvent.mouseLocation)
+      pointerInside || (panel.alphaValue > 0 && panel.frame.contains(NSEvent.mouseLocation))
     {
       frame.origin.y = panel.frame.minY
       let top = bounds.maxY - Self.screenInset
@@ -423,7 +424,9 @@ final class OverlayHintPanel {
         guard let self, let owner, self.owner === owner else { return }
         // The pointer really in the card keeps it, whatever the hover bit says.
         if self.pointerInside { return }
-        if let panel = self.panel, panel.isVisible, panel.frame.contains(NSEvent.mouseLocation) {
+        if let panel = self.panel, panel.isVisible, panel.alphaValue > 0,
+          panel.frame.contains(NSEvent.mouseLocation)
+        {
           return
         }
         self.hide(owner: owner)

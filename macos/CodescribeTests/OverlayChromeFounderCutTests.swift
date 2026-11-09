@@ -41,7 +41,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       to: "footerHeight = $0")
     XCTAssertFalse(footer.contains("intentRail"), "notices stay out of the actions column")
     XCTAssertTrue(footer.contains(".padding(.bottom, OverlayResizeChrome.actionsBottomInset)"))
-    XCTAssertTrue(overlay.contains("OverlayCanvasSurface(palette: palette)"))
+    XCTAssertTrue(overlay.contains("OverlayCanvasSurface(\n      palette: palette,"))
     XCTAssertFalse(overlay.contains("CSSidebarMaterial()"), "the actions share the canvas material")
     XCTAssertTrue(overlay.contains("overlay-transcript-actions"))
   }
@@ -1081,7 +1081,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       to: "private func agentDrawerColumn")
     XCTAssertFalse(
       column.contains("CSSidebarMaterial()"), "accessibility follows the shared canvas")
-    XCTAssertTrue(source.contains("OverlayCanvasSurface(palette: palette)"))
+    XCTAssertTrue(source.contains("OverlayCanvasSurface(\n      palette: palette,"))
     let material = try self.source(at: "Codescribe/Screens/Overlay/OverlayCanvasSurface.swift")
     XCTAssertTrue(material.contains("reduceTransparency"))
     XCTAssertTrue(material.contains("increasedContrast"))
@@ -1741,7 +1741,8 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     // The pinned pill is compact (Maciej, 2026-11-06): All keeps one line,
     // and its last message stays one hover away.
     let all = try section(
-      of: roster, from: "private func pinnedMailboxPill(", to: "private func scaledMonitorBody(")
+      of: roster, from: "private struct OverlayPinnedMailboxRow: View",
+      to: "private struct OverlayAgentMonitorBody<")
     XCTAssertTrue(all.contains(".lineLimit(1)"), "one line belongs to All")
     XCTAssertTrue(all.contains("OverlayRosterMessageHint("), "the preview is the hover hint")
     XCTAssertFalse(roster.contains("overlay-all-preview"))

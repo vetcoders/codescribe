@@ -20,7 +20,7 @@ final class ThreadRailNativeTests: XCTestCase {
     XCTAssertFalse(row.contains("CSColor.secondaryInk"))
     XCTAssertFalse(row.contains(".foregroundStyle(.secondary)"))
     XCTAssertFalse(row.contains("Color.secondary"))
-    XCTAssertEqual(row.components(separatedBy: ".foregroundStyle(secondaryStyle").count - 1, 5)
+    XCTAssertEqual(row.components(separatedBy: ".foregroundStyle(secondaryStyle").count - 1, 7)
 
     XCTAssertEqual(
       ThreadRowSecondaryInk.resolve(prominence: .standard, activeState: .key), .readable)

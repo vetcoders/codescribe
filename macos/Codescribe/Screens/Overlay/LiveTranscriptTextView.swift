@@ -647,6 +647,14 @@ struct LiveTranscriptTextView: NSViewRepresentable {
 final class LiveTranscriptScrollView: NSScrollView {
   weak var followCoordinator: LiveTranscriptTextView.Coordinator?
 
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    let hit = super.hitTest(point)
+    // Content-inset margins belong to the underlying window drag region while
+    // the document text view and vertical scroller keep their own hits.
+    if hit === self || hit === contentView { return nil }
+    return hit
+  }
+
   override func scrollWheel(with event: NSEvent) {
     followCoordinator?.userScrollBegan()
     super.scrollWheel(with: event)

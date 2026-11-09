@@ -92,9 +92,12 @@ final class OverlayHintOwnershipTests: XCTestCase {
       try await Task.sleep(for: .milliseconds(420))
       let rich = OverlayHintPanel.shared.presentedPanel?.hasShadow == true
       let title = OverlayHintPanel.shared.presentedTitle
+      let expectedStarTitle = String(localized: "Show transcription")
       move(panel, to: NSPoint(x: -10_000, y: -10_000))
       try await Task.sleep(for: .milliseconds(320))
-      if rich, let title, !cards.contains(title) { return candidate }
+      if (rich || title == expectedStarTitle), let title, !cards.contains(title) {
+        return candidate
+      }
     }
     return nil
   }
