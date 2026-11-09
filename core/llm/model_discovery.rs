@@ -15,12 +15,13 @@ use chrono::Utc;
 use reqwest::Client;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 use tracing::warn;
 
 use crate::config::Config;
 use crate::llm::account_auth::{self, GoogleCredential};
-use crate::llm::provider::{ProviderRef, ResolvedProvider, WireFamily};
+use crate::llm::provider::{ProviderKind, ProviderRef, ResolvedProvider, WireFamily};
 use crate::llm::vendors;
 
 /// 5s client timeout for live /models discovery.
@@ -30,6 +31,9 @@ use crate::llm::vendors;
 /// provider additionally aborts the in-flight request (per-provider generation
 /// registry below), so this timeout is the worst case, not the supersede path.
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
+/// Codex catalogue protocol version, pinned to the locally reviewed OMP donor
+/// (`packages/catalog/src/wire/codex.ts`). This is not the app's version.
+const CODEX_CATALOG_CLIENT_VERSION: &str = "0.159.0";
 /// Last-good models cache filename under the Codescribe config dir.
 const CACHE_FILE_NAME: &str = "model_discovery_cache.json";
 
@@ -286,25 +290,84 @@ fn run_test_after_claim(provider: &ProviderRef) {
     }
 }
 
-/// Discover models for one resolved provider row with the key the caller
-/// read for its account (`cached_runtime_key(provider.key_account)`).
+/// Account authentication follows the same provider policy as runtime requests.
+fn account_discovery_vendor(
+    provider: &ResolvedProvider,
+) -> Result<Option<ProviderKind>, ModelDiscoveryError> {
+    let Some(vendor @ (ProviderKind::OpenAiResponses | ProviderKind::XaiResponses)) =
+        provider.oauth_vendor
+    else {
+        return Ok(None);
+    };
+    if provider.wire != WireFamily::OpenAiResponses {
+        return Ok(None);
+    }
+    match account_auth::load_account_tokens(vendor) {
+        Ok(_) => Ok(Some(vendor)),
+        Err(account_auth::AccountAuthError::NotSignedIn(_)) => Ok(None),
+        Err(_) => Err(ModelDiscoveryError::Network {
+            provider: provider.reference.clone(),
+            message: "The signed-in account credentials could not be read. Sign in again.".into(),
+        }),
+    }
+}
+
+/// An opaque credential/endpoint scope keeps API-key catalogues and different
+/// OAuth sessions apart. No credential bytes are written into the cache.
+fn account_catalog_cache_key(provider: &ProviderRef, endpoint: &str, token: &str) -> String {
+    let mut hash = Sha256::new();
+    let provider_key = provider.as_string();
+    for part in [provider_key.as_str(), endpoint, token] {
+        hash.update(part.as_bytes());
+        hash.update([0]);
+    }
+    format!(
+        "{}:oauth:{}",
+        provider.as_string(),
+        hex::encode(hash.finalize())
+    )
+}
+
+fn discovery_runtime(
+    provider: &ProviderRef,
+) -> Result<&'static tokio::runtime::Runtime, ModelDiscoveryError> {
+    // Account auth owns detached refresh transactions through token rotation
+    // and persistence. Cancelling a catalogue request must not drop their
+    // runtime and kill the transaction after the provider rotated its token.
+    static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, std::io::Error>> = OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .thread_name("codescribe-model-discovery")
+                .enable_all()
+                .build()
+        })
+        .as_ref()
+        .map_err(|error| ModelDiscoveryError::Network {
+            provider: provider.clone(),
+            message: format!("failed to start discovery runtime: {error}"),
+        })
+}
+
+/// Discover models with the provider's signed-in account, or its API key when
+/// no account is signed in. Key-required rows fail closed without either;
+/// key-optional custom rows are asked without Authorization. Failed requests
+/// can use a last-good catalogue only from the same authentication scope.
 ///
-/// A vendor without a key is a hard `no_key` failure and does not fall back
-/// to stale cache. A Custom row without a key is asked without
-/// `Authorization` — a key-optional local host answers, a keyed one returns
-/// 401 with its own words. Network/http/parse failures return last-good
-/// cache when available.
-///
-/// P2-08: each call claims a per-provider generation; a newer call for the same
-/// provider aborts the in-flight fetch (`tokio::select!` on the cancel channel)
-/// and a superseded result never writes cache — it surfaces as `Cancelled`.
+/// Each call claims a provider generation. Superseded requests are cancelled
+/// and cannot overwrite the cache with an older result.
 pub fn discover_models(
     provider: &ResolvedProvider,
     api_key: Option<&str>,
 ) -> Result<ModelDiscoveryResult, ModelDiscoveryError> {
     let reference = &provider.reference;
     let api_key = api_key.map(str::trim).filter(|key| !key.is_empty());
+    // Match the runtime owner: a signed-in Responses vendor uses its account,
+    // even when an API key is also stored for that provider.
+    let account_vendor = account_discovery_vendor(provider)?;
     if api_key.is_none()
+        && account_vendor.is_none()
         && provider.key_required
         && provider.wire != WireFamily::GoogleGenerateContent
     {
@@ -326,21 +389,18 @@ pub fn discover_models(
             provider: reference.clone(),
             message: format!("failed to create HTTP client: {error}"),
         })?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| ModelDiscoveryError::Network {
-            provider: reference.clone(),
-            message: format!("failed to start discovery runtime: {error}"),
-        })?;
+    let runtime = discovery_runtime(reference)?;
 
+    // A failed account refresh must never fall through to an API-key cache.
+    // Once the credential is acquired, its actual request scopes the cache.
+    let mut cache_key = account_vendor.is_none().then(|| reference.as_string());
     let fetched = runtime.block_on(async {
         let fetch = async {
-            // Discovery follows the protocol, not the vendor: every Responses
-            // provider serves the same OpenAI-compatible `/v1/models`.
+            // Public Responses providers share /v1/models. Codex account auth
+            // uses its account backend and catalogue format instead.
             match provider.wire {
                 WireFamily::OpenAiResponses => {
-                    fetch_openai_models(&client, provider, api_key).await
+                    fetch_openai_models(&client, provider, api_key, account_vendor, &mut cache_key).await
                 }
                 WireFamily::AnthropicMessages => {
                     fetch_anthropic_models(&client, provider, api_key.unwrap_or_default()).await
@@ -356,7 +416,12 @@ pub fn discover_models(
         tokio::select! {
             biased;
             _ = cancelled => None,
-            result = fetch => Some(result),
+            result = tokio::time::timeout(DISCOVERY_TIMEOUT, fetch) => Some(result.unwrap_or_else(|_| {
+                Err(ModelDiscoveryError::Network {
+                    provider: reference.clone(),
+                    message: "Model discovery timed out".into(),
+                })
+            })),
         }
     });
 
@@ -365,7 +430,7 @@ pub fn discover_models(
             provider: reference.clone(),
         });
     };
-    commit_fetch_outcome(reference, generation, fetched)
+    commit_fetch_outcome(reference, generation, fetched, cache_key.as_deref())
 }
 
 /// Apply a finished fetch to module state (cache write / cache fallback).
@@ -375,6 +440,7 @@ fn commit_fetch_outcome(
     provider: &ProviderRef,
     generation: u64,
     fetched: Result<Vec<DiscoveredModel>, ModelDiscoveryError>,
+    cache_key: Option<&str>,
 ) -> Result<ModelDiscoveryResult, ModelDiscoveryError> {
     if !finish_generation(provider, generation) {
         return Err(ModelDiscoveryError::Cancelled {
@@ -385,7 +451,9 @@ fn commit_fetch_outcome(
     match fetched {
         Ok(models) => {
             let models = normalize_models(models);
-            if let Err(error) = write_cache(provider, &models) {
+            if let Some(key) = cache_key
+                && let Err(error) = write_cache(provider, key, &models)
+            {
                 warn!("{error}");
             }
             Ok(ModelDiscoveryResult {
@@ -394,8 +462,11 @@ fn commit_fetch_outcome(
                 status: ModelDiscoveryStatus::Fresh,
             })
         }
-        Err(error) => match read_cached_models(provider) {
-            Ok(models) if !models.is_empty() => Ok(ModelDiscoveryResult {
+        Err(error) => match cache_key
+            .map(|key| read_cached_models(provider, key))
+            .transpose()
+        {
+            Ok(Some(models)) if !models.is_empty() => Ok(ModelDiscoveryResult {
                 provider: provider.clone(),
                 models,
                 status: ModelDiscoveryStatus::Cached {
@@ -415,31 +486,128 @@ async fn fetch_openai_models(
     client: &Client,
     provider: &ResolvedProvider,
     api_key: Option<&str>,
+    account_vendor: Option<ProviderKind>,
+    cache_key: &mut Option<String>,
 ) -> Result<Vec<DiscoveredModel>, ModelDiscoveryError> {
     let reference = &provider.reference;
-    let endpoint = provider_models_endpoint(provider)?;
+    let codex = account_vendor == Some(ProviderKind::OpenAiResponses);
+    let mut headers = Vec::new();
+    let endpoint = if codex {
+        let route = account_auth::account_responses_route(ProviderKind::OpenAiResponses)
+            .expect("OpenAI account route exists");
+        headers = route.headers;
+        let mut url =
+            reqwest::Url::parse(&route.endpoint).map_err(|_| ModelDiscoveryError::Parse {
+                provider: reference.clone(),
+                message: "Invalid Codex account endpoint".into(),
+            })?;
+        let base = url
+            .path()
+            .trim_end_matches('/')
+            .strip_suffix("/responses")
+            .ok_or_else(|| ModelDiscoveryError::Parse {
+                provider: reference.clone(),
+                message: "Codex account endpoint must end in /responses".into(),
+            })?
+            .to_string();
+        url.set_path(&format!("{base}/models"));
+        url.query_pairs_mut()
+            .append_pair("client_version", CODEX_CATALOG_CLIENT_VERSION);
+        headers.push(("version".into(), CODEX_CATALOG_CLIENT_VERSION.into()));
+        headers.push(("OpenAI-Beta".into(), "responses=experimental".into()));
+        url.to_string()
+    } else {
+        provider_models_endpoint(provider)?
+    };
+    let secret = match account_vendor {
+        Some(vendor) => Some(account_auth::access_token(vendor).await.map_err(|_| {
+            ModelDiscoveryError::Network {
+                provider: reference.clone(),
+                message: "The signed-in account credentials could not be refreshed. Sign in again."
+                    .into(),
+            }
+        })?),
+        None => api_key.map(ToString::to_string),
+    };
+    if account_vendor.is_some() {
+        *cache_key = secret
+            .as_deref()
+            .map(|token| account_catalog_cache_key(reference, &endpoint, token));
+    }
     let mut request = client.get(endpoint);
-    if let Some(api_key) = api_key {
-        request = request.bearer_auth(api_key);
+    if let Some(secret) = &secret {
+        request = request.bearer_auth(secret);
+    }
+    for (name, value) in headers {
+        request = request.header(name, value);
     }
     let response = request
         .send()
         .await
         .map_err(|error| network_error(reference, error))?;
+    if account_vendor.is_some() && !response.status().is_success() {
+        // OAuth error bodies can echo any part of a bearer token. Do not send
+        // them into UI messages or the persisted last-good cache reason.
+        return Err(http_status_error(
+            reference,
+            response.status(),
+            "Account model discovery rejected the credentialed request",
+        ));
+    }
     let body = response_body_or_error(reference, response).await?;
     let parsed: serde_json::Value =
         serde_json::from_str(&body).map_err(|error| ModelDiscoveryError::Parse {
             provider: reference.clone(),
             message: format!("failed to parse models response: {error}"),
         })?;
-    // Responses-family discovery uses the Libraxis reader (`data[].id`, trimmed).
-    // OpenAI's opaque-id reader and xAI's `models` key are separate pins and
-    // are not consulted on this path.
+    if codex {
+        return codex_models_from_response(reference, &parsed);
+    }
     Ok(vendors::libraxis::models_from_response(&parsed)
         .into_iter()
         .map(|(id, _)| DiscoveredModel {
             display_name: id.clone(),
             id,
+        })
+        .collect())
+}
+
+fn codex_models_from_response(
+    reference: &ProviderRef,
+    body: &serde_json::Value,
+) -> Result<Vec<DiscoveredModel>, ModelDiscoveryError> {
+    let rows = body
+        .get("models")
+        .or_else(|| body.get("data"))
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| ModelDiscoveryError::Parse {
+            provider: reference.clone(),
+            message: "Codex catalogue has no model list".into(),
+        })?;
+    Ok(rows
+        .iter()
+        .filter_map(|row| {
+            if row
+                .get("visibility")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|v| v.eq_ignore_ascii_case("hide") || v.eq_ignore_ascii_case("hidden"))
+            {
+                return None;
+            }
+            let id = row.get("slug").or_else(|| row.get("id"))?.as_str()?.trim();
+            if id.is_empty() {
+                return None;
+            }
+            let display_name = row
+                .get("display_name")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .unwrap_or(id);
+            Some(DiscoveredModel {
+                id: id.into(),
+                display_name: display_name.into(),
+            })
         })
         .collect())
 }
@@ -887,10 +1055,13 @@ fn read_cache_file(provider: &ProviderRef) -> Result<DiscoveryCacheFile, ModelDi
 
 /// Last-good models for one provider, re-normalized on read. Absent entry
 /// yields an empty list, which callers treat as "no cache to fall back to".
-fn read_cached_models(provider: &ProviderRef) -> Result<Vec<DiscoveredModel>, ModelDiscoveryError> {
+fn read_cached_models(
+    provider: &ProviderRef,
+    cache_key: &str,
+) -> Result<Vec<DiscoveredModel>, ModelDiscoveryError> {
     Ok(read_cache_file(provider)?
         .providers
-        .get(provider.as_str().as_ref())
+        .get(cache_key)
         .map(|entry| normalize_models(entry.models.clone()))
         .unwrap_or_default())
 }
@@ -900,6 +1071,7 @@ fn read_cached_models(provider: &ProviderRef) -> Result<Vec<DiscoveredModel>, Mo
 /// must not turn a successful live discovery into a failed one.
 fn write_cache(
     provider: &ProviderRef,
+    cache_key: &str,
     models: &[DiscoveredModel],
 ) -> Result<(), ModelDiscoveryError> {
     let path = cache_path();
@@ -912,7 +1084,7 @@ fn write_cache(
 
     let mut cache = read_cache_file(provider).unwrap_or_default();
     cache.providers.insert(
-        provider.as_string(),
+        cache_key.to_string(),
         CachedProviderModels {
             fetched_at: Utc::now().to_rfc3339(),
             models: models.to_vec(),
@@ -939,6 +1111,7 @@ fn write_cache(
 mod tests {
     use super::*;
     use crate::llm::provider::{CustomProvider, ProviderKind, ProviderRegistry};
+    use crate::test_isolation::ScopedEnv;
     use mockito::Matcher;
     use serial_test::serial;
     use tempfile::TempDir;
@@ -963,6 +1136,250 @@ mod tests {
 
     fn openai_ref() -> ProviderRef {
         ProviderRef::Vendor(ProviderKind::OpenAiResponses)
+    }
+
+    fn oauth_row(server: &mockito::Server, vendor: ProviderKind) -> ResolvedProvider {
+        ResolvedProvider {
+            reference: ProviderRef::Vendor(vendor),
+            oauth_vendor: Some(vendor),
+            ..keyed_row(server, WireFamily::OpenAiResponses)
+        }
+    }
+
+    fn seed_account(env: &mut ScopedEnv, vendor: ProviderKind, access: &str) {
+        use base64::Engine;
+        let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(r#"{"chatgpt_account_id":"catalogue-workspace"}"#);
+        let tokens = account_auth::AccountTokens::new(
+            vendor,
+            access.into(),
+            None,
+            Some(format!("header.{claims}.signature")),
+            None,
+            Some(3600),
+        );
+        let key = match vendor {
+            ProviderKind::OpenAiResponses => account_auth::OPENAI_ACCOUNT_TOKENS_ACCOUNT,
+            ProviderKind::XaiResponses => account_auth::XAI_ACCOUNT_TOKENS_ACCOUNT,
+            _ => panic!("fixture supports Responses accounts"),
+        };
+        env.set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
+        env.set(key, serde_json::to_string(&tokens).unwrap());
+    }
+
+    #[test]
+    #[serial]
+    fn codex_account_catalogue_uses_backend_and_account_even_with_api_key() {
+        let _data = IsolatedDataDir::new();
+        let mut env = ScopedEnv::new();
+        let mut server = mockito::Server::new();
+        let provider = oauth_row(&server, ProviderKind::OpenAiResponses);
+        seed_account(
+            &mut env,
+            ProviderKind::OpenAiResponses,
+            "codex-catalogue-access",
+        );
+        env.set(
+            account_auth::CODEX_BACKEND_ENDPOINT_ENV,
+            format!("{}/backend-api/codex/responses", server.url()),
+        );
+        let public = server.mock("GET", "/v1/models").expect(0).create();
+        let account = server
+            .mock("GET", "/backend-api/codex/models")
+            .match_query(Matcher::UrlEncoded("client_version".into(), "0.159.0".into()))
+            .match_header("authorization", "Bearer codex-catalogue-access")
+            .match_header("chatgpt-account-id", "catalogue-workspace")
+            .match_header("originator", "codescribe")
+            .match_header("version", "0.159.0")
+            .match_header("openai-beta", "responses=experimental")
+            .match_header("x-api-key", Matcher::Missing)
+            .with_status(200)
+            .with_body(r#"{"models":[{"slug":"gpt-account","display_name":"Account model"},{"slug":"gpt-hidden","visibility":"hide"},{"id":"gpt-secondary"}]}"#)
+            .expect(1)
+            .create();
+
+        let result = discover_models(&provider, Some("api-key-must-not-be-sent")).unwrap();
+        assert_eq!(result.status, ModelDiscoveryStatus::Fresh);
+        assert_eq!(
+            result
+                .models
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect::<Vec<_>>(),
+            ["gpt-account", "gpt-secondary"]
+        );
+        assert_eq!(result.models[0].display_name, "Account model");
+        let cache = fs::read_to_string(cache_path()).unwrap();
+        assert!(!cache.contains("codex-catalogue-access"));
+        assert!(!cache.contains("api-key-must-not-be-sent"));
+        public.assert();
+        account.assert();
+    }
+
+    #[test]
+    #[serial]
+    fn xai_account_without_api_key_reads_public_models_with_account_bearer() {
+        let _data = IsolatedDataDir::new();
+        let mut env = ScopedEnv::new();
+        let mut server = mockito::Server::new();
+        let provider = oauth_row(&server, ProviderKind::XaiResponses);
+        seed_account(&mut env, ProviderKind::XaiResponses, "xai-catalogue-access");
+        let account = server
+            .mock("GET", "/v1/models")
+            .match_header("authorization", "Bearer xai-catalogue-access")
+            .with_status(200)
+            .with_body(r#"{"data":[{"id":"grok-account"}]}"#)
+            .expect(1)
+            .create();
+
+        let result = discover_models(&provider, None).unwrap();
+        assert_eq!(result.status, ModelDiscoveryStatus::Fresh);
+        assert_eq!(result.models[0].id, "grok-account");
+        account.assert();
+    }
+
+    #[test]
+    #[serial]
+    fn oauth_failure_cannot_use_api_key_catalogue() {
+        let _data = IsolatedDataDir::new();
+        let mut env = ScopedEnv::new();
+        let mut server = mockito::Server::new();
+        let provider = oauth_row(&server, ProviderKind::XaiResponses);
+        env.set("CODESCRIBE_DISABLE_KEYCHAIN", "1");
+        env.remove(account_auth::XAI_ACCOUNT_TOKENS_ACCOUNT);
+        let _api = server
+            .mock("GET", "/v1/models")
+            .match_header("authorization", "Bearer api-only")
+            .with_status(200)
+            .with_body(r#"{"data":[{"id":"grok-api-only"}]}"#)
+            .create();
+        assert_eq!(
+            discover_models(&provider, Some("api-only")).unwrap().status,
+            ModelDiscoveryStatus::Fresh
+        );
+        seed_account(&mut env, ProviderKind::XaiResponses, "account-only");
+        let account = server
+            .mock("GET", "/v1/models")
+            .match_header("authorization", "Bearer account-only")
+            .with_status(503)
+            .with_body("temporarily unavailable")
+            .expect(1)
+            .create();
+
+        assert_eq!(
+            discover_models(&provider, Some("api-only"))
+                .unwrap_err()
+                .code(),
+            "http_status"
+        );
+        account.assert();
+    }
+
+    #[test]
+    #[serial]
+    fn oauth_last_good_cache_isolated_when_account_credential_changes() {
+        let _data = IsolatedDataDir::new();
+        let mut env = ScopedEnv::new();
+        let mut server = mockito::Server::new();
+        let provider = oauth_row(&server, ProviderKind::XaiResponses);
+        seed_account(&mut env, ProviderKind::XaiResponses, "account-a");
+        let _ok = server
+            .mock("GET", "/v1/models")
+            .with_status(200)
+            .with_body(r#"{"data":[{"id":"grok-account-a"}]}"#)
+            .create();
+        let fresh = discover_models(&provider, None).unwrap();
+        let _fail = server
+            .mock("GET", "/v1/models")
+            .with_status(503)
+            .with_body("outage")
+            .create();
+        let cached = discover_models(&provider, None).unwrap();
+        assert!(matches!(cached.status, ModelDiscoveryStatus::Cached { .. }));
+        assert_eq!(cached.models, fresh.models);
+
+        seed_account(&mut env, ProviderKind::XaiResponses, "account-b");
+        assert_eq!(
+            discover_models(&provider, None).unwrap_err().code(),
+            "http_status"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn oauth_error_body_never_exposes_full_or_truncated_bearer() {
+        let _data = IsolatedDataDir::new();
+        let mut env = ScopedEnv::new();
+        let mut server = mockito::Server::new();
+        let provider = oauth_row(&server, ProviderKind::XaiResponses);
+        let token = "private-token-fragment".repeat(20);
+        seed_account(&mut env, ProviderKind::XaiResponses, &token);
+        let _fail = server
+            .mock("GET", "/v1/models")
+            .with_status(401)
+            .with_body(token)
+            .create();
+
+        let error = discover_models(&provider, None).unwrap_err();
+        assert!(error.rejects_credential());
+        assert!(!error.message().contains("private-token-fragment"));
+    }
+
+    #[test]
+    #[serial]
+    fn corrupt_account_does_not_silently_switch_to_api_key() {
+        let _data = IsolatedDataDir::new();
+        let mut env = ScopedEnv::new();
+        let mut server = mockito::Server::new();
+        let provider = oauth_row(&server, ProviderKind::XaiResponses);
+        env.set(account_auth::XAI_ACCOUNT_TOKENS_ACCOUNT, "invalid-json");
+        let mock = server.mock("GET", "/v1/models").expect(0).create();
+        assert_eq!(
+            discover_models(&provider, Some("api-key"))
+                .unwrap_err()
+                .code(),
+            "network"
+        );
+        mock.assert();
+    }
+
+    #[test]
+    fn codex_parser_accepts_data_but_rejects_an_unrecognized_catalogue() {
+        let models = codex_models_from_response(
+            &openai_ref(),
+            &serde_json::json!({
+                "data": [{"id": "gpt-live"}, {"slug": "hidden", "visibility": "hidden"}]
+            }),
+        )
+        .unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "gpt-live");
+        assert_eq!(
+            codex_models_from_response(
+                &openai_ref(),
+                &serde_json::json!({"error": "not a catalogue"})
+            )
+            .unwrap_err()
+            .code(),
+            "parse"
+        );
+    }
+
+    #[test]
+    fn discovery_runtime_keeps_detached_auth_work_alive_between_calls() {
+        let runtime = discovery_runtime(&openai_ref()).unwrap();
+        let (done, received) = std::sync::mpsc::channel();
+        let (release, waiting) = tokio::sync::oneshot::channel();
+        runtime.block_on(async {
+            tokio::spawn(async move {
+                waiting.await.unwrap();
+                done.send(()).unwrap();
+            });
+        });
+        // The synchronous discovery caller has left block_on. Its cancelled
+        // fetch must still let the auth owner's detached transaction finish.
+        release.send(()).unwrap();
+        received.recv_timeout(Duration::from_secs(1)).unwrap();
     }
 
     /// Live Responses-family discovery reports `Fresh` and lands in the cache
@@ -998,7 +1415,8 @@ mod tests {
                 },
             ]
         );
-        let cached = read_cached_models(&provider.reference).expect("cache read");
+        let cached = read_cached_models(&provider.reference, provider.reference.as_str().as_ref())
+            .expect("cache read");
         assert_eq!(cached, result.models);
     }
 
@@ -1205,7 +1623,8 @@ mod tests {
         assert_eq!(err.code(), "cancelled");
         assert_eq!(err.provider(), &provider.reference);
         mock.assert();
-        let cached = read_cached_models(&provider.reference).expect("cache read");
+        let cached = read_cached_models(&provider.reference, provider.reference.as_str().as_ref())
+            .expect("cache read");
         assert!(
             cached.is_empty(),
             "cancelled discovery must not write cache"
@@ -1237,11 +1656,13 @@ mod tests {
                 id: "gpt-stale-arrival".to_string(),
                 display_name: "gpt-stale-arrival".to_string(),
             }]),
+            Some(provider.reference.as_str().as_ref()),
         )
         .expect_err("stale generation must not commit its result");
 
         assert_eq!(err.code(), "cancelled");
-        let cached = read_cached_models(&provider.reference).expect("cache read");
+        let cached = read_cached_models(&provider.reference, provider.reference.as_str().as_ref())
+            .expect("cache read");
         assert_eq!(cached, fresh.models, "stale result must not mutate cache");
     }
 
