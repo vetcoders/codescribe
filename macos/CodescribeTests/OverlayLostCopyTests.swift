@@ -217,4 +217,37 @@ final class OverlayLostCopyTests: XCTestCase {
     XCTAssertTrue(copied)
     XCTAssertEqual(writes, [raw])
   }
+
+  @MainActor
+  func testCopySelectedSubviewTextCopiesSelectedSubstringWhenFirstResponderSelectionIsEmpty() throws {
+    final class FakeSelectedTextLeafView: NSView {
+      var selectedSubstring: String = "Fragment"
+      override func accessibilitySelectedText() -> String? { selectedSubstring }
+    }
+    var writes: [String] = []
+    let previous = UserTextClipboard.bridgeWrite
+    UserTextClipboard.bridgeWrite = { writes.append($0) }
+    defer { UserTextClipboard.bridgeWrite = previous }
+
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 320, height: 200),
+      styleMask: [.titled], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    let root = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 200))
+    let leaf = FakeSelectedTextLeafView(frame: NSRect(x: 10, y: 10, width: 100, height: 30))
+    root.addSubview(leaf)
+    window.contentView = root
+    defer {
+      window.contentView = nil
+      window.close()
+    }
+
+    XCTAssertTrue(window.hasSelectedSubviewText)
+    XCTAssertTrue(window.copySelectedSubviewText())
+    let deadline = Date().addingTimeInterval(0.5)
+    while writes.isEmpty && Date() < deadline {
+      RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+    }
+    XCTAssertEqual(writes, ["Fragment"])
+  }
 }

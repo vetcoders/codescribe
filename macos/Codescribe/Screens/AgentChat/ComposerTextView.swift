@@ -542,6 +542,21 @@ private final class ComposerNativeTextView: NSTextView, ComposerMicrophoneRedire
     return super.performKeyEquivalent(with: event)
   }
 
+  override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+    if item.action == #selector(NSText.copy(_:)), selectedRange().length == 0 {
+      return window?.hasSelectedSubviewText == true
+    }
+    return super.validateUserInterfaceItem(item)
+  }
+
+  override func copy(_ sender: Any?) {
+    if selectedRange().length > 0 {
+      super.copy(sender)
+    } else {
+      _ = window?.copySelectedSubviewText()
+    }
+  }
+
   override func keyDown(with event: NSEvent) {
     if onKeyDown?(event) == true { return }
     super.keyDown(with: event)

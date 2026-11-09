@@ -628,6 +628,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     if !minimized, let panel = instancePanels[id] {
       instanceFocusRevisions[id, default: 0] &+= 1
       panel.makeKeyAndOrderFront(nil)
+      panel.takeKeyForTextInteraction()
     }
   }
 
@@ -676,6 +677,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     }
     instanceFocusRevisions[id, default: 0] &+= 1
     panel.makeKeyAndOrderFront(nil)
+    panel.takeKeyForTextInteraction()
   }
 
   /// A pill's click and a refused second detach both land here: the open
@@ -817,7 +819,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     guard let conversation = state.conversations.first(where: { identity.matches($0) }) else {
       return
     }
-    if conversation.owner == nil {
+    if conversation.owner == nil, cards[identity] == nil {
       openMailbox(conversation.id)
       return
     }
@@ -826,6 +828,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     positionCards()
     // Only this explicit click grants keyability. Hover never activates the app.
     cards[identity]?.makeKeyAndOrderFront(nil)
+    cards[identity]?.takeKeyForTextInteraction()
     noteGroupedActivity()
   }
 
@@ -1005,8 +1008,9 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   /// in its own window is still an agent (Maciej, 2026-10-23 seal: "pomija —
   /// to bardzo źle"): the wheel reaches its window too.
   func chooserTargets() -> [OverlayConversation] {
-    let agents = identities.compactMap { identity in
-      state.conversations.first { identity.matches($0) }
+    let agents = identities.compactMap { identity -> OverlayConversation? in
+      guard !identity.isHumanInbox, identity.digit != "0" else { return nil }
+      return state.conversations.first { identity.matches($0) }
     }
     return (intercomConversation(state: state, digit: "0").map { [$0] } ?? []) + agents
   }
@@ -1562,6 +1566,9 @@ class OverlayIntercomPanel: NSPanel {
         // a compact card. Hover alone keeps the non-activating card passive.
         allowsKeyForSelection = true
         if !isKeyWindow { makeKey() }
+        if !NSApp.isActive, isVisible, !ignoresMouseEvents, alphaValue > 0 {
+          NSApplication.shared.activate(ignoringOtherApps: true)
+        }
         break
       }
     }
@@ -1571,6 +1578,15 @@ class OverlayIntercomPanel: NSPanel {
   override func resignKey() {
     super.resignKey()
     allowsKeyForSelection = false
+  }
+
+  func takeKeyForTextInteraction() {
+    allowsKeyForSelection = true
+    guard isVisible, !ignoresMouseEvents, alphaValue > 0 else { return }
+    if !NSApp.isActive {
+      NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+    if !isKeyWindow { makeKey() }
   }
 
   override func scrollWheel(with event: NSEvent) {
@@ -1727,6 +1743,21 @@ private struct OverlayIntercomHeader: View {
       .background {
         if !content.showsCount { OverlayResizeAnchor() }
       }
+      Button {
+        controller.openMainWindow(surface: .agents)
+      } label: {
+        Text(verbatim: OverlayHeaderGlyph.agents)
+          .font(.system(size: 11 * scale, weight: .semibold))
+          .frame(width: metrics.groupWidth, height: metrics.controlHeight)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .conversationActionHover(
+        restingColor: palette.bodyText.color, hoverColor: palette.primaryText.color
+      )
+      .accessibilityLabel(String(localized: "Agents"))
+      .accessibilityIdentifier("overlay-intercom-header-agents")
+      .help(String(localized: "Agents"))
       if content.showsCount {
         Spacer(minLength: IntercomHeaderMetrics.spacerMinimum)
           .background(OverlayResizeAnchor())
@@ -2418,7 +2449,8 @@ private struct OverlayIntercomCard: View {
                 .background(OverlayResizeAnchor())
               OverlayIntercomStatusMark(
                 roster: roster, channel: channelRow,
-                kind: channelRow.map { roster.presenceDotKind(for: $0) } ?? .idle,
+                kind: identity.digit == "0"
+                  ? .broadcast : (channelRow.map { roster.presenceDotKind(for: $0) } ?? .idle),
                 palette: palette, hints: false)
             }
           }
@@ -2480,7 +2512,8 @@ private struct OverlayIntercomCard: View {
           } else {
             OverlayIntercomStatusMark(
               roster: roster, channel: channelRow,
-              kind: channelRow.map { roster.presenceDotKind(for: $0) } ?? .idle,
+              kind: identity.digit == "0"
+                ? .broadcast : (channelRow.map { roster.presenceDotKind(for: $0) } ?? .idle),
               palette: palette)
           }
           Button {
@@ -3322,7 +3355,9 @@ private struct OverlayIntercomInstanceCard: View {
       } else if !mini {
         OverlayIntercomStatusMark(
           roster: roster, channel: channelRow,
-          kind: channelRow.map { roster.presenceDotKind(for: $0) } ?? .idle, palette: palette)
+          kind: instance.digit == "0"
+            ? .broadcast : (channelRow.map { roster.presenceDotKind(for: $0) } ?? .idle),
+          palette: palette)
       } else if layout.tier == .icon {
         Image(systemName: "bubble.left").csFont(11)
           .overlayFastHint(instance.name, palette: palette)
@@ -3632,7 +3667,7 @@ private func intercomConversation(state: OverlayState, digit: String) -> Overlay
   ).first { $0.channel == digit }
 }
 
-/// Only agents occupy group rows. The two mailboxes remain header controls.
+/// Mailboxes (0 and 10) lead the group rows when present in the snapshot, followed by bound agents.
 @MainActor
 func intercomIdentities(state: OverlayState, chips: [OverlayChannelMapChip])
   -> [OverlayIntercomCardIdentity]
@@ -3644,9 +3679,14 @@ func intercomIdentities(state: OverlayState, chips: [OverlayChannelMapChip])
   for conversation in current where byChannel[conversation.channel] == nil {
     byChannel[conversation.channel] = conversation
   }
-  return chips.map {
-    OverlayIntercomCardIdentity(
-      digit: $0.digit, conversation: byChannel[$0.digit],
-      name: $0.name)
+  let mailboxes = ["0", "10"].compactMap { digit -> OverlayIntercomCardIdentity? in
+    guard let conversation = byChannel[digit] else { return nil }
+    return OverlayIntercomCardIdentity(digit: digit, conversation: conversation)
   }
+  return mailboxes
+    + chips.map {
+      OverlayIntercomCardIdentity(
+        digit: $0.digit, conversation: byChannel[$0.digit],
+        name: $0.name)
+    }
 }

@@ -91,11 +91,9 @@ final class OverlayIntercomProjectionTests: XCTestCase {
     let conversations = state.conversations.map(\.id)
     let initialDesktop = store.load()
     let visibleBeforeFold = Set(ownedWindows.filter(\.isVisible).map(ObjectIdentifier.init))
-    let allRosterRowCount = state.channelMapLayoutModel.agents.count
-    let groupRowCount = initialDesktop.groupRows(of: [
-      agent,
-      .init(digit: "4", conversation: groupedConversation),
-    ]).count
+    let allIdentities = intercomIdentities(state: state, chips: state.channelMapLayoutModel.agents)
+    let allRosterRowCount = allIdentities.count
+    let groupRowCount = initialDesktop.groupRows(of: allIdentities).count
     XCTAssertEqual(
       visibleBeforeFold.count,
       1 + groupRowCount + initialDesktop.instances.filter { !$0.closed }.count,

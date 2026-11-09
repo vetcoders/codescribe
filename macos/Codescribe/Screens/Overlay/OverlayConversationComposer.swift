@@ -1111,8 +1111,7 @@ private struct ConversationMessageField: NSViewRepresentable {
         if let panel = editor.window as? FloatingOverlayPanel {
           panel.takeKeyForTranscript()
         } else if let panel = editor.window as? OverlayIntercomPanel {
-          guard panel.isVisible, panel.canBecomeKey else { return }
-          panel.makeKeyAndOrderFront(nil)
+          panel.takeKeyForTextInteraction()
         }
         editor.window?.makeFirstResponder(editor)
       }
@@ -1766,7 +1765,18 @@ private struct ConversationMessageField: NSViewRepresentable {
       if item.action == #selector(NSText.paste(_:)) {
         return isEditable && pastedText != nil
       }
+      if item.action == #selector(NSText.copy(_:)), selectedRange().length == 0 {
+        return window?.hasSelectedSubviewText == true
+      }
       return super.validateUserInterfaceItem(item)
+    }
+
+    override func copy(_ sender: Any?) {
+      if selectedRange().length > 0 {
+        super.copy(sender)
+      } else {
+        _ = window?.copySelectedSubviewText()
+      }
     }
 
     /// Every standard Cmd edit shortcut lives here: a nonactivating
@@ -1790,7 +1800,11 @@ private struct ConversationMessageField: NSViewRepresentable {
       case (.command, "v"):
         paste(nil)
       case (.command, "c"):
-        copy(nil)
+        if selectedRange().length > 0 {
+          copy(nil)
+        } else {
+          return window?.copySelectedSubviewText() == true
+        }
       case (.command, "x"):
         cut(nil)
         onTypingActivity()
@@ -1857,12 +1871,14 @@ private struct ConversationMessageField: NSViewRepresentable {
 
     override func mouseDown(with event: NSEvent) {
       (window as? FloatingOverlayPanel)?.takeKeyForTranscript()
+      (window as? OverlayIntercomPanel)?.takeKeyForTextInteraction()
       onEditorActive(true)
       super.mouseDown(with: event)
       // Resigning the old transcript closes its gate during mouseDown. Only
       // an accepted user click reclaims it; programmatic preselection stays passive.
       if window?.firstResponder === self {
         (window as? FloatingOverlayPanel)?.takeKeyForTranscript()
+        (window as? OverlayIntercomPanel)?.takeKeyForTextInteraction()
       }
       notifyFocusChange()
     }

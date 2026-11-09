@@ -3780,7 +3780,8 @@ struct OverlayAgentStatusDot: View {
     case .listening: palette.agentAccent
     // The agent's own voice, violet as the tray's speaking state.
     case .speaking: palette.agentAccent
-    case .present, .stalled: palette.successStatus
+    case .present: palette.successStatus
+    case .stalled: palette.processingStatus
     case .asleep, .sleeping, .idle: palette.mutedText
     }
   }
@@ -3822,24 +3823,21 @@ struct OverlayAgentStatusDot: View {
         .foregroundStyle(tone.color)
         .frame(width: Self.diameter * textScale, height: Self.diameter * textScale)
         .accessibilityHidden(true)
+    } else if kind == .stalled {
+      // A stalled reader wears an amber warning triangle, never a green dot
+      // with an exclamation mark inside (Founder, 2026-11-09: "nie dawaj
+      // wykrzyknika na zielono").
+      Image(systemName: "exclamationmark.triangle.fill")
+        .font(.system(size: Self.diameter * textScale, weight: .semibold))
+        .foregroundStyle(tone.color)
+        .frame(width: Self.diameter * textScale, height: Self.diameter * textScale)
+        .accessibilityHidden(true)
     } else {
       Circle()
         .fill(filled ? tone.color : .clear)
         .overlay {
           if !filled {
             Circle().strokeBorder(tone.color, lineWidth: 1.5)
-          }
-        }
-        .overlay {
-          if kind == .stalled {
-            // The stall's "!" in the panel's background tone, so it is dark
-            // on the light olive of the dark theme and light on the dark
-            // olive of the light theme; the dot itself does not grow.
-            Text(verbatim: "!")
-              .font(.system(size: 7 * textScale, weight: .heavy, design: .rounded))
-              .foregroundStyle(palette.desktopBackground.color)
-              .fixedSize()
-              .accessibilityHidden(true)
           }
         }
         .frame(width: Self.diameter * textScale, height: Self.diameter * textScale)

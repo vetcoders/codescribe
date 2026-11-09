@@ -2459,6 +2459,63 @@ enum OverlayResizeHit: Sendable {
   }
 }
 
+extension NSWindow {
+  /// Whether any descendant view currently holds a non-empty text selection
+  /// (including SwiftUI `AppKitTextInteractionView` leaves that track selection
+  /// without replacing the window's first responder).
+  var hasSelectedSubviewText: Bool {
+    guard let root = contentView else { return false }
+    var stack: [NSView] = [root]
+    while let view = stack.popLast() {
+      stack.append(contentsOf: view.subviews)
+      if let textView = view as? NSTextView {
+        if textView.isSelectable, textView.selectedRange().length > 0 { return true }
+        continue
+      }
+      let range = view.accessibilitySelectedTextRange()
+      if range.location != NSNotFound, range.length > 0 { return true }
+      if let selected = view.accessibilitySelectedText(), !selected.isEmpty { return true }
+    }
+    return false
+  }
+
+  /// Copies an active text selection from any descendant interaction view when
+  /// the window's first responder is an empty composer or a sibling leaf with
+  /// no selection of its own.
+  @discardableResult
+  func copySelectedSubviewText() -> Bool {
+    guard let root = contentView else { return false }
+    var stack: [NSView] = [root]
+    while let view = stack.popLast() {
+      stack.append(contentsOf: view.subviews)
+      if let textView = view as? NSTextView {
+        if textView.isSelectable, textView.selectedRange().length > 0 {
+          textView.copy(nil)
+          return true
+        }
+        continue
+      }
+      let range = view.accessibilitySelectedTextRange()
+      let selected = view.accessibilitySelectedText() ?? ""
+      guard (range.location != NSNotFound && range.length > 0) || !selected.isEmpty else {
+        continue
+      }
+      if view.responds(to: #selector(NSText.copy(_:))) {
+        let before = NSPasteboard.general.changeCount
+        _ = view.tryToPerform(#selector(NSText.copy(_:)), with: nil)
+        if NSPasteboard.general.changeCount != before {
+          return true
+        }
+      }
+      if !selected.isEmpty {
+        Task { @MainActor in _ = await chatCopy(selected) }
+        return true
+      }
+    }
+    return false
+  }
+}
+
 extension NSPanel {
   /// Mounted bubble geometry belongs to its actual presentation window.
   var conversationTextRegions: NSHashTable<NSView>? {
@@ -2491,9 +2548,16 @@ extension NSPanel {
         return true
       }
     } else if let responder = firstResponder,
-      responder.responds(to: #selector(NSText.copy(_:))),
-      responder.tryToPerform(#selector(NSText.copy(_:)), with: nil)
+      responder.responds(to: #selector(NSText.copy(_:)))
     {
+      let before = NSPasteboard.general.changeCount
+      if responder.tryToPerform(#selector(NSText.copy(_:)), with: nil),
+        NSPasteboard.general.changeCount != before
+      {
+        return true
+      }
+    }
+    if copySelectedSubviewText() {
       return true
     }
     if let region = conversationTextRegions?.allObjects

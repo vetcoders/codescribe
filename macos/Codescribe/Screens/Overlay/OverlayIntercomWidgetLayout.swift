@@ -51,10 +51,10 @@ struct IntercomHeaderMetrics: Equatable {
 
   func width(showsCount: Bool, paging: Bool) -> CGFloat {
     let content = IntercomHeaderContent(showsCount: showsCount)
-    // One dots menu and audio; optional count and two pagers.
-    let children = 2 + (showsCount ? 2 : 0) + (paging ? 2 : 0)
+    // Dots menu, Agents button, and audio; optional count and two pagers.
+    let children = 3 + (showsCount ? 2 : 0) + (paging ? 2 : 0)
     return ceil(
-      groupWidth + audioWidth + 2 * content.horizontalInset
+      2 * groupWidth + audioWidth + 2 * content.horizontalInset
         + CGFloat(children - 1) * Self.spacing
         + (showsCount ? countWidth + Self.spacerMinimum : 0)
         + (paging ? 2 * pagingControlWidth : 0))
