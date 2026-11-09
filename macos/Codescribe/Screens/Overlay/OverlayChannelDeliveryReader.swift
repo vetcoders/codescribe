@@ -136,6 +136,12 @@ actor OverlayChannelDeliveryReader {
     var access: UInt64
   }
 
+  private struct ObservedLeaseKey: Equatable {
+    let owner: OverlayConversationOwner
+    let stamp: MetadataObjectStamp?
+    let projectionRevision: UInt64
+  }
+
   private struct Cursor {
     /// Reader-assigned on creation. A replaced cursor restarts its projection's
     /// revision, so the pair, not the revision alone, names a projection state.
@@ -151,6 +157,7 @@ actor OverlayChannelDeliveryReader {
     var projection = OverlayChannelDelivery.Bus()
     var storage = StorageDecoder()
     var storageStart: UInt64?
+    var observedLeases: [String: ObservedLeaseKey] = [:]
   }
 
   init(root: URL, cacheRoot: URL, sharedBus: URL? = nil) {
@@ -219,6 +226,7 @@ actor OverlayChannelDeliveryReader {
     }
     let leasesURL = root.appendingPathComponent("leases", isDirectory: true)
     var leases: [[String: Any]] = []
+    var leaseStamps: [String: MetadataObjectStamp] = [:]
     if FileManager.default.fileExists(atPath: leasesURL.path) {
       let files = try FileManager.default.contentsOfDirectory(
         at: leasesURL, includingPropertiesForKeys: nil
@@ -240,10 +248,15 @@ actor OverlayChannelDeliveryReader {
       }
       for file in selected {
         guard let lease = try? object(at: file) else { continue }
+        let leaseID = file.deletingPathExtension().lastPathComponent
         guard lease["schema"] as? String == "codescribe.agent-bridge.lease.v1",
-          lease["lease_id"] as? String == file.deletingPathExtension().lastPathComponent
+          lease["lease_id"] as? String == leaseID
         else { continue }
         leases.append(lease)
+        let key = file.standardizedFileURL
+        if let stamp = pinnedObjects[key]?.stamp ?? metadataObjects[key]?.stamp {
+          leaseStamps[leaseID] = stamp
+        }
       }
     }
     var paths: [String] = sharedBus.map { [$0.path] } ?? []
@@ -364,7 +377,15 @@ actor OverlayChannelDeliveryReader {
       rosterOwners.append(owner)
       let bus = URL(fileURLWithPath: path).standardizedFileURL
       guard var cursor = buses[bus] else { continue }
-      cursor.projection.observeLease(lease, channel: channel, binding: binding)
+      let leaseKey = ObservedLeaseKey(
+        owner: owner, stamp: leaseStamps[owner.leaseID],
+        projectionRevision: cursor.projection.revision)
+      if cursor.observedLeases[channel] != leaseKey {
+        cursor.projection.observeLease(lease, channel: channel, binding: binding)
+        cursor.observedLeases[channel] = ObservedLeaseKey(
+          owner: owner, stamp: leaseStamps[owner.leaseID],
+          projectionRevision: cursor.projection.revision)
+      }
       if let status = cursor.projection.project(channel: channel, binding: binding, lease: lease) {
         deliveries.append(status)
       }

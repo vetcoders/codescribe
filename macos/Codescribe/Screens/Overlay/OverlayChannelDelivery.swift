@@ -55,6 +55,10 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     private var speechProjectionVersion: Int = 1
     private var receiptCursor: Int = 0
     private var directoryCursor: Int = 0
+    private var cachedReceiptCoordinatesRevision: UInt64? = nil
+    private var cachedReceiptCoordinates: [ReceiptCoordinate] = []
+    private var cachedReceiptDirectoriesRevision: UInt64? = nil
+    private var cachedReceiptDirectories: [String] = []
     private var messageRevisions: [String: UInt64] = [:]
     private var deliveryOrigins: [String: DeliveryOrigin] = [:]
     private var captureAttachmentStages: [String: OverlayCaptureAttachmentReceipt]? = nil
@@ -300,7 +304,9 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
           delivery: delivery, owner: owner, queued: true, accepted: false,
           acknowledged: false)
       }
-      pruneHistory()
+      if historicalOwners.count > Self.historyLimit {
+        pruneHistory()
+      }
     }
 
     mutating func reconcileOwner(_ owner: OverlayConversationOwner) {
@@ -332,19 +338,24 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     /// already observed, so the reader skips that file. A rotating window of
     /// 128 per poll.
     mutating func receiptCoordinates() -> [ReceiptCoordinate] {
-      var result: [ReceiptCoordinate] = []
-      var seen: Set<String> = []
-      for id in messageOrder {
-        guard let message = messages[id] else { continue }
-        for recipient in message.recipients
-        where recipient.broadcastSkipped != true && !recipient.acknowledged {
-          if let delivery = recipient.deliveryID,
-            seen.insert(recipient.owner.id + "\0" + delivery).inserted
-          {
-            result.append((recipient.owner, delivery, recipient.accepted))
+      if cachedReceiptCoordinatesRevision != revision {
+        var result: [ReceiptCoordinate] = []
+        var seen: Set<String> = []
+        for id in messageOrder {
+          guard let message = messages[id] else { continue }
+          for recipient in message.recipients
+          where recipient.broadcastSkipped != true && !recipient.acknowledged {
+            if let delivery = recipient.deliveryID,
+              seen.insert(recipient.owner.id + "\0" + delivery).inserted
+            {
+              result.append((recipient.owner, delivery, recipient.accepted))
+            }
           }
         }
+        cachedReceiptCoordinates = result
+        cachedReceiptCoordinatesRevision = revision
       }
+      let result = cachedReceiptCoordinates
       guard !result.isEmpty else {
         receiptCursor = 0
         return []
@@ -362,27 +373,32 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
     /// unknown or running. A rotating window of 128 per poll; a settled
     /// directory leaves it, whichever bus's copy the files settled.
     mutating func receiptDirectories() -> [String] {
-      var unheard: Set<String> = []
-      for id in messageOrder.reversed() where unheard.count < 32 {
-        guard let message = messages[id], message.kind == .reply,
-          message.playback.map({ $0.state == "waiting" || $0.state == "playing" }) ?? true
-        else { continue }
-        unheard.insert(id)
+      if cachedReceiptDirectoriesRevision != revision {
+        var unheard: Set<String> = []
+        for id in messageOrder.reversed() where unheard.count < 32 {
+          guard let message = messages[id], message.kind == .reply,
+            message.playback.map({ $0.state == "waiting" || $0.state == "playing" }) ?? true
+          else { continue }
+          unheard.insert(id)
+        }
+        var result: [String] = []
+        var seen: Set<String> = []
+        for id in messageOrder {
+          guard let message = messages[id], let directory = receiptDirectory(of: message),
+            !seen.contains(directory)
+          else { continue }
+          let settled = Self.settled(message)
+          let listed =
+            message.sentTo != nil || message.sourceChannel != "0"
+            || !(id.hasPrefix("typed:") || id.hasPrefix("reply:"))
+          if settled, listed, !unheard.contains(id) { continue }
+          seen.insert(directory)
+          result.append(directory)
+        }
+        cachedReceiptDirectories = result
+        cachedReceiptDirectoriesRevision = revision
       }
-      var result: [String] = []
-      var seen: Set<String> = []
-      for id in messageOrder {
-        guard let message = messages[id], let directory = receiptDirectory(of: message),
-          !seen.contains(directory)
-        else { continue }
-        let settled = Self.settled(message)
-        let listed =
-          message.sentTo != nil || message.sourceChannel != "0"
-          || !(id.hasPrefix("typed:") || id.hasPrefix("reply:"))
-        if settled, listed, !unheard.contains(id) { continue }
-        seen.insert(directory)
-        result.append(directory)
-      }
+      let result = cachedReceiptDirectories
       guard !result.isEmpty else {
         directoryCursor = 0
         return []
@@ -434,7 +450,9 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         let identity = String(id.drop(while: { $0 != ":" }).dropFirst())
         return identity.count == 24 ? identity : nil
       }
-      guard let session = message.captureSessionID, Self.channelMessageKey(session) == id else {
+      guard id.hasPrefix("utterance:"), let session = message.captureSessionID,
+        Self.channelMessageKey(session) == id
+      else {
         return nil
       }
       return String(id.dropFirst("utterance:".count))
@@ -1486,6 +1504,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
 
     private mutating func pruneHistory() {
       var bytes = messages.values.reduce(0) { $0 + $1.text.utf8.count }
+      var evicted = false
       while messageOrder.count > Self.historyLimit
         || (bytes > Self.historyByteLimit && messageOrder.count > 1)
       {
@@ -1493,25 +1512,28 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         bytes -= messages.removeValue(forKey: id)?.text.utf8.count ?? 0
         messageRevisions.removeValue(forKey: id)
         deliveryOrigins.removeValue(forKey: id)
+        evicted = true
       }
-      let retainedCaptureSessions = Set(messages.values.compactMap(\.captureSessionID))
-      if let stages = captureAttachmentStages {
-        captureAttachmentStages = stages.filter {
-          retainedCaptureSessions.contains($0.value.captureSessionID)
+      if evicted {
+        let retainedCaptureSessions = Set(messages.values.compactMap(\.captureSessionID))
+        if let stages = captureAttachmentStages {
+          captureAttachmentStages = stages.filter {
+            retainedCaptureSessions.contains($0.value.captureSessionID)
+          }
         }
+        if let commits = captureAttachmentCommits {
+          let retainedStageIDs = Set((captureAttachmentStages ?? [:]).keys)
+          captureAttachmentCommits = commits.filter { retainedStageIDs.contains($0.key) }
+        }
+        let replies = Set(messages.values.compactMap { $0.playback?.replyID })
+        playbackByReply = playbackByReply.filter { replies.contains($0.key) }
+        retiredPlaybackTickets = retiredPlaybackTickets.filter { replies.contains($0.key) }
       }
-      if let commits = captureAttachmentCommits {
-        let retainedStageIDs = Set((captureAttachmentStages ?? [:]).keys)
-        captureAttachmentCommits = commits.filter { retainedStageIDs.contains($0.key) }
-      }
-      let replies = Set(messages.values.compactMap { $0.playback?.replyID })
-      playbackByReply = playbackByReply.filter { replies.contains($0.key) }
-      retiredPlaybackTickets = retiredPlaybackTickets.filter { replies.contains($0.key) }
-      let ownerIDs = Set(
-        messages.values.flatMap { row in
-          row.recipients.map { $0.owner.id } + (row.owner.map { [$0.id] } ?? [])
-        })
       if historicalOwners.count > Self.historyLimit {
+        let ownerIDs = Set(
+          messages.values.flatMap { row in
+            row.recipients.map { $0.owner.id } + (row.owner.map { [$0.id] } ?? [])
+          })
         historicalOwners = historicalOwners.filter { ownerIDs.contains($0.key) }
       }
       if captureRecipients.count > Self.historyLimit {
@@ -1607,9 +1629,17 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       audience.folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))
     }
 
+    private static let hexDigits: [UInt8] = Array("0123456789abcdef".utf8)
+
     private static func identity(_ parts: [String]) -> String {
-      SHA256.hash(data: Data(parts.joined(separator: "\0").utf8))
-        .prefix(12).map { String(format: "%02x", $0) }.joined()
+      let digest = SHA256.hash(data: Data(parts.joined(separator: "\0").utf8)).prefix(12)
+      var out: [UInt8] = []
+      out.reserveCapacity(24)
+      for byte in digest {
+        out.append(hexDigits[Int(byte >> 4)])
+        out.append(hexDigits[Int(byte & 0x0F)])
+      }
+      return String(decoding: out, as: UTF8.self)
     }
   }
 }
@@ -1621,7 +1651,24 @@ struct OverlayConversationOwner: Codable, Equatable, Hashable, Sendable {
   let leaseID: String
   let name: String
   let channel: String
-  var id: String { [provider, providerSessionID, leaseID].joined(separator: "\0") }
+  let id: String
+
+  private enum CodingKeys: String, CodingKey {
+    case provider, providerSessionID, leaseID, name, channel
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    let provider = try container.decode(String.self, forKey: .provider)
+    let providerSessionID = try container.decode(String.self, forKey: .providerSessionID)
+    let leaseID = try container.decode(String.self, forKey: .leaseID)
+    self.provider = provider
+    self.providerSessionID = providerSessionID
+    self.leaseID = leaseID
+    name = try container.decode(String.self, forKey: .name)
+    channel = try container.decode(String.self, forKey: .channel)
+    id = provider + "\0" + providerSessionID + "\0" + leaseID
+  }
 
   init?(row: [String: Any]) {
     guard let provider = row["provider"] as? String, !provider.isEmpty,
@@ -1639,6 +1686,7 @@ struct OverlayConversationOwner: Codable, Equatable, Hashable, Sendable {
       ?? row["name"] as? String ?? row["agent"] as? String ?? row["audience"] as? String
       ?? provider
     channel = row["channel"] as? String ?? ""
+    id = provider + "\0" + session + "\0" + lease
   }
 
   init?(lease: [String: Any], channel: String, name: String) {
@@ -1872,7 +1920,9 @@ struct OverlayConversationMessage: Codable, Equatable, Identifiable, Sendable {
     let summary = (receipt ?? OverlayMessageReceipt(messageID: "")).summary(
       listed: sentTo ?? recipients.map(\.reach))
     let present = Set(
-      recipients.map { OverlayReceiptState.identity(name: $0.reach.name, channel: $0.reach.channel) })
+      recipients.map {
+        OverlayReceiptState.identity(name: $0.reach.name, channel: $0.reach.channel)
+      })
     return OverlayReadReceipt(
       read: summary.read, denominator: summary.denominator,
       unreceipted: summary.recipients.compactMap { recipient -> OverlayConversationReach? in
@@ -2512,7 +2562,8 @@ enum OverlayReceiptState {
         row["channel"] as? String ?? others.compactMap({ $0["channel"] as? String }).first
       // The label is the spelling: the file's `display_name` when it names
       // the same agent, else the admitted list's spelling, else the file's.
-      let spelled = (row["display_name"] as? String)
+      let spelled =
+        (row["display_name"] as? String)
         ?? others.compactMap({ $0["display_name"] as? String }).first
       let label: String? = {
         guard let name else { return nil }

@@ -305,7 +305,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertFalse(state.agentGestureTargets.contains(where: \.isHumanInbox))
     XCTAssertFalse(state.channelMapLayoutModel.chips.contains { $0.digit == "10" })
     let identities = intercomIdentities(state: state, chips: state.channelMapLayoutModel.agents)
-    XCTAssertTrue(identities.contains(where: \.isHumanInbox), "mailboxes lead the Intercom stack")
+    XCTAssertFalse(identities.contains(where: \.isHumanInbox))
     state.conversationDrafts[inbox.id] = "This cannot be sent to myself"
     state.publishConversationText = { _, _, _, _ in
       XCTFail("An inbox with no linked agents has no recipient to publish to")

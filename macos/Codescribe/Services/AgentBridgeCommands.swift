@@ -182,9 +182,17 @@ struct AgentPlaybackIdentity: Hashable, Sendable {
   }
   var storageKey: String { Self.digest([provider, session, bus], bytes: 12) }
 
+  private static let hexDigits: [UInt8] = Array("0123456789abcdef".utf8)
+
   private static func digest(_ parts: [String], bytes: Int) -> String {
-    SHA256.hash(data: Data(parts.joined(separator: "\0").utf8))
-      .prefix(bytes).map { String(format: "%02x", $0) }.joined()
+    let digest = SHA256.hash(data: Data(parts.joined(separator: "\0").utf8)).prefix(bytes)
+    var out: [UInt8] = []
+    out.reserveCapacity(bytes * 2)
+    for byte in digest {
+      out.append(hexDigits[Int(byte >> 4)])
+      out.append(hexDigits[Int(byte & 0x0F)])
+    }
+    return String(decoding: out, as: UTF8.self)
   }
 }
 
@@ -519,6 +527,37 @@ extension RealAgentBridgeInstaller {
     else { throw CocoaError(.fileWriteUnknown) }
   }
 
+  private struct LeaseFileStamp: Equatable, Sendable {
+    let dev: dev_t
+    let ino: ino64_t
+    let size: off_t
+    let mtimeSec: Int
+    let mtimeNsec: Int
+    let candidate: AgentPlaybackIdentity
+  }
+
+  private final class LeaseBindingCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [String: (stamp: LeaseFileStamp, binding: AgentPlaybackBinding?)] = [:]
+
+    func lookup(path: String, stamp: LeaseFileStamp) -> (hit: Bool, binding: AgentPlaybackBinding?)
+    {
+      lock.lock()
+      defer { lock.unlock() }
+      guard let entry = entries[path], entry.stamp == stamp else { return (false, nil) }
+      return (true, entry.binding)
+    }
+
+    func store(path: String, stamp: LeaseFileStamp, binding: AgentPlaybackBinding?) {
+      lock.lock()
+      defer { lock.unlock() }
+      if entries.count > 64 { entries.removeAll(keepingCapacity: true) }
+      entries[path] = (stamp, binding)
+    }
+  }
+
+  private static let leaseBindingCache = LeaseBindingCache()
+
   /// Resolve each live roster session to its actual leased bus, including custom buses.
   @MainActor
   static func boundPlaybackAgents(
@@ -530,6 +569,18 @@ extension RealAgentBridgeInstaller {
       var result: [String: AgentPlaybackBinding] = [:]
       for (channel, candidate) in candidates {
         let path = root.appendingPathComponent("leases/\(candidate.leaseID).json")
+        var st = Darwin.stat()
+        let filePath = path.path
+        guard Darwin.stat(filePath, &st) == 0, st.st_size <= (16 << 20) else { continue }
+        let stamp = LeaseFileStamp(
+          dev: st.st_dev, ino: st.st_ino, size: st.st_size,
+          mtimeSec: st.st_mtimespec.tv_sec, mtimeNsec: st.st_mtimespec.tv_nsec,
+          candidate: candidate)
+        let cached = leaseBindingCache.lookup(path: filePath, stamp: stamp)
+        if cached.hit {
+          if let binding = cached.binding { result[channel] = binding }
+          continue
+        }
         guard let handle = try? FileHandle(forReadingFrom: path) else { continue }
         defer { try? handle.close() }
         guard let data = try? handle.read(upToCount: (16 << 20) + 1), data.count <= (16 << 20),
@@ -539,9 +590,12 @@ extension RealAgentBridgeInstaller {
           row["provider"] as? String == candidate.provider,
           row["provider_session_id"] as? String == candidate.session,
           let bus = row["bus"] as? String, bus.hasPrefix("/")
-        else { continue }
+        else {
+          leaseBindingCache.store(path: filePath, stamp: stamp, binding: nil)
+          continue
+        }
         let model = (row["model"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        result[channel] = AgentPlaybackBinding(
+        let binding = AgentPlaybackBinding(
           identity: AgentPlaybackIdentity(
             provider: candidate.provider, session: candidate.session, bus: bus),
           model: model.flatMap { $0.isEmpty || $0.count > 160 ? nil : $0 },
@@ -553,6 +607,8 @@ extension RealAgentBridgeInstaller {
           },
           frame: (row["frame"] as? [String: Any]).flatMap(AgentFrameBinding.init(row:)),
           terminal: (row["terminal"] as? [String: Any]).flatMap(AgentTerminalBinding.init(row:)))
+        leaseBindingCache.store(path: filePath, stamp: stamp, binding: binding)
+        result[channel] = binding
       }
       return result
     }.value

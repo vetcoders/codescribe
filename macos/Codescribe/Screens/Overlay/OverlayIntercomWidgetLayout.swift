@@ -138,7 +138,23 @@ struct IntercomPreviewTypography: Equatable, Sendable {
 
 /// Measures the same fonts and slots painted by cardHeader. Resizing selects
 /// content; only the text-scale preference changes these typography metrics.
-struct IntercomContentMetrics: Equatable {
+struct IntercomContentMetrics: Equatable, Sendable {
+  private struct CacheKey: Hashable, Sendable {
+    let names: [String]
+    let digits: [String]
+    let scale: CGFloat
+  }
+
+  private struct DigitKey: Hashable, Sendable {
+    let digit: String
+    let fontSize: CGFloat
+  }
+
+  private static let cache = OSAllocatedUnfairLock(
+    initialState: [CacheKey: IntercomContentMetrics]())
+  private static let digitWidthCache = OSAllocatedUnfairLock(
+    initialState: [DigitKey: CGFloat]())
+
   let iconSide: CGFloat
   /// The longest name painted whole.
   let nameWidth: CGFloat
@@ -152,6 +168,11 @@ struct IntercomContentMetrics: Equatable {
   let digitFontSize: CGFloat
 
   init(names: [String], digits: [String], scale: CGFloat) {
+    let key = CacheKey(names: names, digits: digits, scale: scale)
+    if let cached = Self.cache.withLock({ $0[key] }) {
+      self = cached
+      return
+    }
     nameFontSize = 11 * scale
     digitFontSize = 10 * scale
     let font = NSFont.systemFont(ofSize: nameFontSize, weight: .semibold)
@@ -171,6 +192,11 @@ struct IntercomContentMetrics: Equatable {
     // The focus, speaker and microphone are three row-height slots. Their
     // fixed gaps already belong to the name row's 45pt chrome budget.
     actionsWidth = nameWidth + 3 * OverlayIntercomWidgetLayout.controlHeight(scale: scale)
+    let measured = self
+    Self.cache.withLock { entries in
+      if entries.count >= 64 { entries.removeAll() }
+      entries[key] = measured
+    }
   }
 
   /// The antenna and moon: two 14 pt marks 3 pt apart, plus the row's 6 pt
@@ -194,8 +220,19 @@ struct IntercomContentMetrics: Equatable {
   /// Align execution context with the name, after the grip, digit and status.
   func nameLeadingInset(width: CGFloat, digit: String) -> CGFloat {
     let scale = nameFontSize / 11
-    let digitWidth = (digit as NSString).size(withAttributes: [.font: CSFont.nsMono(digitFontSize)])
-      .width
+    let key = DigitKey(digit: digit, fontSize: digitFontSize)
+    let digitWidth: CGFloat
+    if let cached = Self.digitWidthCache.withLock({ $0[key] }) {
+      digitWidth = cached
+    } else {
+      let measured = (digit as NSString).size(withAttributes: [.font: CSFont.nsMono(digitFontSize)])
+        .width
+      Self.digitWidthCache.withLock { entries in
+        if entries.count >= 64 { entries.removeAll() }
+        entries[key] = measured
+      }
+      digitWidth = measured
+    }
     return 24 * max(1, scale) + 3 + digitWidth + 6 + 12 * scale + 6
       + (rowControls(width: width).marks ? marksWidth : 0)
   }

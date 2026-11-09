@@ -185,12 +185,21 @@ enum OverlayDeliveryCursorStore {
     }
   }
 
+  private static let hexDigits: [UInt8] = Array("0123456789abcdef".utf8)
+
   /// SHA256 of the first ≤256 bytes — the same head fingerprint `BusMark`
   /// keeps, so a rotation to an identical length is still detected.
   static func headHash(of file: FileHandle, length: Int = 256) throws -> String {
     try file.seek(toOffset: 0)
     guard (0...256).contains(length) else { throw CocoaError(.fileReadCorruptFile) }
     let head = try file.read(upToCount: length) ?? Data()
-    return SHA256.hash(data: head).map { String(format: "%02x", $0) }.joined()
+    let digest = SHA256.hash(data: head)
+    var out: [UInt8] = []
+    out.reserveCapacity(64)
+    for byte in digest {
+      out.append(hexDigits[Int(byte >> 4)])
+      out.append(hexDigits[Int(byte & 0x0F)])
+    }
+    return String(decoding: out, as: UTF8.self)
   }
 }
