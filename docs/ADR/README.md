@@ -69,11 +69,23 @@ rules that keep agents from re-proposing rejected designs. Every record states
 - **Revisit if:** Automated formal equivalence proofs and hardware-isolated
   notarization sandboxes cover the full release and bus contract surface.
 
+### NO-6: Never conceal glass defects with opaque backing or a second material owner
+
+- **Decision:** Follow the [glass contract](2026-11-08-WINDOW_GLASS_OWNERSHIP.md)
+  before changing glass, chrome, reading-background bounds or resize feedback.
+  Its G1–G7 and STOP rule govern admission. Preserve intentional reading canvases
+  and accessibility surfaces within their roles.
+- **Why:** Painted seam patches, stacked materials and reading-canvas bleed can
+  erase the live optical effect while making one screenshot look repaired.
+  Geometry tests cannot establish visual continuity or resize smoothness.
+- **Revisit if:** The Founder explicitly changes the product goal; a different
+  public implementation may satisfy the existing goal without changing it.
+
 ## Index of ADRs
 
-- [Window glass ownership and titlebar geometry](2026-11-08-WINDOW_GLASS_OWNERSHIP.md):
-  accepted single development direction; system sidebar, AppKit header,
-  hierarchy assumptions, diagnostics and optical acceptance limits.
+- [Glass contract: native materials, chrome and reading surfaces](2026-11-08-WINDOW_GLASS_OWNERSHIP.md):
+  accepted product requirements, ownership, STOP rule, current construction,
+  optical/performance evidence and open acceptance checks.
 
 | ADR                                                                                                    | Status                                      | Summary                                                                                                                             | Revisit if                                                                             |
 | ------------------------------------------------------------------------------------------------------ | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |

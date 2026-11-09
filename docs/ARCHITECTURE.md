@@ -338,8 +338,9 @@ Agent and Settings share `CSWindowTopHeader`: one top titlebar accessory,
 branding and controls. Native window controls and the sidebar toggle remain
 owned by AppKit. Both window owners disable the additional titlebar separator;
 the material retains its native optical edge. See
-[the window glass ADR](ADR/2026-11-08-WINDOW_GLASS_OWNERSHIP.md) for the geometry
-assumptions, attachment diagnostics and revalidation triggers.
+[the glass contract](ADR/2026-11-08-WINDOW_GLASS_OWNERSHIP.md) for the product
+requirements, STOP rule, geometry assumptions, attachment diagnostics and
+optical/performance acceptance. Current geometry is not proof of that acceptance.
 
 - **Width** is a named parameter, not a number per window:
   `CSSidebarWidth.navigation` is 196 / 216 / 300 and both windows use it;

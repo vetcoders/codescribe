@@ -7,6 +7,11 @@ alternative arrangements; this document does not select one as the final UI.
 
 ## Start with the visual owner
 
+The [glass contract](ADR/2026-11-08-WINDOW_GLASS_OWNERSHIP.md) owns the product
+requirements, material/reading roles, STOP rule and optical/performance
+acceptance, including continuity between mini, MIDI and expanded chrome. This
+document owns overlay presentation mechanics; a layout change must respect both.
+
 ### Resize feedback and performance boundary (2026-11-08)
 
 Expanded resize keeps the source window's frame fixed until release. The
