@@ -5,7 +5,7 @@ import SwiftUI
 ///
 /// `CSSidebarColumn` owns the column itself — list style, search field,
 /// material, width and the toggle; the Settings sidebar is its reference
-/// (Monika, 2026-10-18). What stays here is what belongs to the Agent
+/// (Founder, 2026-10-18). What stays here is what belongs to the Agent
 /// window's function: the thread rows and the New conversation action
 /// above them.
 struct ThreadRail: View {
@@ -73,6 +73,9 @@ struct ThreadRail: View {
             ThreadRow(
               thread: thread,
               isActive: thread.id == selectedThreadID,
+              activity: store.headerActivity(in: thread.id),
+              queuedCount: store.queuedTurns(in: thread.id).count,
+              model: store.modelIdentity(for: thread),
               isEditing: editingThreadID == thread.id,
               renameDraft: $renameDraft,
               onSelect: { select(thread.id) },
@@ -100,7 +103,7 @@ struct ThreadRail: View {
   /// conversations. Quiet by design: a create
   /// glyph and its label on a plain row, no capsule and nothing to hover
   /// for — it is visible the moment the window opens, and the reference
-  /// sidebar has no bottom pill to put it in (Monika, 2026-10-18). Same
+  /// sidebar has no bottom pill to put it in (Founder, 2026-10-18). Same
   /// action and same label as the bar it replaces.
   private var newThreadButton: some View {
     Button(action: { store.newThread() }) {
@@ -269,11 +272,14 @@ enum ThreadRowSecondaryInk: Equatable {
 /// System selection, hover and focus are owned by the enclosing List, and so
 /// is the row's ink: the title takes the list's own text style, so it dims
 /// with the window like every other sidebar row instead of staying bright in
-/// a background window (Monika, 2026-10-18). A single-line title over its
+/// a background window (Founder, 2026-10-18). A single-line title over its
 /// quieter time and model line.
 private struct ThreadRow: View {
   let thread: ChatThread
   let isActive: Bool
+  let activity: AgentHeaderActivity
+  let queuedCount: Int
+  let model: String?
   let isEditing: Bool
   @Binding var renameDraft: String
   let onSelect: () -> Void
@@ -321,7 +327,7 @@ private struct ThreadRow: View {
       }
       .accessibilityElement(children: isEditing ? .contain : .combine)
       .accessibilityLabel(title)
-      .accessibilityValue(thread.meta)
+      .accessibilityValue(accessibilitySummary)
       .accessibilityAddTraits(.isButton)
       .accessibilityAddTraits(isActive ? .isSelected : [])
       .accessibilityHint(
@@ -340,6 +346,22 @@ private struct ThreadRow: View {
     thread.isFavorite
       ? String(localized: "Remove from favorites")
       : String(localized: "Add to favorites")
+  }
+
+  private var accessibilitySummary: String {
+    ([thread.meta, model, activity.statusLabel, queuedCount > 0 ? queuedSummary : nil]
+      .compactMap { $0 }).joined(separator: ". ")
+  }
+
+  private var queuedSummary: String {
+    "\(String(localized: "Queued")): \(queuedCount)"
+  }
+
+  private var showsProgress: Bool {
+    switch activity {
+    case .thinking, .answering, .usingTools, .stopping: true
+    case .idle, .awaitingApproval, .failed: false
+    }
   }
 
   private var favoriteHelp: String {
@@ -382,12 +404,36 @@ private struct ThreadRow: View {
       }
 
       HStack(spacing: 5) {
-        Text(ThreadRailMeta.timeOnly(from: thread.meta))
+        if let status = activity.statusLabel {
+          if showsProgress {
+            ProgressView()
+              .controlSize(.mini)
+              .accessibilityHidden(true)
+          }
+          Text(verbatim: status)
+            .lineLimit(1)
+            .font(.caption)
+            .foregroundStyle(secondaryStyle)
+        } else {
+          Text(ThreadRailMeta.timeOnly(from: thread.meta))
+            .lineLimit(1)
+            .font(.caption)
+            .foregroundStyle(secondaryStyle)
+        }
+
+        if queuedCount > 0 {
+          Label {
+            Text(verbatim: "\(queuedCount)")
+          } icon: {
+            Image(systemName: "clock")
+          }
           .lineLimit(1)
           .font(.caption)
           .foregroundStyle(secondaryStyle)
+          .accessibilityLabel(queuedSummary)
+        }
 
-        if let tag = ModelTag.display(for: thread.model) {
+        if let tag = ModelTag.display(for: model) {
           Text(verbatim: "·")
             .font(.caption)
             .foregroundStyle(secondaryStyle.opacity(0.6))

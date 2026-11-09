@@ -4,7 +4,6 @@ import SwiftUI
 /// Hover over an unchosen header control uses the macOS accent; a chosen
 /// control wears its mode's colour (`selectionTint`).
 enum OverlayHeaderAccent {
-  case transcription
   case agents
   case state
 
@@ -13,15 +12,15 @@ enum OverlayHeaderAccent {
   }
 
   /// The chosen control wears its mode's colour. Founder, 2026-10-15: the
-  /// choice shows as a "wyraźne (nie wyraziste)" tint of the mode's colour,
-  /// Agents a light lavender from the agent recording light. Transcription
-  /// takes the listening terracotta of its own recording light; Pin, which is
-  /// not a mode, keeps the system accent.
+  /// choice shows as a clear, understated tint of the mode's colour.
+  /// Founder, 2026-11-05 (fewer lights on the bar): Agents keeps the agent
+  /// indigo, and a window state (pin, transcription, preview) wears no
+  /// colour: a neutral wash of primary ink. The transcription left the
+  /// listening terracotta on 2026-11-06 (decision D7).
   func selectionTint(in palette: OverlayAppearancePalette) -> Color {
     switch self {
-    case .transcription: palette.listeningStatus.color
     case .agents: palette.agentAccent.color
-    case .state: CSColor.chromeAccent
+    case .state: palette.primaryText.color
     }
   }
 
@@ -47,14 +46,24 @@ struct OverlayHeaderControlChrome: ViewModifier {
   let palette: OverlayAppearancePalette
   var selected = false
   var hintLeading = false
+  /// A leading hint ends this much further from the control than the usual
+  /// gap: a rail pill's card stops before the rail's divider instead of
+  /// covering it (Z3, Monika, 2026-11-07).
+  var hintLeadingClearance: CGFloat = 0
   var hintWithinWindow = false
   /// Header controls always hint. A reused anchor passes false while a popover
   /// is open or the control has no title, so the shared panel withdraws.
   var showsHint = true
   var hintContent: AnyView? = nil
   var hintSize: CGSize? = nil
+  /// For compact message cards, `hintSize.height` is a ceiling, not empty space.
+  var hintFitsContentHeight = false
+  /// The content owner invalidates measurement after a carousel step or live edit.
+  var hintContentRevision: UInt64 = 0
   var hintDelay: TimeInterval = 0
   var hintInteractive = false
+  var onHintOpen: (() -> Void)? = nil
+  var onHintClose: (() -> Void)? = nil
   /// A control with its own hover paint observes this same native region.
   var onHoverChanged: ((Bool) -> Void)? = nil
   @State private var hovered = false
@@ -109,6 +118,13 @@ struct OverlayHeaderControlChrome: ViewModifier {
       .onChange(of: hintLeading) { _, _ in syncHint(inside: hovered) }
       .onChange(of: hintWithinWindow) { _, _ in syncHint(inside: hovered) }
       .onChange(of: hintSize) { _, _ in syncHint(inside: hovered) }
+      .onChange(of: hintFitsContentHeight) { _, _ in syncHint(inside: hovered) }
+      // The revision re-measures an open card; it never opens one. A card
+      // closed because another owner took the panel bumps it too, and
+      // answering that with `show` ordered the card straight back.
+      .onChange(of: hintContentRevision) { _, _ in
+        if anchor.isPresented { syncHint(inside: hovered) }
+      }
       .onChange(of: hintInteractive) { _, _ in syncHint(inside: hovered) }
       .onChange(of: palette) { _, _ in syncHint(inside: hovered) }
       .onDisappear {
@@ -122,13 +138,20 @@ struct OverlayHeaderControlChrome: ViewModifier {
   /// becoming false withdraws only this anchor, so a neighbor that has since
   /// taken the panel stays on screen.
   private func syncHint(inside: Bool) {
-    guard showsHint, inside, !title.isEmpty else {
+    // The pointer resting in the interactive card counts as inside: a page
+    // turn or a new message then re-measures the open card instead of
+    // withdrawing it (Founder, 2026-11-05: the card closed or kept the
+    // previous page's height after a click on its pager).
+    guard showsHint, inside || anchor.pointerRestsInHint, !title.isEmpty else {
       anchor.hide(allowPointerRetention: showsHint && hintInteractive)
       return
     }
     anchor.show(
-      title, palette: palette, leading: hintLeading, withinWindow: hintWithinWindow,
-      content: hintContent, size: hintSize, interactive: hintInteractive, delay: hintDelay)
+      title, palette: palette, leading: hintLeading,
+      leadingClearance: hintLeadingClearance, withinWindow: hintWithinWindow,
+      content: hintContent, size: hintSize, fitsContentHeight: hintFitsContentHeight,
+      interactive: hintInteractive, delay: hintDelay,
+      onOpen: onHintOpen, onClose: onHintClose)
   }
 }
 
@@ -143,8 +166,11 @@ final class OverlayHintAnchor {
 
   func show(
     _ title: String, palette: OverlayAppearancePalette, leading: Bool = false,
+    leadingClearance: CGFloat = 0,
     withinWindow: Bool = false, content: AnyView? = nil, size: CGSize? = nil,
-    interactive: Bool = false, delay: TimeInterval = 0
+    fitsContentHeight: Bool = false,
+    interactive: Bool = false, delay: TimeInterval = 0,
+    onOpen: (() -> Void)? = nil, onClose: (() -> Void)? = nil
   ) {
     pendingHint?.cancel()
     pendingHint = nil
@@ -158,15 +184,23 @@ final class OverlayHintAnchor {
         guard !Task.isCancelled, let self else { return }
         self.pendingHint = nil
         self.show(
-          title, palette: palette, leading: leading, withinWindow: withinWindow,
-          content: content, size: size, interactive: interactive)
+          title, palette: palette, leading: leading, leadingClearance: leadingClearance,
+          withinWindow: withinWindow, content: content, size: size,
+          fitsContentHeight: fitsContentHeight, interactive: interactive,
+          onOpen: onOpen, onClose: onClose)
       }
     } else if let view {
       OverlayHintPanel.shared.show(
         title, palette: palette, below: view, owner: self, leading: leading,
-        withinWindow: withinWindow, content: content, size: size, interactive: interactive)
+        leadingClearance: leadingClearance, withinWindow: withinWindow, content: content,
+        size: size, fitsContentHeight: fitsContentHeight, interactive: interactive,
+        onOpen: onOpen, onClose: onClose)
     }
   }
+
+  /// True while the shared panel shows this anchor's interactive card and the
+  /// pointer is inside that card.
+  var pointerRestsInHint: Bool { OverlayHintPanel.shared.retainsPointer(owner: self) }
 
   func hide(allowPointerRetention: Bool = false) {
     pendingHint?.cancel()
@@ -206,6 +240,9 @@ final class OverlayHintPanel {
   static let gap: CGFloat = 6
   /// Distance kept from the screen's visible edges.
   static let screenInset: CGFloat = 4
+  /// How far from its window's leading edge an anchor still counts as
+  /// hugging it; a quarter of the window's width when that is larger.
+  static let leadingEdgeReach: CGFloat = 36
 
   private var panel: NSPanel?
   private var controller: NSHostingController<AnyView>?
@@ -214,6 +251,7 @@ final class OverlayHintPanel {
   private var interactive = false
   private var pointerInside = false
   private var pendingDismissal: Task<Void, Never>?
+  private var closeCallback: (() -> Void)?
 
   /// The window currently presenting a hint, for tests and diagnostics.
   var presentedPanel: NSPanel? { panel?.isVisible == true ? panel : nil }
@@ -229,10 +267,36 @@ final class OverlayHintPanel {
     self.owner === owner && presentedPanel != nil
   }
 
+  /// The visible interactive card hanging under `parent` covers this screen
+  /// point; the parent's own hover must not resolve there.
+  func coversPointer(at screenPoint: NSPoint, under parent: NSWindow) -> Bool {
+    guard let panel = presentedPanel, interactive, panel.parent === parent else { return false }
+    return panel.frame.contains(screenPoint)
+  }
+
+  /// The pointer is inside this owner's interactive card. Geometry decides;
+  /// the hover bit from the card's region can trail the pointer by a frame.
+  func retainsPointer(owner: OverlayHintAnchor) -> Bool {
+    guard self.owner === owner, interactive, let panel = presentedPanel else { return false }
+    return pointerInside || panel.frame.contains(NSEvent.mouseLocation)
+  }
+
+  /// The child takes its parent's level and follows the parent's presence
+  /// policy. A hint left at the default normal level sits under a foreground
+  /// application while the pinned bar floats above it, so the pointer and the
+  /// clicks over a list hanging below the bar reach that application instead.
+  func synchronizeLevel(with parent: NSWindow) {
+    guard let panel, panel.parent === parent, panel.level != parent.level else { return }
+    panel.level = parent.level
+  }
+
   func show(
     _ title: String, palette: OverlayAppearancePalette, below anchor: NSView,
-    owner: OverlayHintAnchor, leading: Bool = false, withinWindow: Bool = false,
-    content: AnyView? = nil, size desiredSize: CGSize? = nil, interactive: Bool = false
+    owner: OverlayHintAnchor, leading: Bool = false, leadingClearance: CGFloat = 0,
+    withinWindow: Bool = false,
+    content: AnyView? = nil, size desiredSize: CGSize? = nil,
+    fitsContentHeight: Bool = false, interactive: Bool = false,
+    onOpen: (() -> Void)? = nil, onClose: (() -> Void)? = nil
   ) {
     guard let parent = anchor.window, parent.isVisible else { return }
     let anchorRect = parent.convertToScreen(anchor.convert(anchor.bounds, to: nil))
@@ -245,6 +309,31 @@ final class OverlayHintPanel {
       return
     }
     let (panel, controller) = presentation()
+    // A hint anchored inside the interactive panel must not replace its own
+    // parent or attempt to attach the panel as a child of itself.
+    guard parent !== panel else { return }
+    // The pointer resting in the open interactive card keeps that card: a
+    // control that still believes it is hovered under the card may not take
+    // the panel from it. The card's frame decides, not a hover flag that can
+    // trail the pointer by a frame, so a pointer that has really left the
+    // card for another row hands the panel over as before.
+    // `interactive` here is the incoming presentation's; the open card's own
+    // mode is `self.interactive` (a plain tooltip arriving under the card is
+    // exactly the case).
+    if self.owner !== owner, self.interactive, panel.isVisible,
+      panel.frame.contains(NSEvent.mouseLocation)
+    {
+      return
+    }
+    let opening = self.owner !== owner || !panel.isVisible
+    // Ordering follows a real presentation change only: a data refresh of an
+    // open list must not raise it again.
+    let presenting = opening || panel.parent !== parent
+    if opening {
+      closeCallback?()
+      closeCallback = onClose
+      onOpen?()
+    }
     pendingDismissal?.cancel()
     pendingDismissal = nil
     if self.owner !== owner { pointerInside = false }
@@ -252,13 +341,26 @@ final class OverlayHintPanel {
     self.interactive = interactive
     let size: NSSize
     if let content, let desiredSize {
-      size = NSSize(
+      let maximum = NSSize(
         width: min(desiredSize.width, bounds.width - 2 * Self.screenInset),
         height: min(desiredSize.height, bounds.height - 2 * Self.screenInset))
+      if fitsContentHeight {
+        // Measure the same rich view at its real width in a controller of its
+        // own. Swapping the mounted tree for the measurement unmounted the
+        // cursor region below, which reported the pointer gone; a click on
+        // the card's pager then closed the card after the retention grace
+        // (Founder, 2026-11-05: the popover closed on a click).
+        let measurer = NSHostingController(rootView: AnyView(content.frame(width: maximum.width)))
+        let fitted = measurer.sizeThatFits(in: maximum)
+        size = NSSize(width: maximum.width, height: min(maximum.height, max(1, fitted.height)))
+      } else {
+        size = maximum
+      }
       controller.rootView = AnyView(
         content.frame(width: size.width, height: size.height)
           .background {
-            OverlayMenuCursorRegion { [weak self, weak owner] inside in
+            // Synchronous: the card's hover bit must not trail a click.
+            OverlayMenuCursorRegion(coalescesHover: false) { [weak self, weak owner] inside in
               guard let owner else { return }
               self?.pointerHover(inside, owner: owner)
             }
@@ -278,17 +380,33 @@ final class OverlayHintPanel {
       effect.maskImage = Self.roundedMask(radius: content == nil ? CSRadius.chip : CSRadius.card)
     }
     panel.appearance = NSAppearance(named: palette.appearance == .dark ? .darkAqua : .aqua)
-    let frame =
+    var frame =
       leading
-      ? Self.frame(size: size, leading: anchorRect, within: bounds)
+      ? Self.frame(
+        size: size, leading: anchorRect, clearance: leadingClearance,
+        parentFrame: withinWindow ? nil : parent.frame, within: bounds)
       : Self.frame(size: size, below: anchorRect, within: bounds)
+    // A card re-measured while the pointer rests in it keeps its bottom edge,
+    // where the pager sits, so a shorter page does not pull the card out from
+    // under the pointer (which would read as leaving and close it).
+    if !opening, interactive, panel.isVisible,
+      pointerInside || panel.frame.contains(NSEvent.mouseLocation)
+    {
+      frame.origin.y = panel.frame.minY
+      let top = bounds.maxY - Self.screenInset
+      if frame.maxY > top { frame.origin.y = top - frame.height }
+      frame.origin.y = max(frame.origin.y, bounds.minY + Self.screenInset)
+    }
     if panel.frame != frame { panel.setFrame(frame, display: true) }
     if panel.parent !== parent {
       panel.parent?.removeChildWindow(panel)
       parent.addChildWindow(panel, ordered: .above)
     }
+    synchronizeLevel(with: parent)
     self.title = title
-    panel.orderFront(nil)
+    // The overlay is used while another app is active. Present the child at
+    // the front of its level without making it key.
+    if presenting { panel.orderFrontRegardless() }
   }
 
   func hide(owner: OverlayHintAnchor, allowPointerRetention: Bool = false) {
@@ -303,12 +421,19 @@ final class OverlayHintPanel {
           return
         }
         guard let self, let owner, self.owner === owner else { return }
-        guard !self.pointerInside else { return }
+        // The pointer really in the card keeps it, whatever the hover bit says.
+        if self.pointerInside { return }
+        if let panel = self.panel, panel.isVisible, panel.frame.contains(NSEvent.mouseLocation) {
+          return
+        }
         self.hide(owner: owner)
       }
       return
     }
     self.owner = nil
+    let closed = closeCallback
+    closeCallback = nil
+    closed?()
     interactive = false
     pointerInside = false
     title = nil
@@ -339,22 +464,53 @@ final class OverlayHintPanel {
     return NSRect(origin: origin, size: size)
   }
 
-  /// Sidebar hints sit over the document, outside the rail's scroll clip.
-  static func frame(size: CGSize, leading anchor: NSRect, within visible: NSRect) -> NSRect {
-    let left = anchor.minX - gap - size.width
-    let right = anchor.maxX + gap
-    // A column against the left screen edge previews on its right. Clamping
-    // the left candidate onto the row used to cover the very control hovered.
-    let x =
-      left >= visible.minX + screenInset
-      ? left
-      : right + size.width <= visible.maxX - screenInset ? right : left
+  /// Sidebar hints sit over the document, outside the rail's scroll clip, and
+  /// inside the owning window whenever it is large enough for the card.
+  /// For a smaller window the parent's edges stand in for the anchor's when
+  /// the anchor hugs the window's leading edge (a fiszka's name), and the
+  /// card sits beside the window.
+  static func frame(
+    size: CGSize, leading anchor: NSRect, clearance: CGFloat = 0, parentFrame: NSRect? = nil, within visible: NSRect
+  ) -> NSRect {
+    // A window that can hold the card keeps it: beside the row, or under it
+    // when the row spans the window (Maciej, 2026-11-06: hover cards are
+    // fine, "tylko NIE poza oknem"). Only a window too small for the card,
+    // a fiszka or a rail, sends it outside.
+    if let parentFrame {
+      let inside = parentFrame.intersection(visible)
+      if !inside.isNull, inside.width >= size.width + 2 * screenInset,
+        inside.height >= size.height + 2 * screenInset
+      {
+        return frame(size: size, leading: anchor, clearance: clearance, within: inside)
+      }
+    }
+    let parent = parentFrame.flatMap { parent in
+      anchor.minX - parent.minX <= max(leadingEdgeReach, parent.width / 4) ? parent : nil
+    }
+    let leadingEdge = min(anchor.minX, parent?.minX ?? anchor.minX)
+    let trailingEdge = max(anchor.maxX, parent?.maxX ?? anchor.maxX)
+    let left = leadingEdge - clearance - gap - size.width
+    let right = trailingEdge + gap
+    // A column against the left edge previews on its right. With no room on
+    // either side the card goes under the row, above it when the bounds end
+    // first: clamping a side candidate onto the row used to cover the very
+    // control hovered.
+    let fitsLeft = left >= visible.minX + screenInset
+    let fitsRight = right + size.width <= visible.maxX - screenInset
+    let candidate: NSPoint
+    if fitsLeft || fitsRight {
+      candidate = NSPoint(x: fitsLeft ? left : right, y: anchor.maxY - size.height)
+    } else {
+      let below = anchor.minY - gap - size.height
+      candidate = NSPoint(
+        x: anchor.minX, y: below >= visible.minY + screenInset ? below : anchor.maxY + gap)
+    }
     let origin = NSPoint(
       x: min(
-        max(x, visible.minX + screenInset),
+        max(candidate.x, visible.minX + screenInset),
         visible.maxX - screenInset - size.width),
       y: min(
-        max(anchor.midY - size.height / 2, visible.minY + screenInset),
+        max(candidate.y, visible.minY + screenInset),
         visible.maxY - screenInset - size.height))
     return NSRect(origin: origin, size: size)
   }
@@ -383,6 +539,7 @@ final class OverlayHintPanel {
     effect.maskImage = Self.roundedMask(radius: CSRadius.chip)
     let controller = NSHostingController(
       rootView: AnyView(OverlayTooltipChip(title: "", palette: .light, filled: false)))
+    controller.sizingOptions = []
     controller.view.frame = effect.bounds
     controller.view.autoresizingMask = [.width, .height]
     effect.addSubview(controller.view)

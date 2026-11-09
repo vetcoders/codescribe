@@ -30,7 +30,7 @@ enum NativeAccessibilityProbe {
   /// Fixed synthetic fixture identifiers only. Never put message text, user
   /// identifiers, paths, labels, AX values or traces in the durable receipt.
   enum VerifiedAction: String {
-    case voicelessReplyPlay = "overlay-reply-play-dddddddddddddddddddddddd"
+    case voicelessReplyPlay = "overlay-reply-play-reply:dddddddddddddddddddddddd"
   }
 
   private enum ProbeError: Error {

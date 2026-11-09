@@ -578,7 +578,7 @@ private struct CapabilityMatrixRow: View {
 
   private var tierColor: Color {
     switch row.tier.lowercased() {
-    case "native": return CSColor.oliveLight
+    case "native": return CSColor.secondaryInk
     case "enhanced": return CSColor.secondaryInk
     case "unavailable": return CSColor.dangerLight
     default: return CSColor.secondaryInk
@@ -589,11 +589,11 @@ private struct CapabilityMatrixRow: View {
 // MARK: - Tone → color and glyph
 
 extension CsMcpRowTone {
-  /// Map the UI-agnostic core tone onto concrete brand tokens; this is the
+  /// Map the UI-agnostic core tone onto semantic colours; this is the
   /// colour of the tone's glyph (`statusIcon`).
   var dotColor: Color {
     switch self {
-    case .good: return CSColor.oliveLight
+    case .good: return CSColor.secondaryInk
     case .warn: return CSColor.amberLight
     case .bad: return CSColor.dangerLight
     case .neutral: return CSColor.secondaryInk
@@ -601,8 +601,8 @@ extension CsMcpRowTone {
   }
 
   /// Glyph for the places that show an icon instead of a dot. A ready state is
-  /// a thin check, never a filled badge, so green cannot visually outweigh a
-  /// warning (Founder brief, round 11, 2026-10-10).
+  /// a thin neutral check, never a filled badge, so a ready state cannot
+  /// visually outweigh a warning.
   var statusIcon: CSIcon {
     switch self {
     case .good: return .check

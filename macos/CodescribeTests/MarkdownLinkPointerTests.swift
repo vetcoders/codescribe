@@ -31,7 +31,7 @@ final class MarkdownLinkPointerTests: XCTestCase {
     XCTAssertEqual(regions.count, 1, "One link, one pointer region")
     let region = try XCTUnwrap(regions.first)
     let link = region.convert(NSPoint(x: region.bounds.midX, y: region.bounds.midY), to: nil)
-    let beside = NSPoint(x: 4, y: link.y)
+    let beside = NSPoint(x: Self.inset + 4, y: link.y)
 
     let saved = NSCursor.current
     defer { saved.set() }
@@ -86,17 +86,26 @@ final class MarkdownLinkPointerTests: XCTestCase {
     XCTAssertEqual(handed, [URL(fileURLWithPath: "/tmp/report.md")])
   }
 
+  /// The overlay panel resizes from its edges in every form but mini, so
+  /// the text sits inside the resize bands, as message text does on screen.
+  private static let inset: CGFloat = 24
+
   private func mount(_ markdown: String, opener: MarkdownLinkOpener) -> FloatingOverlayPanel {
     let panel = FloatingOverlayPanel(
       contentRect: NSRect(x: 100, y: 100, width: 420, height: 120),
       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     panel.isReleasedWhenClosed = false
+    // The text keeps clear of the panel's resize bands (16 pt sides, 30 pt
+    // bottom corners), which own the pointer before any link does, and sits
+    // in the product's own container: a bare hosting view is flipped, so the
+    // bands read its top edge as the bottom one and took the first line.
     let host = NSHostingView(
       rootView: MarkdownText(raw: markdown)
         .environment(\.markdownLinkOpener, opener)
-        .frame(width: 400, height: 100, alignment: .topLeading))
+        .frame(width: 372, height: 72, alignment: .topLeading)
+        .padding(Self.inset))
     host.frame = NSRect(x: 0, y: 0, width: 420, height: 120)
-    panel.contentView = host
+    panel.contentView = OverlayContentContainer(hosting: host)
     BackgroundTestWindow.present(panel)
     host.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.3))

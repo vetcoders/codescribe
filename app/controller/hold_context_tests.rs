@@ -311,6 +311,105 @@ mod terminal_delivery_target_falsifiers {
         }
     }
 
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn off_with_notes_keeps_the_real_stop_payload_for_repeated_deferred_insert() {
+        let root = tempfile::tempdir().unwrap();
+        let mut inputs = crate::config::CapturedRuntimeInputs::defaults_at(
+            root.path().to_path_buf(),
+            1_700_000_000_000,
+        );
+        inputs.values.paste_mode = PasteMode::Off;
+        inputs.values.quick_notes_enabled = true;
+        inputs.values.transcript_tagging_enabled = false;
+        inputs.user_settings.paste_mode = Some(PasteMode::Off);
+        inputs.user_settings.quick_notes_enabled = Some(true);
+        let controller = RecordingController::from_startup_inputs(
+            Config::runtime_snapshot_from_captured(inputs),
+            ControllerStartupResources::inert(),
+            root.path(),
+        );
+        for (take, text, force_ai) in [
+            ("dictation", "first transcript", false),
+            ("format", "formatted transcript", true),
+        ] {
+            let disposition = controller
+                .deliver_stop_transcript(
+                    Some(take),
+                    text,
+                    false,
+                    force_ai,
+                    CaptureTurnIntent::HandsFree,
+                    false,
+                )
+                .await
+                .unwrap();
+            assert_eq!(disposition, TranscriptDelivery::DeferredInsertArmed);
+            for _ in 0..2 {
+                assert_eq!(
+                    clipboard::deliver_deferred_insert_with(|retained| {
+                        assert_eq!(retained, text);
+                        Ok(())
+                    })
+                    .unwrap(),
+                    clipboard::DeferredInsertDelivery::PasteRequested
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn notes_do_not_override_paste_policy_on_dictation_or_format_stop() {
+        for notes in [false, true] {
+            for force_ai in [false, true] {
+                for mode in [PasteMode::Safe, PasteMode::Comfort, PasteMode::Off] {
+                    let controller = RecordingController::new_without_keychain();
+                    let config = Config {
+                        paste_mode: mode,
+                        quick_notes_enabled: notes,
+                        ..Config::default()
+                    };
+                    let result = controller
+                        .deliver_stop_transcript_with_sink(
+                            Some("paste-policy"),
+                            "complete transcript",
+                            (false, force_ai, CaptureTurnIntent::HandsFree, false),
+                            &config,
+                            |route, payload, _| async move {
+                                assert_eq!(payload, "complete transcript");
+                                if mode == PasteMode::Off {
+                                    assert_eq!(route, DeliveryRoute::DeferredInsert);
+                                } else {
+                                    assert_eq!(route, DeliveryRoute::ClipboardPaste);
+                                }
+                                Ok(OverlayPasteResult {
+                                    delivery: if mode == PasteMode::Off {
+                                        OverlayPasteDelivery::DeferredInsertArmed
+                                    } else {
+                                        OverlayPasteDelivery::PasteRequested
+                                    },
+                                    target_app_name: None,
+                                    frontmost_app_name: None,
+                                    deferred_insert_shortcut: None,
+                                    deferred_insert_failure: None,
+                                })
+                            },
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        result,
+                        if mode == PasteMode::Off {
+                            TranscriptDelivery::DeferredInsertArmed
+                        } else {
+                            TranscriptDelivery::SinkAccepted
+                        }
+                    );
+                }
+            }
+        }
+    }
+
     /// Composer delivery gets its own sink payload while the reducer document
     /// remains the clean text passed into this boundary. The payload keeps the
     /// bucket markers the Agent resolves and never the outward transcript tag:
@@ -4206,9 +4305,10 @@ mod c15d_settings_one_path_falsifiers {
         ));
     }
 
-    /// C15D-A source falsifier: each start body selects exactly one Arc under
-    /// `serial_lock`, then derives config, UserSettings and recorder binding
-    /// from that named Arc. This is structural evidence, not a scheduler proof.
+    /// Each start selects one settings Arc under the lifecycle lock, then
+    /// adopts the shared capture's frozen Arc when joining it. Hold also
+    /// projects its pre-admission config; both binding branches use the final
+    /// selected Arc. This is structural evidence, not a scheduler proof.
     #[test]
     fn hold_and_toggle_each_derive_take_facts_from_one_selected_arc() {
         let source = include_str!("mod.rs");
@@ -4230,11 +4330,22 @@ mod c15d_settings_one_path_falsifiers {
         let user_projection = ["runtime_settings", ".user_settings()"].concat();
         let recorder_binding = ["Arc::clone(&runtime_", "settings)"].concat();
 
-        for body in [hold_body, toggle_body] {
+        for (body, config_reads) in [(hold_body, 2), (toggle_body, 1)] {
             assert_eq!(body.matches(&select_arc).count(), 1);
-            assert_eq!(body.matches(&config_projection).count(), 1);
+            assert_eq!(body.matches(&config_projection).count(), config_reads);
             assert_eq!(body.matches(&user_projection).count(), 1);
-            assert_eq!(body.matches(&recorder_binding).count(), 1);
+            assert_eq!(body.matches(&recorder_binding).count(), 2);
+            let shared_arc = body
+                .find(".map(|view| Arc::clone(&view.runtime_settings))")
+                .expect("shared capture owns its frozen runtime settings");
+            let retain_selected = body
+                .find(".unwrap_or(runtime_settings)")
+                .expect("unshared start retains the selected Arc");
+            assert!(shared_arc < retain_selected);
+            assert!(retain_selected < body.rfind(&config_projection).unwrap());
+            for binding in ["bind_dictation_authority", "bind_session_authority"] {
+                assert!(body[retain_selected..].contains(binding));
+            }
             assert!(
                 body.find(&serial_lock).expect("lifecycle lock")
                     < body.find(&select_arc).expect("settings Arc selection")

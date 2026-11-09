@@ -36,7 +36,8 @@ struct AgentChatView: View {
     }
     .csSidebarToggle(expanded: $sidebarExpanded)
     .modifier(
-      AgentIntegratedChrome(store: store, isPinned: $isPinned, isContextOpen: $contextPanelOpen))
+      AgentIntegratedChrome(store: store, isPinned: $isPinned, isContextOpen: $contextPanelOpen)
+    )
     .csFocusPolicy()
     .background(
       AgentWindowCapabilities(isPinned: isPinned, contextPanelOpen: contextPanelOpen)
@@ -128,7 +129,7 @@ enum AgentWindowMetrics {
 
 /// One native titlebar for the Agent window. The title string stays "Agent"
 /// for Mission Control, Exposé, and the Window menu. It is not painted, so the
-/// toolbar is the only header plane.
+/// replacement top accessory is the detail header's only owner.
 enum AgentWindowChrome {
   static func title() -> String {
     String(localized: "Agent", comment: "Agent window title")
@@ -231,12 +232,11 @@ private struct AgentWindowCapabilities: NSViewRepresentable {
 
 // MARK: - Integrated titlebar
 
-/// The window's native bar, the only bar the window has. The split view
-/// supplies the sidebar toggle; the leading group holds the wordmark and the
-/// conversation's identity (`AgentConversationHeader`: title, live status,
-/// "Agent · model"), the trailing cluster the Voice Lab mark, width, Context,
-/// pin and menu. No principal item. Rename, delete, and export alerts stay on
-/// this modifier: alerts attached to a toolbar item do not present.
+/// Owns the actual detail header in a top titlebar accessory. The native bar
+/// retains the split view's sidebar toggle and standard window controls. The
+/// rectangular glass contains wordmark, conversation identity and all actions.
+/// Alerts stay on the root modifier so the separate header hosting view does
+/// not become a competing owner of rename, delete or export presentation.
 private struct AgentIntegratedChrome: ViewModifier {
   @ObservedObject var store: AgentChatStore
   @Binding var isPinned: Bool
@@ -253,8 +253,13 @@ private struct AgentIntegratedChrome: ViewModifier {
 
   func body(content: Content) -> some View {
     content
-      .toolbar { agentToolbar }
+      .toolbarVisibility(.visible, for: .windowToolbar)
       .modifier(CSWindowHeaderChrome())
+      .background {
+        CSWindowTopHeader {
+          headerContent
+        }
+      }
       .alert("Rename conversation", isPresented: $isRenaming) {
         TextField("Conversation title", text: $renameText)
         Button("Rename") {
@@ -286,34 +291,17 @@ private struct AgentIntegratedChrome: ViewModifier {
       }
   }
 
-  /// Brand and actions occupy one native bar, without separate glass
-  /// capsules. The bar stays visible as the turns scroll beneath it.
-  @ToolbarContentBuilder
-  private var agentToolbar: some ToolbarContent {
-    // Without a principal item the unified bar packs `.primaryAction` right
-    // after the wordmark (seen on the installed build, 2026-10-21); the
-    // flexible space in the group keeps pin and menu on the trailing edge.
-    if #available(macOS 26.0, *) {
-      ToolbarItemGroup(placement: .navigation) {
-        CSWindowHeaderItem { wordmark }
-        identity
-      }
-      .sharedBackgroundVisibility(.hidden)
-      ToolbarItemGroup(placement: .primaryAction) {
-        Spacer()
-        CSWindowHeaderItem { trailingCluster }
-      }
-      .sharedBackgroundVisibility(.hidden)
-    } else {
-      ToolbarItemGroup(placement: .navigation) {
-        CSWindowHeaderItem { wordmark }
-        identity
-      }
-      ToolbarItemGroup(placement: .primaryAction) {
-        Spacer()
-        CSWindowHeaderItem { trailingCluster }
-      }
+  /// Actual information and controls inside the rectangular detail glass.
+  /// AppKit's top accessory places this in the existing titlebar band.
+  private var headerContent: some View {
+    HStack(spacing: 12) {
+      wordmark
+      identity
+      Spacer(minLength: 12)
+      trailingCluster
     }
+    .padding(.horizontal, 12)
+    .frame(height: 52)
   }
 
   private var wordmark: some View {
@@ -485,15 +473,15 @@ private struct ThreadDetail: View {
   var body: some View {
     HStack(spacing: 0) {
       conversationColumn
+        // Keep the reading canvas inside the conversation: neither the native
+        // sidebar's leading safe area nor the context glass gets an opaque backing.
+        .background(CSColor.sheet, ignoresSafeAreaEdges: [.top, .bottom])
       if isContextOpen {
         HStack(spacing: 0) {
-          // Runs up through the titlebar like the sidebar edge: the header
-          // glass covers the conversation, not the panel.
           Divider()
             .frame(width: AgentWindowMetrics.contextPanelDividerWidth)
-            .ignoresSafeArea(.container, edges: .top)
           AgentContextPanel(
-            thread: store.currentThread,
+            store: store,
             close: { isContextOpen = false },
             openToolSettings: openToolSettings
           )
@@ -503,7 +491,6 @@ private struct ThreadDetail: View {
     }
     .animation(.easeOut(duration: CSMotion.Tempo.hover), value: isContextOpen)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(CSColor.sheet)
     .alert(
       "Speech unavailable",
       isPresented: Binding(
@@ -517,11 +504,10 @@ private struct ThreadDetail: View {
     }
   }
 
-  /// The header glass is measured on the turns, so one plane covers the
-  /// window bar above the conversation and the turns scroll beneath it.
+  /// The header glass covers the detail area above both the conversation and
+  /// the optional context column, while the turns scroll beneath it.
   private var conversationColumn: some View {
     conversation
-      .modifier(CSDetailHeaderGlass())
       .modifier(AgentScrollBottomBar { composerDock })
       .frame(
         minWidth: AgentWindowMetrics.detailMinWidth,
@@ -660,7 +646,7 @@ private struct QueuedTurnRow: View {
         Button("Save") { commitEdit() }
           .csFocusRing()
           .font(CSFont.mono(10, .semibold))
-          .foregroundStyle(CSColor.oliveLight)
+          .foregroundStyle(CSColor.chromeAccent)
         Button("Cancel") { isEditing = false }
           .csFocusRing()
           .font(CSFont.mono(10, .medium))
@@ -746,7 +732,7 @@ struct ToolApprovalCard: View {
       if let command = request.command {
         Text(verbatim: "$ \(command)")
           .font(CSFont.mono(11, .medium))
-          .foregroundStyle(CSColor.terracottaText)
+          .foregroundStyle(CSColor.secondaryInk)
           .textSelection(.enabled)
       }
       if let cwd = request.cwd {
@@ -798,7 +784,7 @@ struct ToolApprovalCard: View {
     .background(Color.primary.opacity(CSAlpha.subtle))
     .overlay(
       RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous)
-        .strokeBorder(CSColor.amber.opacity(0.35), lineWidth: 1)
+        .strokeBorder(CSColor.hairline(CSAlpha.line), lineWidth: 1)
     )
     .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
   }

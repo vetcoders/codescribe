@@ -212,7 +212,7 @@ pub fn get_hold_start_delay_ms() -> u64 {
 /// Atomic storage for double-tap interval (milliseconds)
 static DOUBLE_TAP_INTERVAL_MS: AtomicU64 = AtomicU64::new(200);
 
-/// Packed deferred-insert chord: disabled (safe boot default).
+/// Packed deferred-insert chord: disabled.
 const DEFERRED_INSERT_DISABLED: u8 = 0;
 /// Packed deferred-insert chord: ⌘⌥V.
 const DEFERRED_INSERT_COMMAND_OPTION_V: u8 = 1;
@@ -221,10 +221,9 @@ const DEFERRED_INSERT_COMMAND_SHIFT_V: u8 = 2;
 /// Packed deferred-insert chord: ⌘⌃V.
 const DEFERRED_INSERT_COMMAND_CONTROL_V: u8 = 3;
 
-// Boot default matches `DeferredInsertShortcut::default()` (Disabled, P1-04):
-// between tap start and config apply the chord must not be armed.
-/// Live deferred-insert chord; stays Disabled until config apply arms a real shortcut.
-static DEFERRED_INSERT_SHORTCUT: AtomicU8 = AtomicU8::new(DEFERRED_INSERT_DISABLED);
+/// Live deferred-insert chord; the boot default matches `DeferredInsertShortcut::default()`.
+/// Applying configuration preserves a saved explicit chord or Disabled choice.
+static DEFERRED_INSERT_SHORTCUT: AtomicU8 = AtomicU8::new(DEFERRED_INSERT_COMMAND_OPTION_V);
 
 /// Pack the deferred-insert chord for `DEFERRED_INSERT_SHORTCUT`.
 fn encode_deferred_insert_shortcut(shortcut: DeferredInsertShortcut) -> u8 {

@@ -74,10 +74,12 @@ class PeerSendTests(unittest.TestCase):
         self.assertEqual({event["channel"] for event in events}, {"0"})
         self.assertEqual(len({event["message_id"] for event in events}), 1)
         self.assertNotIn("vagabond", {event["peer_to"] for event in events})
-        # Each copy names the whole audience, not just its own recipient.
+        # Each copy names the whole audience, not just its own recipient: the
+        # spelling to show as `name`, the casefolded identity as `audience`.
         for event in events:
             self.assertEqual(event["target"], {"mode": "broadcast", "channel": "0", "recipients": [
-                {"name": "lena", "channel": "2"}, {"name": "astra", "channel": "3"}]})
+                {"name": "lena", "audience": "lena", "channel": "2"},
+                {"name": "astra", "audience": "astra", "channel": "3"}]})
             self.assertEqual(len(event["recipients"]), 1)
 
     def test_broadcast_audience_leaves_out_an_agent_with_channel_zero_off(self):

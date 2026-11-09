@@ -80,6 +80,16 @@ pub struct CsAttachment {
     pub path: String,
 }
 
+/// Credential-free receipt captured when the composer accepts a turn. The
+/// receipt is opaque to Swift and restored by the canonical settings loader.
+#[derive(uniffi::Record)]
+pub struct CsAgentTurnConfiguration {
+    pub provider: String,
+    pub model: String,
+    pub reasoning_effort: String,
+    pub receipt: String,
+}
+
 /// Assistive-lane availability for the Swift chat surface: `available` gates
 /// the send, `reason` says which lane, endpoint or key is missing when the
 /// lane cannot reach a model (`None` when ready). Swift owns the sentence.
@@ -230,6 +240,81 @@ impl CodescribeAgent {
         Self::default()
     }
 
+    /// Freeze the Agent choice at acceptance, before a busy conversation queues
+    /// the turn. Secrets never cross FFI or enter the durable queue sidecar.
+    pub fn capture_turn_configuration(&self) -> Result<CsAgentTurnConfiguration, CsError> {
+        let selection = self.current_settings().agent_turn_selection();
+        Ok(CsAgentTurnConfiguration {
+            provider: selection.provider.clone(),
+            model: selection.model.clone(),
+            reasoning_effort: selection.reasoning.clone().unwrap_or_default(),
+            receipt: serde_json::to_string(&selection).map_err(anyhow::Error::from)?,
+        })
+    }
+
+    /// Execute an accepted selection, including after a queue restart. Later
+    /// Settings edits cannot replace its provider, model or reasoning level.
+    pub async fn stream_configured_reply(
+        &self,
+        text: String,
+        thread_id: String,
+        attachments: Vec<CsAttachment>,
+        configuration: CsAgentTurnConfiguration,
+        listener: Arc<dyn CsAgentListener>,
+    ) -> Result<String, CsError> {
+        let selection: codescribe_core::config::settings::AgentTurnSelection =
+            serde_json::from_str(&configuration.receipt).map_err(anyhow::Error::from)?;
+        if selection.provider != configuration.provider
+            || selection.model != configuration.model
+            || selection.reasoning.clone().unwrap_or_default() != configuration.reasoning_effort
+        {
+            return Err(anyhow::anyhow!(
+                "Accepted Agent configuration receipt does not match its labels"
+            )
+            .into());
+        }
+        let agent = self.clone();
+        application_runtime::run(async move {
+            let turns = Arc::clone(&agent.turns);
+            let key = thread_id.clone();
+            turns
+                .run(&key, async move {
+                    let expected = selection.clone();
+                    let settings = tokio::task::spawn_blocking(move || {
+                        Arc::new(codescribe_core::config::Config::load_agent_turn_snapshot(
+                            &selection,
+                        ))
+                    })
+                    .await
+                    .map_err(|error| {
+                        anyhow::anyhow!("Agent settings preparation failed: {error}")
+                    })?;
+                    if settings.agent_turn_selection() != expected {
+                        return Err(anyhow::anyhow!(
+                            "The accepted Agent selection cannot be restored exactly"
+                        )
+                        .into());
+                    }
+                    let supports_vision = settings
+                        .llm_lanes()
+                        .assistive()
+                        .supports_vision(&configuration.model);
+                    let images = tokio::task::spawn_blocking(move || {
+                        validate_composer_attachments(&attachments, supports_vision)
+                    })
+                    .await
+                    .map_err(|error| {
+                        anyhow::anyhow!("Agent attachment preparation failed: {error}")
+                    })??;
+                    agent
+                        .run_stream(text, thread_id, images, listener, None, Some(settings))
+                        .await
+                })
+                .await
+        })
+        .await?
+    }
+
     /// The accepted composer send enters Rust before queue promotion. Log only
     /// its source and size so a mid-capture provider request has a durable
     /// trigger receipt without copying any dictated words into the log.
@@ -312,7 +397,7 @@ impl CodescribeAgent {
         let agent = self.clone();
         application_runtime::run(async move {
             agent
-                .run_stream(text, thread_id, Vec::new(), listener, None)
+                .run_stream(text, thread_id, Vec::new(), listener, None, None)
                 .await
         })
         .await?
@@ -345,7 +430,7 @@ impl CodescribeAgent {
                 assistive_lane.supports_vision(assistive_lane.model()),
             )?;
             agent
-                .run_stream(text, thread_id, images, listener, None)
+                .run_stream(text, thread_id, images, listener, None, None)
                 .await
         })
         .await?
@@ -437,6 +522,7 @@ impl CodescribeAgent {
                         host: document,
                         provider,
                     })),
+                    None,
                 )
                 .await
         })
@@ -485,6 +571,7 @@ impl CodescribeAgent {
                         host: document,
                         provider,
                     })),
+                    None,
                 )
                 .await
         })
@@ -520,6 +607,7 @@ impl CodescribeAgent {
                         host: workspace,
                         provider,
                     })),
+                    None,
                 )
                 .await
         })
@@ -565,6 +653,7 @@ impl CodescribeAgent {
                         host: workspace,
                         provider,
                     })),
+                    None,
                 )
                 .await
         })
@@ -625,6 +714,7 @@ impl CodescribeAgent {
         attachments: Vec<ImageAttachment>,
         listener: Arc<dyn CsAgentListener>,
         hosted: Option<HostedSession>,
+        accepted_settings: Option<Arc<RuntimeSettingsSnapshot>>,
     ) -> Result<String, CsError> {
         // A Max consultation is Max by identity. Its typed turn joins the
         // controller's owner (same FIFO, lane, prompt and approvals as speech)
@@ -633,6 +723,11 @@ impl CodescribeAgent {
         // here; the composer's durable id arrives through
         // [`CodescribeAgent::stream_max_consultation`].
         if hosted.is_none() && thread_is_max_consultation(&thread_id).await {
+            if accepted_settings.is_some() {
+                return Err(CsError::Agent {
+                    msg: "Continue this conversation through its Max owner.".into(),
+                });
+            }
             return self
                 .run_max_consultation_turn(
                     text,
@@ -646,7 +741,7 @@ impl CodescribeAgent {
         // One fresh seal for the WHOLE turn: lane identity, provider
         // credential, stream options and persistence labels all read the same
         // generation, and a key saved in Settings reaches the next send.
-        let settings = self.current_settings();
+        let settings = accepted_settings.unwrap_or_else(|| self.current_settings());
         let assistive_lane = settings.llm_lanes().assistive();
         let explicit_provider = hosted.as_ref().and_then(HostedSession::provider);
         let provider = match explicit_provider {
@@ -990,9 +1085,7 @@ async fn drive_turn(
 
     match send_handle.await {
         Ok(Ok(messages)) => Ok((final_text, messages)),
-        Ok(Err(error)) => Err(CsError::Agent {
-            msg: error.to_string(),
-        }),
+        Ok(Err(error)) => Err(CsError::from(error)),
         Err(join_error) if join_error.is_cancelled() => Err(CsError::Agent {
             msg: "Turn cancelled".to_string(),
         }),
@@ -1037,6 +1130,33 @@ struct TurnEntry {
 }
 
 impl TurnRegistry {
+    /// Register the whole accepted operation before it can prepare or execute.
+    /// The start gate closes spawn-before-register on a multi-thread runtime.
+    /// Dropping this future aborts its task; the nested stream guard in turn
+    /// aborts the agent loop, so preparation cannot outlive a Stop.
+    async fn run<T: Send + 'static>(
+        self: &Arc<Self>,
+        thread_id: &str,
+        operation: impl std::future::Future<Output = Result<T, CsError>> + Send + 'static,
+    ) -> Result<T, CsError> {
+        let (start, ready) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            ready
+                .await
+                .map_err(|_| anyhow::anyhow!("Agent turn cancelled before preparation"))?;
+            operation.await
+        });
+        let _guard = self.register(thread_id, task.abort_handle());
+        let _ = start.send(());
+        match task.await {
+            Ok(result) => result,
+            Err(error) if error.is_cancelled() => Err(CsError::Agent {
+                msg: "Turn cancelled".into(),
+            }),
+            Err(error) => Err(anyhow::anyhow!("Agent operation failed: {error}").into()),
+        }
+    }
+
     /// Track a spawned turn task and return the RAII guard that owns both the
     /// abort-on-drop semantics and the registry entry's lifetime.
     fn register(self: &Arc<Self>, thread_id: &str, abort: AbortHandle) -> TurnGuard {
@@ -1465,6 +1585,49 @@ mod tests {
         }
     }
 
+    /// Refuses before any stream exists, as a provider does when it rejects
+    /// the conversation it was handed.
+    struct RefusingProvider;
+
+    #[async_trait::async_trait]
+    impl AgentProvider for RefusingProvider {
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _options: &StreamOptions,
+        ) -> anyhow::Result<tokio::sync::mpsc::Receiver<AgentEvent>> {
+            anyhow::bail!("Google history has no original signed parts; start a new conversation")
+        }
+
+        fn build_tool_result(
+            &self,
+            call_id: &str,
+            content: Vec<ContentBlock>,
+            is_error: bool,
+        ) -> Message {
+            Message::new(
+                Role::User,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: call_id.to_string(),
+                    content,
+                    is_error,
+                }],
+            )
+        }
+
+        fn build_image_block(&self, data: &[u8], media_type: &str) -> ContentBlock {
+            ContentBlock::Image {
+                data: data.to_vec(),
+                media_type: media_type.to_string(),
+            }
+        }
+
+        fn name(&self) -> &str {
+            "refusing-provider"
+        }
+    }
+
     /// Owner terminals end the render loop but are never forwarded: the reply
     /// receipt is the one terminal the Agent window sees, so a Max turn can
     /// not be signalled done or failed twice.
@@ -1882,6 +2045,54 @@ mod tests {
         );
     }
 
+    /// 2026-11-08 08:16Z: a thread begun on OpenAI was switched to Gemini.
+    /// The provider refused it before sending and named the remedy, but the
+    /// chat showed only "Failed to start 'google-generate-content' streaming".
+    /// The reason a provider gives must reach the person who has to act on it.
+    #[tokio::test]
+    async fn stream_start_refusal_keeps_its_reason_across_the_bridge() {
+        let listener = Arc::new(RecordingListener::default());
+        let turns = Arc::new(TurnRegistry::default());
+        let (ui_tx, ui_rx) = tokio::sync::mpsc::channel(64);
+        let session = AgentSession::new(
+            Box::new(RefusingProvider),
+            Arc::new(ToolRegistry::new()),
+            ui_tx,
+        );
+        let turn = PreparedTurn {
+            active_document: None,
+            session,
+            text: "continue on Gemini".to_string(),
+            attachments: Vec::new(),
+            options: test_options(),
+            ui_rx,
+        };
+
+        let result = drive_turn(
+            turn,
+            Arc::clone(&listener) as Arc<dyn CsAgentListener>,
+            Arc::clone(&turns),
+            "thread-refused-start".to_string(),
+        )
+        .await;
+
+        let CsError::Agent { msg } = result.expect_err("a refused start must throw") else {
+            panic!("a refused start must surface as CsError::Agent");
+        };
+        assert!(
+            msg.starts_with("Failed to start 'refusing-provider' streaming: "),
+            "the stage stays first: {msg}"
+        );
+        assert!(
+            msg.ends_with("Google history has no original signed parts; start a new conversation"),
+            "the provider's reason and remedy must survive the bridge: {msg}"
+        );
+        assert!(
+            !turns.cancel("thread-refused-start"),
+            "a refused turn must deregister itself"
+        );
+    }
+
     /// Cancelling mid-tool aborts before the delayed side effect, surfaces a
     /// readable cancel error, and leaves the thread ready for a next turn.
     #[tokio::test]
@@ -2005,6 +2216,136 @@ mod tests {
             !turns.cancel("thread-drop"),
             "the guard must deregister the turn when the future is dropped"
         );
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_during_preparation_keeps_b_running_and_never_dispatches_a() {
+        let turns = Arc::new(TurnRegistry::default());
+        let dispatched_a = Arc::new(AtomicBool::new(false));
+        let (a_preparing, preparing) = tokio::sync::oneshot::channel();
+        let (finish_b, wait_b) = tokio::sync::oneshot::channel();
+        let owner_a = turns.clone();
+        let dispatched = dispatched_a.clone();
+        let a = tokio::spawn(async move {
+            owner_a
+                .run("A", async move {
+                    let _ = a_preparing.send(());
+                    std::future::pending::<()>().await;
+                    dispatched.store(true, Ordering::SeqCst);
+                    Ok(())
+                })
+                .await
+        });
+        let owner_b = turns.clone();
+        let b = tokio::spawn(async move {
+            owner_b
+                .run("B", async move {
+                    wait_b.await.map_err(|_| anyhow::anyhow!("B gate closed"))?;
+                    Ok("B finished")
+                })
+                .await
+        });
+        preparing.await.unwrap();
+        assert!(turns.cancel("A"));
+        assert!(a.await.unwrap().is_err());
+        assert!(!dispatched_a.load(Ordering::SeqCst));
+        finish_b.send(()).unwrap();
+        assert_eq!(b.await.unwrap().unwrap(), "B finished");
+        assert!(!turns.cancel("A"));
+        assert!(!turns.cancel("B"));
+    }
+
+    #[tokio::test]
+    async fn isolated_stop_a_aborts_only_its_tool_while_b_and_next_a_finish() {
+        let turns = Arc::new(TurnRegistry::default());
+        let listener_a = Arc::new(RecordingListener::default());
+        let listener_b = Arc::new(RecordingListener::default());
+        let effect_a = Arc::new(AtomicBool::new(false));
+        let effect_b = Arc::new(AtomicBool::new(false));
+        let a = tokio::spawn(drive_turn(
+            scripted_turn(
+                tool_turn_script(),
+                slow_tool_registry(effect_a.clone(), Duration::from_millis(1500)),
+                "A",
+            ),
+            listener_a.clone(),
+            turns.clone(),
+            "A".into(),
+        ));
+        let b = tokio::spawn(drive_turn(
+            scripted_turn(
+                tool_turn_script(),
+                slow_tool_registry(effect_b.clone(), Duration::from_millis(1500)),
+                "B",
+            ),
+            listener_b.clone(),
+            turns.clone(),
+            "B".into(),
+        ));
+        assert!(wait_until_set(&listener_a.tool_started, Duration::from_secs(5)).await);
+        assert!(wait_until_set(&listener_b.tool_started, Duration::from_secs(5)).await);
+        assert!(turns.cancel("A"));
+        assert!(a.await.unwrap().is_err());
+        let recovered = drive_turn(
+            scripted_turn(text_turn_script("A2 complete"), ToolRegistry::new(), "A2"),
+            listener_a.clone(),
+            turns.clone(),
+            "A".into(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(recovered.0, "A2 complete");
+        assert!(!b.is_finished(), "B is still running independently");
+        assert!(b.await.unwrap().is_ok());
+        assert!(!effect_a.load(Ordering::SeqCst));
+        assert!(effect_b.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn malformed_accepted_selection_refuses_instead_of_using_loader_defaults() {
+        use codescribe_core::config::settings::AgentTurnSelection;
+        use codescribe_core::config::{CapturedRuntimeInputs, Config};
+        let agent = CodescribeAgent {
+            runtime_settings: Arc::new(Config::runtime_snapshot_from_captured(
+                CapturedRuntimeInputs::defaults_at("/fixture/agent".into(), 0),
+            )),
+            turns: Arc::default(),
+            approvals: Arc::default(),
+        };
+        for (provider, model, reasoning) in [
+            ("unknown-provider", "model", Some("high")),
+            ("openai-responses", "", Some("high")),
+            ("openai-responses", "model", Some("not-an-effort")),
+        ] {
+            let selection = AgentTurnSelection {
+                provider: provider.into(),
+                model: model.into(),
+                reasoning: reasoning.map(str::to_string),
+                custom_provider: None,
+                acp: None,
+            };
+            let configuration = CsAgentTurnConfiguration {
+                provider: provider.into(),
+                model: model.into(),
+                reasoning_effort: reasoning.unwrap_or_default().into(),
+                receipt: serde_json::to_string(&selection).unwrap(),
+            };
+            let error = agent
+                .stream_configured_reply(
+                    "must not run".into(),
+                    "invalid-receipt".into(),
+                    vec![],
+                    configuration,
+                    Arc::new(RecordingListener::default()),
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("cannot be restored exactly"),
+                "{error}"
+            );
+            assert!(!agent.cancel_turn("invalid-receipt".into()));
+        }
     }
 
     /// Cancel on an idle thread is a quiet false — no panic on registry or FFI.

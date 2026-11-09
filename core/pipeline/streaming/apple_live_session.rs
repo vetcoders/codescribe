@@ -2176,6 +2176,8 @@ struct AppleSealState {
     /// Latest completed window start or closed capture extent. Earlier jobs
     /// must drain before an occurrence behind this horizon can seal.
     admission_horizon: u64,
+    /// Last FIFO progress receipt emitted for shared channel settlement.
+    decoder_covered_samples: u64,
     /// Utterance-grain straddles still refuse whole-span replacement.
     whisper_span_refused: BTreeSet<OccurrenceIdentity>,
     refinement_clock: Instant,
@@ -2278,6 +2280,8 @@ struct AppleSealState {
     /// One witness request in flight per session; the next seal re-checks
     /// whatever debt is still open then.
     dictation_witness_inflight: bool,
+    /// Earliest sample a live witness may still insert, with its existing budget.
+    dictation_witness_coverage_hold: Option<(u64, Instant)>,
     /// Exact owners held by the concrete in-flight witness job.
     dictation_witness_owners: Vec<OccurrenceIdentity>,
     /// Whisper closures awaiting the next bounded independent question.
@@ -2304,6 +2308,8 @@ struct AppleSealState {
     dictation_witness_requests: u64,
     /// Locale handed to the witness decode, captured at session start.
     dictation_witness_language: Option<String>,
+    /// Observational speaker attribution tracker on sealed occurrences and terminal seal.
+    speaker_tracker: crate::pipeline::diarization::sealed_embedding::LiveSessionSpeakerTracker,
 }
 
 /// Capture-clock allowance for a final; the scheduled frontier is the hold.
@@ -2736,6 +2742,53 @@ impl AppleSealState {
         }
     }
 
+    /// Spawn STOP-only speaker diarization on a detached background thread AFTER
+    /// `EngineEvent::LedgerSeal` has been published. Copies out the immutable ledger
+    /// snapshot and resolved PCM windows first so the background thread never holds
+    /// the live `acoustic_ledger` mutex or delays microphone/session teardown.
+    fn spawn_post_seal_speaker_diarization(&mut self, sealed_occurrences: &[OccurrenceIdentity]) {
+        if sealed_occurrences.is_empty() {
+            return;
+        }
+        let windows: Vec<(OccurrenceIdentity, u64, Vec<f32>)> = sealed_occurrences
+            .iter()
+            .filter_map(|occ| {
+                let w = self.window_by_samples(occ.sample_start, occ.sample_end)?;
+                Some((occ.clone(), w.sample_start, w.samples))
+            })
+            .collect();
+        if windows.is_empty() {
+            return;
+        }
+        let ledger_snapshot = self
+            .acoustic_ledger
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let mut tracker = std::mem::replace(
+            &mut self.speaker_tracker,
+            crate::pipeline::diarization::sealed_embedding::LiveSessionSpeakerTracker::for_session(
+                &self.session_id,
+                self.capture_epoch,
+                self.sample_rate,
+            ),
+        );
+        let occurrences = sealed_occurrences.to_vec();
+        let _ = std::thread::Builder::new()
+            .name("codescribe-post-seal-diarizer".to_string())
+            .spawn(move || {
+                for (occ, sample_start, samples) in &windows {
+                    let _ = tracker.observe_sealed_occurrence(
+                        &ledger_snapshot,
+                        occ,
+                        samples,
+                        *sample_start,
+                    );
+                }
+                let _ = tracker.finalize_take(&ledger_snapshot, &occurrences, |_, _| None);
+            });
+    }
+
     /// Decoder-only view. Acoustic qualification and fence measurements keep
     /// using window_by_samples, whose raw authority is unchanged.
     fn recognizer_window_by_samples(&self, start: u64, end: u64) -> Option<ResolvedAudioWindow> {
@@ -2851,6 +2904,12 @@ impl AppleSealState {
     fn new_for_session(sample_rate: u32, session_id: String, capture_epoch: u64) -> Self {
         let session_id_for_energy = session_id.clone();
         let speech_progress = SpeechProgress::new(session_id.clone(), capture_epoch, sample_rate);
+        let speaker_tracker =
+            crate::pipeline::diarization::sealed_embedding::LiveSessionSpeakerTracker::for_session(
+                &session_id,
+                capture_epoch,
+                sample_rate,
+            );
         let state = Self {
             capture_turn: CaptureTurnIntent::HandsFree,
             session_id,
@@ -2912,6 +2971,7 @@ impl AppleSealState {
             pending_whisper_stubs: Vec::new(),
             last_submission_sequence: 0,
             admission_horizon: 0,
+            decoder_covered_samples: 0,
             whisper_span_refused: BTreeSet::new(),
             refinement_clock: Instant::now(),
             terminal_window_tail_replayed: false,
@@ -2962,6 +3022,7 @@ impl AppleSealState {
             dictation_witness_armed: crate::stt::apple_stt::dictation_transcriber_enabled(),
             dictation_witness_return: None,
             dictation_witness_inflight: false,
+            dictation_witness_coverage_hold: None,
             dictation_witness_owners: Vec::new(),
             dictation_witness_waiting: Vec::new(),
             dictation_witness_payload: None,
@@ -2971,6 +3032,7 @@ impl AppleSealState {
             dictation_witness_live_closed: false,
             dictation_witness_requests: 0,
             dictation_witness_language: None,
+            speaker_tracker,
         };
         state
             .acoustic_ledger
@@ -5972,6 +6034,49 @@ impl AppleSealState {
         }
         if expired_words {
             self.publish_resolved_word_seals(ev_tx);
+        }
+    }
+
+    /// Publish a conservative covered prefix, never the largest occurrence
+    /// seen. Out-of-order returns and silence both need the work-plan clock.
+    /// Transcript sealing and unresolved acoustic debt do not describe decoder
+    /// progress. Only planned or in-flight decoder work can hold this prefix.
+    fn publish_decoder_coverage(&mut self, ev_tx: &mpsc::UnboundedSender<EngineEvent>) {
+        if self.capture_turn != CaptureTurnIntent::AgentChannel || self.capture_stopping {
+            return;
+        }
+        let session_end = self.audio.session_sample_end();
+        let horizon = if self.tail_patch.is_some() || self.refinement_lane_lost {
+            self.window_plan.admission_horizon()
+        } else {
+            // The direct lane has no capture-window work plan to drain.
+            session_end
+        };
+        let observed = observed_silero(self)
+            .and_then(|speech| speech.availability().observed_samples())
+            .unwrap_or(horizon);
+        let mut covered = observed.min(session_end).min(horizon);
+        for job in self.refinement_submitted.values() {
+            covered = covered.min(job.request_identity.range.sample_start);
+        }
+        for job in &self.refinement_pending {
+            covered = covered.min(job.provider_request.identity.range.sample_start);
+        }
+        // Held Apple words wait on acoustic ownership/closure, which has no
+        // decoder-progress bound. Late admissions are accounted by the demux.
+        if self.dictation_witness_inflight
+            && let Some((start, requested_at)) = self.dictation_witness_coverage_hold
+            && requested_at.elapsed() < DICTATION_WITNESS_REQUEST_TIMEOUT
+        {
+            covered = covered.min(start);
+        }
+        if covered > self.decoder_covered_samples {
+            self.decoder_covered_samples = covered;
+            let _ = ev_tx.send(EngineEvent::DecoderCovered {
+                session_id: self.session_id.clone(),
+                capture_epoch: self.capture_epoch,
+                sample_end: covered,
+            });
         }
     }
 
@@ -9131,6 +9236,7 @@ fn maybe_spawn_utterance_witness(
     };
     state.dictation_witness_requests = state.dictation_witness_requests.saturating_add(1);
     state.dictation_witness_inflight = true;
+    state.dictation_witness_coverage_hold = Some((identity.range.sample_start, Instant::now()));
     state.dictation_witness_owners = {
         let mut ledger = state
             .acoustic_ledger
@@ -9287,6 +9393,7 @@ fn finish_dictation_witness_frontier(
     state: &mut AppleSealState,
     _ev_tx: &mpsc::UnboundedSender<EngineEvent>,
 ) {
+    state.dictation_witness_coverage_hold = None;
     let owners = std::mem::take(&mut state.dictation_witness_owners);
     let mut ledger = state
         .acoustic_ledger
@@ -10962,6 +11069,7 @@ fn apple_stream_worker(
             owner.tick(&state, &ev_tx);
         }
         state.emit_speech_integrity(&ev_tx);
+        state.publish_decoder_coverage(&ev_tx);
     }
 
     state.capture_stopping = true;
@@ -11335,7 +11443,9 @@ fn apple_stream_worker(
         .seal_terminal(&state.session_id, state.capture_epoch);
     match terminal {
         Ok(receipt) => {
+            let sealed_occurrences = receipt.sealed_occurrences.clone();
             let _ = ev_tx.send(EngineEvent::LedgerSeal { receipt });
+            state.spawn_post_seal_speaker_diarization(&sealed_occurrences);
         }
         Err(refusal) => report_terminal_seal_refusal(&ev_tx, refusal),
     }
@@ -11893,6 +12003,10 @@ fn emit_direct_apple_events(
 #[cfg(test)]
 #[path = "apple_live_session_tests/c13a_lifecycle_tests.rs"]
 mod c13a_lifecycle_tests;
+
+#[cfg(test)]
+#[path = "channel_decoder_coverage_tests.rs"]
+mod channel_decoder_coverage_tests;
 
 #[cfg(test)]
 #[path = "apple_live_session_tests/layer1_frontier_contracts.rs"]

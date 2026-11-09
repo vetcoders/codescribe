@@ -198,7 +198,7 @@ async fn cancelled_hangup_caller_retains_owned_capture_close_and_one_seal() {
         sealed_rows(&bus_rows(&channel_bus)),
         vec![("cancelled-stop".to_string(), "hangup".to_string())]
     );
-    assert_eq!(ChannelSealReason::DictationHandoff.as_str(), "hangup");
+    // Ordinary dictation no longer hangs channels up: there is no handoff seal.
     assert_eq!(ChannelSealReason::Silence.as_str(), "silence");
 }
 
@@ -386,10 +386,16 @@ async fn conversation_refuses_while_a_channel_is_open() {
     assert_eq!(controller.current_state().await, super::super::State::Idle);
 }
 
+/// Ordinary dictation joins beside the open channels (Maciej, 2026-11-07,
+/// relayed by Lena's delivery 806be508: one text demux, no hang-up). Every
+/// agent keeps its session; no receipt reaches any bus; the take has its own
+/// document id.
 #[tokio::test]
 #[serial]
-async fn ordinary_handover_closes_each_channel_once_with_its_owned_receipt() {
-    let controller = RecordingController::new_without_keychain();
+async fn ordinary_start_joins_beside_open_channels_without_hanging_them_up() {
+    use super::super::{HoldMode, HotkeyAction, HotkeyInput, HotkeyType, State};
+
+    let controller = Arc::new(RecordingController::new_without_keychain());
     let dir = tempfile::tempdir().expect("temp");
     let first_bus = dir.path().join("channel-1.jsonl");
     let third_bus = dir.path().join("channel-3.jsonl");
@@ -408,52 +414,64 @@ async fn ordinary_handover_closes_each_channel_once_with_its_owned_receipt() {
             .expect("open fixture channel");
         let mut channels = controller.agent_channels.lock().await;
         let open = channels.get_mut(&digit).expect("open");
-        open.session_id = Some(format!("agent-channel-{digit}-handover"));
+        open.session_id = Some(format!("agent-channel-{digit}-beside"));
         open.channel_session_id = open.session_id.clone();
     }
-    let serial = controller.serial_lock.lock().await;
     controller
-        .close_agent_channels_for_dictation()
+        .handle_hotkey_event(HotkeyInput {
+            key_type: HotkeyType::Hold,
+            action: HotkeyAction::Down,
+            assistive: false,
+            hold_mode: HoldMode::Raw,
+            force_raw: false,
+            force_ai: false,
+        })
         .await
-        .expect("handover");
-    drop(serial);
-    assert!(controller.agent_channels.lock().await.is_empty());
-    assert_eq!(
-        controller.capture_subscriber_view().await,
-        (0, false, false)
-    );
-    assert_eq!(controller.current_state().await, super::super::State::Idle);
-    for (digit, bus, owner) in [
-        (1, &first_bus, "lena-session"),
-        (3, &third_bus, "astra-session"),
-    ] {
-        let rows = bus_rows(bus);
-        assert_eq!(rows.len(), 1, "exactly one closure per owned channel");
-        assert_eq!(rows[0]["reason"], "hangup");
-        assert_eq!(rows[0]["state"], "sealed");
-        assert_eq!(rows[0]["channel"], digit.to_string());
-        assert_eq!(rows[0]["provider_session_id"], owner);
+        .expect("ordinary start");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while controller.current_state().await != State::RecHold {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("bounded admission");
+    let take = controller
+        .session_id
+        .read()
+        .await
+        .clone()
+        .expect("ordinary take");
+    for digit in [1, 3] {
+        let open = controller
+            .agent_channel_snapshot(digit)
+            .await
+            .expect("the channel stays open beside the take");
         assert_eq!(
-            rows[0]["session_id"],
-            format!("agent-channel-{digit}-handover")
+            open.session_id.as_deref(),
+            Some(format!("agent-channel-{digit}-beside").as_str())
         );
+        assert_ne!(take, format!("agent-channel-{digit}-beside"));
     }
-    controller
-        .close_agent_channels_for_dictation()
-        .await
-        .expect("idempotent close");
-    assert_eq!(bus_rows(&first_bus).len(), 1);
-    assert_eq!(bus_rows(&third_bus).len(), 1);
+    assert!(!first_bus.exists(), "no hang-up receipt for channel 1");
+    assert!(!third_bus.exists(), "no hang-up receipt for channel 3");
     assert!(
         !shared_bus.exists(),
-        "no receipt is sent to an unrelated bus"
+        "nothing is published to an unrelated bus"
     );
+    controller.reset().await;
+    assert_eq!(controller.current_state().await, State::Idle);
 }
 
+/// A refused ordinary admission touches nothing of the open channel: the
+/// agent keeps its session and capture, no receipt is minted, no take opens.
+/// (The old policy refused when the agent's hang-up receipt could not be
+/// persisted; a join owns no such receipt.)
 #[tokio::test]
 #[serial]
-async fn ordinary_handover_refuses_failed_terminal_receipt_and_retains_owner() {
-    let controller = RecordingController::new_without_keychain();
+async fn refused_ordinary_admission_keeps_the_open_channel_and_mints_no_receipt() {
+    use super::super::{HoldMode, HotkeyAction, HotkeyInput, HotkeyType, State};
+
+    let controller = Arc::new(RecordingController::new_without_keychain());
     let dir = tempfile::tempdir().expect("temp");
     let (binding, channel_bus) = write_dedicated_binding(dir.path());
     let shared_bus = dir.path().join("shared.jsonl");
@@ -461,46 +479,73 @@ async fn ordinary_handover_refuses_failed_terminal_receipt_and_retains_owner() {
         &controller,
         &binding,
         &shared_bus,
-        "agent-channel-3-receipt-failure",
+        "agent-channel-3-admission-refused",
     )
     .await;
     let original = controller.agent_channel_snapshot(3).await.expect("owner");
-    assert!(
-        !channel_bus.exists(),
-        "AttachedOnly fixture has no published PCM"
+    // Make the receipt destination unwritable too: a refused join must not
+    // even try to publish on the agent's bus.
+    std::fs::create_dir_all(&channel_bus).expect("receipt destination as a directory");
+    controller.install_test_start_admission(Err(
+        super::super::admission::AdmissionBlocker::CaptureDeviceUnavailable {
+            reason: "fixture: no input device".into(),
+        },
+    ));
+    let result = controller
+        .handle_hotkey_event(HotkeyInput {
+            key_type: HotkeyType::Hold,
+            action: HotkeyAction::Down,
+            assistive: false,
+            hold_mode: HoldMode::Raw,
+            force_raw: false,
+            force_ai: false,
+        })
+        .await;
+    controller.clear_test_start_admission();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while controller
+            .start_transition_in_flight
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("refused start settles");
+    assert_eq!(
+        controller.current_state().await,
+        State::Idle,
+        "refused admission never leaves Idle (result={result:?})"
     );
-    std::fs::create_dir_all(&channel_bus).expect("make receipt destination unwritable as a file");
-    let serial = controller.serial_lock.lock().await;
-    let result = controller.close_agent_channels_for_dictation().await;
-    drop(serial);
-    let retained = controller.agent_channel_snapshot(3).await;
-    assert!(
-        result.is_err(),
-        "ordinary admission must refuse when its canonical hangup receipt cannot be persisted; got {result:?} with retained_owner={}",
-        retained.is_some()
-    );
-    let retained = retained.expect("failed close retains its original owner");
-    assert_eq!(retained.session_id, original.session_id);
-    assert_eq!(retained.provider_session_id, original.provider_session_id);
-    assert_eq!(retained.audience, original.audience);
-    assert_eq!(controller.current_state().await, super::super::State::Idle);
     assert!(
         controller.session_id.read().await.is_none(),
         "no new ordinary take"
     );
+    let retained = controller
+        .agent_channel_snapshot(3)
+        .await
+        .expect("the refused join leaves the agent in place");
+    assert_eq!(retained.session_id, original.session_id);
+    assert_eq!(retained.provider_session_id, original.provider_session_id);
+    assert_eq!(retained.audience, original.audience);
     assert!(
         channel_bus.is_dir(),
-        "failure fixture did not fabricate a terminal receipt"
+        "no receipt was attempted on the agent's bus"
     );
     assert!(
         !shared_bus.exists(),
-        "no unrelated publication replaces the owned receipt"
+        "nothing is published to an unrelated bus"
     );
 }
 
+/// The agent's own close policy keeps running while dictation shares the
+/// stream: an ordinary start never seals the channel, and a later silence
+/// poll still seals it for silence, under the serial transition order.
 #[tokio::test]
 #[serial]
-async fn ordinary_handover_serializes_silence_poll_without_reopening_the_channel() {
+async fn silence_poll_still_runs_the_channels_own_policy_beside_ordinary_dictation() {
+    use super::super::{HoldMode, HotkeyAction, HotkeyInput, HotkeyType, State};
+
     let controller = Arc::new(RecordingController::new_without_keychain());
     let dir = tempfile::tempdir().expect("temp");
     let (binding, channel_bus) = write_dedicated_binding(dir.path());
@@ -509,47 +554,71 @@ async fn ordinary_handover_serializes_silence_poll_without_reopening_the_channel
         &controller,
         &binding,
         &shared_bus,
-        "agent-channel-3-handover",
+        "agent-channel-3-beside-silence",
     )
     .await;
     hear_voice_at(&controller, opened + Duration::from_secs(1)).await;
-    let serial = controller.serial_lock.lock().await;
-    let (started, waiting) = tokio::sync::oneshot::channel();
-    let polling_controller = Arc::clone(&controller);
-    let poll_bus = shared_bus.clone();
-    let poll = tokio::spawn(async move {
-        started.send(()).expect("poll observed");
-        polling_controller
-            .poll_channel_autoseal(opened + Duration::from_secs(600), &poll_bus)
-            .await
-    });
-    waiting.await.expect("poll started");
-    tokio::task::yield_now().await;
-    assert!(
-        !poll.is_finished(),
-        "silence poll waits for the existing transition owner"
-    );
     controller
-        .close_agent_channels_for_dictation()
+        .handle_hotkey_event(HotkeyInput {
+            key_type: HotkeyType::Hold,
+            action: HotkeyAction::Down,
+            assistive: false,
+            hold_mode: HoldMode::Raw,
+            force_raw: false,
+            force_ai: false,
+        })
         .await
-        .expect("handover");
-    drop(serial);
+        .expect("ordinary start");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while controller.current_state().await != State::RecHold {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("bounded admission");
     assert!(
-        tokio::time::timeout(Duration::from_secs(1), poll)
-            .await
-            .expect("bounded poll")
-            .expect("poll task")
-            .is_empty()
+        controller.agent_channel_snapshot(3).await.is_some(),
+        "the ordinary start sealed nothing"
     );
-    assert!(controller.agent_channel_snapshot(3).await.is_none());
-    let rows = bus_rows(&channel_bus);
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["reason"], "hangup");
+    assert!(
+        !channel_bus.exists(),
+        "no receipt before the agent's own close"
+    );
+    // Silence long past the agent's budget: its own policy acts on it with
+    // its own reason while the take keeps recording. The default policy is
+    // continuous, so the silence turns the message over and the session
+    // keeps listening under the same identity; dictation never hangs it up.
+    let sealed = controller
+        .poll_channel_autoseal(opened + Duration::from_secs(600), &shared_bus)
+        .await;
+    assert_eq!(sealed, vec![3]);
+    let kept = controller
+        .agent_channel_snapshot(3)
+        .await
+        .expect("a continuous session keeps listening after its silence");
+    assert_eq!(
+        kept.session_id.as_deref(),
+        Some("agent-channel-3-beside-silence")
+    );
+    if channel_bus.exists() {
+        for row in bus_rows(&channel_bus) {
+            assert_eq!(
+                row["reason"], "silence",
+                "only the agent's own policy writes to its bus beside dictation"
+            );
+        }
+    }
+    assert_eq!(controller.current_state().await, State::RecHold);
+    controller.reset().await;
+    assert_eq!(controller.current_state().await, State::Idle);
 }
 
+/// Both ordinary gestures join without deleting the channel. The document's
+/// physical capture lives in its own namespace (`dictation-capture-<id>`), so
+/// an agent that outlives the document can never hand it the whole WAV.
 #[tokio::test]
 #[serial]
-async fn ordinary_hold_and_toggle_admit_only_after_owned_channel_close() {
+async fn ordinary_hold_and_toggle_join_without_closing_the_channel() {
     use super::super::{HoldMode, HotkeyAction, HotkeyInput, HotkeyType, State};
 
     for key_type in [HotkeyType::Hold, HotkeyType::Toggle] {
@@ -591,11 +660,15 @@ async fn ordinary_hold_and_toggle_admit_only_after_owned_channel_close() {
         })
         .await
         .expect("bounded fake recorder admission");
-        assert!(controller.agent_channel_snapshot(3).await.is_none());
-        let rows = bus_rows(&channel_bus);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0]["reason"], "hangup");
-        assert_eq!(rows[0]["session_id"], "agent-channel-3-before-take");
+        let open = controller
+            .agent_channel_snapshot(3)
+            .await
+            .expect("{key_type:?}: the channel stays open beside the take");
+        assert_eq!(
+            open.session_id.as_deref(),
+            Some("agent-channel-3-before-take")
+        );
+        assert!(!channel_bus.exists(), "{key_type:?}: no hang-up receipt");
         let take = controller
             .session_id
             .read()
@@ -603,8 +676,24 @@ async fn ordinary_hold_and_toggle_admit_only_after_owned_channel_close() {
             .clone()
             .expect("ordinary take");
         assert_ne!(take, "agent-channel-3-before-take");
+        let capture = controller
+            .recorder
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|recorder| recorder.bound_capture_session_id().map(str::to_owned));
+        assert_eq!(
+            capture.as_deref(),
+            Some(
+                crate::audio::streaming_recorder::StreamingRecorder::dictation_capture_session_id(
+                    &take,
+                )
+                .as_str(),
+            ),
+            "{key_type:?}: the document's capture is not the document"
+        );
         // AttachedOnly stamps ownership without physical PCM. This case
-        // proves admission and close ordering, not a final transcript seal.
+        // proves admission beside an open channel, not a final transcript seal.
         controller.reset().await;
         assert_eq!(controller.current_state().await, State::Idle);
     }
@@ -1212,13 +1301,23 @@ async fn a_roster_row_carries_follower_liveness_for_bound_closed_channels() {
         .duration_since(SystemTime::UNIX_EPOCH)
         .expect("clock")
         .as_secs_f64();
+    let ada_lease =
+        active_names::follower_lease_id("claude-code", "ada-session").expect("ada lease id");
     std::fs::write(
-            bridge.join("leases/ada.json"),
-            format!(
-                r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"ada","name":"ada","active":true,"heartbeat_unix":{now},"provider":"claude-code","provider_session_id":"ada-session","pending":[{{"kind":"seal","delivery_id":"aaaaaaaaaaaaaaaaaaaaaaaa","emitted_at":"2026-10-14T12:00:00Z"}},{{"kind":"seal","delivery_id":"bbbbbbbbbbbbbbbbbbbbbbbb","emitted_at":"2026-10-14T11:00:00Z"}}]}}"#,
-            ),
-        )
-        .expect("lease");
+        bridge.join("leases").join(format!("{ada_lease}.json")),
+        format!(
+            r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"{ada_lease}","name":"ada","active":true,"heartbeat_unix":{now},"provider":"claude-code","provider_session_id":"ada-session","pending":[{{"kind":"seal","delivery_id":"aaaaaaaaaaaaaaaaaaaaaaaa","emitted_at":"2026-10-14T12:00:00Z"}},{{"kind":"seal","delivery_id":"bbbbbbbbbbbbbbbbbbbbbbbb","emitted_at":"2026-10-14T11:00:00Z"}}]}}"#,
+        ),
+    )
+    .expect("lease");
+    // An arbitrary non-canonical `leases/leon.json` does not satisfy Leon's canonical lookup.
+    std::fs::write(
+        bridge.join("leases/leon.json"),
+        format!(
+            r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"leon","name":"leon","active":true,"heartbeat_unix":{now},"provider":"codex","provider_session_id":"leon-session"}}"#,
+        ),
+    )
+    .expect("non-canonical lease");
 
     let controller = RecordingController::new_without_keychain();
     let roster = controller.channel_roster_states_at(&binding, &bridge).await;
@@ -1250,12 +1349,17 @@ async fn a_roster_row_carries_follower_liveness_for_bound_closed_channels() {
     assert_eq!(
         roster[2].follower_alive,
         Some(false),
-        "no lease means nobody is listening"
+        "no canonical lease means nobody is listening"
     );
     assert_eq!(
         roster[2].unread_since, None,
         "a dead follower has no live backlog"
     );
+    assert_eq!(
+        roster[1].last_heartbeat, None,
+        "a live follower is now, not a time"
+    );
+    assert_eq!(roster[2].last_heartbeat, None, "no lease, no heartbeat");
 }
 
 /// A Codex app follower is usually dead between turns; its row still
@@ -1274,13 +1378,14 @@ async fn a_roster_row_carries_the_codex_thread_of_a_dead_follower() {
         .expect("binding");
     let bridge = dir.path().join("bridge");
     std::fs::create_dir_all(bridge.join("leases")).expect("leases dir");
+    let leon_lease = active_names::follower_lease_id("codex", THREAD).expect("leon lease id");
     std::fs::write(
-            bridge.join("leases/leon.json"),
-            format!(
-                r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"leon","name":"leon","active":false,"heartbeat_unix":1000.0,"provider":"codex","provider_session_id":"{THREAD}","codex":{{"thread_id":"{THREAD}","app_bundle_id":"com.openai.codex","rollout":true,"remote":false}}}}"#,
-            ),
-        )
-        .expect("lease");
+        bridge.join("leases").join(format!("{leon_lease}.json")),
+        format!(
+            r#"{{"schema":"codescribe.agent-bridge.lease.v1","lease_id":"{leon_lease}","name":"leon","active":false,"heartbeat_unix":1000.0,"provider":"codex","provider_session_id":"{THREAD}","codex":{{"thread_id":"{THREAD}","app_bundle_id":"com.openai.codex","rollout":true,"remote":false}}}}"#,
+        ),
+    )
+    .expect("lease");
 
     let controller = RecordingController::new_without_keychain();
     let roster = controller.channel_roster_states_at(&binding, &bridge).await;
@@ -1293,6 +1398,11 @@ async fn a_roster_row_carries_the_codex_thread_of_a_dead_follower() {
         Some(format!("codex://threads/{THREAD}").as_str())
     );
     assert_eq!(roster[2].codex_thread_local, Some(true));
+    assert_eq!(
+        roster[2].last_heartbeat,
+        Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1000)),
+        "a gone follower carries its lease's last heartbeat"
+    );
     assert_eq!(roster[1].codex_thread_url, None, "no lease, no thread");
     assert_eq!(roster[1].codex_thread_local, None);
     assert_eq!(roster[0].codex_thread_url, None);
@@ -1545,9 +1655,9 @@ fn frozen_broadcast_keeps_original_owners_and_refuses_wrong_destinations() {
     let canonical_bus = bus.canonicalize().expect("canonical bus");
     std::fs::create_dir(dir.path().join("leases")).expect("leases");
     let bindings = serde_json::json!({"schema": "vc.agent-audience-binding.v1", "bindings": {
-        "1": {"audience": "Lena", "provider": "codex", "provider_session_id": "agent-a"},
-        "2": {"audience": "Adam", "provider": "codex", "provider_session_id": "agent-b"},
-        "3": {"audience": "Astra", "provider": "codex", "provider_session_id": "agent-c"}
+        "1": {"audience": "lena", "display_name": "Lena", "provider": "codex", "provider_session_id": "agent-a"},
+        "2": {"audience": "adam", "display_name": "Adam", "provider": "codex", "provider_session_id": "agent-b"},
+        "3": {"audience": "astra", "provider": "codex", "provider_session_id": "agent-c"}
     }});
     std::fs::write(&binding, serde_json::to_vec(&bindings).expect("json")).expect("binding");
     let admit = |session: &str, destination: &Path| {
@@ -1568,6 +1678,9 @@ fn frozen_broadcast_keeps_original_owners_and_refuses_wrong_destinations() {
     admit("agent-a", &canonical_bus);
     let frozen = frozen_channel_recipients(0, &binding, &bus);
     assert_eq!(frozen.len(), 1);
+    assert_eq!(frozen[0]["audience"], "lena");
+    assert_eq!(frozen[0]["name"], "Lena");
+    assert_eq!(frozen[0]["display_name"], "Lena");
     admit("agent-b", &canonical_bus);
     admit("agent-c", &dir.path().join("wrong.jsonl"));
     assert_eq!(

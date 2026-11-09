@@ -24,7 +24,9 @@
    and leave the user's pasteboard alone. Only explicit **Copy** replaces the pasteboard on purpose. A held automatic paste
    (`ClipboardHold`) arms the existing process-local Deferred Paste buffer;
    the configured shortcut inserts it later without replacing the clipboard
-   merely because delivery was refused.
+   merely because delivery was refused. The latest payload remains available
+   until another nonempty deferred transcript replaces it, including after a
+   paste request; there is no time-based expiry.
 
 ## Paste modes (`PASTE_MODE`, Founder 2026-09-25)
 
@@ -37,7 +39,7 @@ Insert is explicit intent and uses Comfort capability rules, independently of th
 | --------- | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
 | `safe`    | into a focused enabled text input with writable AX value/selected text             | no or unreadable editable input; password field; command-shaped text in a terminal       |
 | `comfort` | into the retained recipient, including terminal windows without editable AX fields | password field; command-shaped text in a terminal; missing or changed recipient identity |
-| `off`     | never: `ArchiveOnly`, `reason=paste_mode_off`, pasteboard untouched                | —                                                                                        |
+| `off`     | never: `DeferredInsert`, `reason=paste_mode_off`, pasteboard untouched             | —                                                                                        |
 
 - **Password guard** (`hold_secure_field`): `AXSecureTextField` or macOS secure
   event input (a password prompt owns the keyboard). Holds in every mode.
@@ -67,6 +69,23 @@ not require the user to replace it with Copy first.
   next save. `true` → `safe` is Claude's assumption (2026-09-29): no Founder
   decision records whether "on" meant terminals too.
 
+## Notes and retained text (Founder 2026-11-08)
+
+Notes Mode controls saving a note, independently of Safe / Comfort / Off. It
+never selects a competing save-only delivery route. The retired
+`QUICK_NOTES_SAVE_ONLY` setting has no runtime reader and configuration writes
+reject it. Existing saved paste choices remain unchanged.
+
+The default Deferred Paste shortcut is ⌘⌥V; saved explicit alternatives and
+Disabled remain user choices. The active tap owns the configured chord, including
+repeat and key-up, so the host cannot also execute it. Synthetic keys posted by
+Codescribe carry an event tag and bypass its detector.
+
+Automatic paste and explicit Insert retain the attempted payload before posting
+Cmd+V because posting is not recipient acceptance. A successful request does not
+consume this process-local buffer. Only the next nonempty deferred payload
+replaces it; restarting the process still clears process-local state.
+
 ## Intent → route
 
 | Intent            | Typical gesture                                 | Route                                                                                                                |
@@ -76,21 +95,34 @@ not require the user to replace it with Copy first.
 | `OrientDictation` | Hold Fn / Globe                                 | `ClipboardPaste` / `ClipboardHold` per paste mode; `OrientCanvas` if overlay caret / mode `off`                      |
 | `OrientFormat`    | menu bar Start transcription / overlay          | same as dictation                                                                                                    |
 | `OverlayInsert`   | overlay Insert / defer                          | `ClipboardPaste` into a latched foreign caret (Alacritty, Notes, …); `DeferredInsert` when Codescribe owns the caret |
-| `NotesOnly`       | save-only notes                                 | `ArchiveOnly`                                                                                                        |
 
 Vetoes that keep Orient off the paste gun: empty / no-speech, live-stream
 session, quality-commit pending, overlay canvas holds the caret.
+
+### Accepted live formatting at Stop
+
+Correction and Smart freeze one delivery from the current committed occurrences.
+Each occurrence keeps its latest accepted, source-bound formatted version; an
+unavailable, failed or stale fragment keeps only that occurrence's committed
+Raw/Light+ text. A missing fragment never discards the accepted rest of the take
+(Founder regression report, 2026-11-08: live “branchem” reverted to Raw “graczem”).
+
+The emitter validates the owning document and its physical capture separately.
+Human edits, an explicit Raw selection and current whole-document versions keep
+their existing authority. Provisional paint does not become committed text.
+Once selected, the handoff stays frozen: a later formatter answer adds history,
+not another delivery.
 
 ### Stop path (restored 2026-09-08)
 
 The W0 authority demolition (`ac6d399b3`, 2026-08-24) removed the stop-path
 intents together with the old transcript cone, and with them auto-paste on
-release. Restored by `delivery_intent_from_session(assistive, force_ai, notes_save_only)` → `resolve_delivery_route` on both stop paths (toggle
+release. Restored by `delivery_intent_from_session(assistive, force_ai)` → `resolve_delivery_route` on both stop paths (toggle
 Finish and hold release):
 
-- `OrientCanvas` from the table is `ArchiveOnly` with
-  `reason=paste_mode_off`: the overlay canvas already shows the
-  committed document, nothing else moves.
+- With paste mode Off, `OrientCanvas` parks the committed document in
+  `DeferredInsert` with `reason=paste_mode_off`. It posts no keys and does not
+  borrow the system clipboard.
 - `AgentVoice` resolves to `AgentComposer` with
   `reason=assistive_first_class`; the stop path never pastes it.
 - A hands-free assistive take that ended after 30 s without voice
@@ -566,7 +598,7 @@ Stacked on `fix/engine-routing`.
 
 ## Recipient capability and honest receipts (2026-10-09)
 
-Manual Insert, automatic paste (including Comfort), and the deferred global insertion command never post Cmd+V solely because an application is active. AXWebArea, disabled/read-only text, missing identity, and an unreadable recipient retain the text. Immediately before posting, the process and retained AX element must still match and the input must still be editable. A terminal without a positively supported input arms Deferred Paste without changing the clipboard.
+Manual Insert, automatic paste and the deferred global insertion command never post Cmd+V solely because an application is active. Missing or changed recipient identity retains the text. Safe requires a positively writable text field; Comfort and explicit insertion also accept a retained window in hosts without editable AX fields. Both reject password input and recheck the process and retained AX identity before posting. Command-shaped automatic terminal input remains held for an explicit gesture.
 
 The clipboard transport acknowledges only posted keyboard events. `PasteRequested` projects as “Paste requested”, never “inserted”: there is no recipient acknowledgement in CGEvent. Changed/unavailable targets arm Deferred Paste. The transport checks identity before borrowing the clipboard and again before the keyboard event. If the target changes during the borrow, it restores the previous clipboard immediately, subject to the existing restore epoch. No Return or navigation keys are posted.
 

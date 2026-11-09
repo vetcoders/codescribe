@@ -641,12 +641,27 @@ impl AcousticLedger {
                         && record.slot.sample_end == candidate.sample_end
                 })
                 .and_then(|record| record.sequence_source.as_ref())
-                .and_then(|target| {
-                    (target.observation == source.observation).then_some(target == source)
+                // A retired target supplies history, not an exclusion against
+                // the word that now owns its speech.
+                .filter(|target| {
+                    let target = SlotTarget::from(*target);
+                    self.slots_of(&target.observation.occurrence)
+                        .is_some_and(|slots| {
+                            slots.iter().any(|slot| SlotTarget::from(slot) == target)
+                        })
                 })
+                // A resolved sequence position has one target even when a
+                // neighbouring word came from another decoder pass. Falling
+                // back to overlap would give this word a second target.
+                .map(|target| SlotTarget::from(target) == SlotTarget::from(source))
         };
-        if let Some(matches) = correspondence(left, right).or_else(|| correspondence(right, left)) {
-            return matches;
+        let forward = correspondence(left, right);
+        let reverse = correspondence(right, left);
+        if forward == Some(true) || reverse == Some(true) {
+            return true;
+        }
+        if forward == Some(false) || reverse == Some(false) {
+            return false;
         }
         match (
             self.word_anchor_identity(left),
@@ -984,6 +999,88 @@ impl AcousticLedger {
                 } else {
                     j += 1;
                 }
+            }
+        }
+        // An independent measured word can disagree with its only remaining
+        // physical target. Both immediate neighbours must already name distinct
+        // words of this owner; their order narrows the question, while actual
+        // original PCM overlap and complete decode scope establish eligibility.
+        // The candidate's spelling never selects that target or settles it.
+        let measured_dt = observation.producer == ObservationProducer::AppleDictation
+            && self.word_evidence_input(observation).is_some_and(|input| {
+                input.finality == "final"
+                    && input.timing == "exact_sample_range"
+                    && input
+                        .backend
+                        .as_deref()
+                        .is_some_and(|backend| backend.ends_with(":apple_dictation"))
+                    && input.producer_request.as_ref().is_some_and(|request| {
+                        request.range.session == owner.session
+                            && request.range.capture_epoch == owner.capture_epoch
+                            && input.words.iter().all(|word| {
+                                word.decode
+                                    == Some((request.range.sample_start, request.range.sample_end))
+                            })
+                    })
+            });
+        if measured_dt {
+            let mut resolved = Vec::new();
+            for index in 1..pins.len().saturating_sub(1) {
+                if correspondence[index].is_some() || pins[index].token_count != 1 {
+                    continue;
+                }
+                let (Some(left), Some(right)) =
+                    (correspondence[index - 1], correspondence[index + 1])
+                else {
+                    continue;
+                };
+                if &left.observation.occurrence != owner
+                    || &right.observation.occurrence != owner
+                    || left.sample_end > right.sample_start
+                    || pins[index - 1].sample_end > pins[index].sample_start
+                    || pins[index].sample_end > pins[index + 1].sample_start
+                {
+                    continue;
+                }
+                let sources = prior
+                    .iter()
+                    .filter(|source| {
+                        &source.observation.occurrence == owner
+                            && source.sample_start < right.sample_start
+                            && left.sample_end < source.sample_end
+                    })
+                    .collect::<Vec<_>>();
+                let [source] = sources.as_slice() else {
+                    continue;
+                };
+                let source = *source;
+                if source.producer == ObservationProducer::Whisper
+                    && left.sample_end <= source.sample_start
+                    && source.sample_end <= right.sample_start
+                    && self.word_anchor_identity(source).is_some()
+                    && matches!(
+                        &source.witness,
+                        SlotWitness::Unwitnessed | SlotWitness::Absent { .. }
+                    )
+                    && !correspondence
+                        .iter()
+                        .flatten()
+                        .any(|target| SlotTarget::from(*target) == SlotTarget::from(source))
+                    && self.complete_word_slot(source)
+                    && self.asr_source_scope_complete(observation, std::slice::from_ref(source))
+                    && shares_burst(source, &pins[index])
+                    && self
+                        .original_anchor_word_range(source)
+                        .is_some_and(|range| {
+                            range.sample_start < pins[index].sample_end
+                                && pins[index].sample_start < range.sample_end
+                        })
+                {
+                    resolved.push((index, source));
+                }
+            }
+            for (index, source) in resolved {
+                correspondence[index] = Some(source);
             }
         }
         // A boundary word alone cannot distinguish replay from a genuine
@@ -1349,7 +1446,13 @@ impl AcousticLedger {
                 .iter()
                 .enumerate()
                 .any(|(other_index, (start, end))| {
-                    other_index != index && *start < source.sample_end && source.sample_start < *end
+                    other_index != index
+                        && (!measured_dt
+                            || correspondence[other_index].is_none_or(|target| {
+                                SlotTarget::from(target) == SlotTarget::from(source)
+                            }))
+                        && *start < source.sample_end
+                        && source.sample_start < *end
                 })
         };
         for (index, held) in correspondence.iter().enumerate() {

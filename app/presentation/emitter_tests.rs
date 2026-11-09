@@ -5228,12 +5228,12 @@ fn relay_acceptance_stale_smart_cannot_overwrite_manual_human() {
 }
 
 #[tokio::test]
-async fn smart_deadline_delivers_one_whole_corrections_version_and_keeps_raw() {
+async fn smart_deadline_preserves_accepted_fragment_and_raw_suffix_once() {
     let mut take = live_take("smart-deadline");
     let first = OccurrenceIdentity::new("smart-deadline", 21, 0, 16_000);
     let second = OccurrenceIdentity::new("smart-deadline", 21, 16_000, 32_000);
-    take.admit(&first, 1, "pierwsze zdanie");
-    take.admit(&second, 2, "drugie zdanie");
+    take.admit(&first, 1, "nie lokalnym graczem");
+    take.admit(&second, 2, "poza tymi rzeczami");
     take.seal(&first);
     take.seal(&second);
     take.emitter.on_event(&EngineEvent::SessionFinalised {
@@ -5257,10 +5257,10 @@ async fn smart_deadline_delivers_one_whole_corrections_version_and_keeps_raw() {
         reducer.mint_derived_projection(
             "smart-deadline".into(),
             raw.source_revision,
-            "pierwsze zdanie".into(),
+            "nie lokalnym graczem".into(),
             FormattingPolicy::Smart,
             AiFormatResult {
-                text: "Smart-only fragment".into(),
+                text: "Nie lokalnym branchem.".into(),
                 reasoning_text: None,
                 status: AiFormatStatus::Applied,
             },
@@ -5271,9 +5271,12 @@ async fn smart_deadline_delivers_one_whole_corrections_version_and_keeps_raw() {
         .emitter
         .delivery_projection(FormattingPolicy::Smart, &raw.source_text)
         .unwrap();
-    assert_eq!(selected.delivered_mode, "correction");
-    assert_eq!(selected.rendered_text, raw.source_text);
-    assert!(!selected.rendered_text.contains("Smart-only"));
+    assert_eq!(selected.delivered_mode, "smart");
+    assert_eq!(selected.status, "applied");
+    assert_eq!(
+        selected.rendered_text,
+        "Nie lokalnym branchem. poza tymi rzeczami."
+    );
     assert_eq!(
         take.emitter
             .delivery_projection(FormattingPolicy::Smart, &raw.source_text)
@@ -5294,7 +5297,7 @@ async fn smart_deadline_delivers_one_whole_corrections_version_and_keeps_raw() {
     assert_eq!(rows[0]["source_raw_revision"], raw.source_revision);
     assert_eq!(rows[0]["source_raw_text"], raw.source_text);
     assert_eq!(rows[0]["requested_mode"], "smart");
-    assert_eq!(rows[0]["selected_mode"], "correction");
+    assert_eq!(rows[0]["selected_mode"], "smart");
     assert_eq!(rows[0]["payload_utf8"], payload);
     assert_eq!(rows[0]["disposition"], "copied_to_clipboard");
     // A late successful answer is retained as another available version,

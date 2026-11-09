@@ -1018,7 +1018,8 @@ final class SettingsTruthTests: XCTestCase {
   /// The visible experimental picker is a public product setting. A rejected
   /// write must remain a visible error, rather than silently changing the UI.
   func testPublicAppleFormatterChoicePersistsBothValuesAndReportsWriteRefusal() {
-    XCTAssertFalse(DeveloperSurface.isEnabled(), "Run this acceptance case with CS_DEVELOPER_SURFACE=0")
+    XCTAssertFalse(
+      DeveloperSurface.isEnabled(), "Run this acceptance case with CS_DEVELOPER_SURFACE=0")
     var stored = CsSettings.sample
     stored.formatOnDevice = false
     var writes: [(String, String)] = []
@@ -1321,6 +1322,38 @@ final class SettingsTruthTests: XCTestCase {
     }
   }
 
+  func testDisambiguateModelOptionsAndCrossProviderModelSelection() {
+    let disambiguated = LLMLaneModel.disambiguateModelOptions([
+      CsModelOption(id: "gemini-2.5-flash", displayName: "Gemini 3.5 Flash Lite"),
+      CsModelOption(id: "gemini-3.5-flash-lite", displayName: "Gemini 3.5 Flash Lite"),
+      CsModelOption(id: "gemini-2.5-pro", displayName: "Gemini 2.5 Pro"),
+    ])
+    XCTAssertEqual(
+      disambiguated.map(\.displayName),
+      [
+        "Gemini 3.5 Flash Lite (gemini-2.5-flash)",
+        "Gemini 3.5 Flash Lite (gemini-3.5-flash-lite)",
+        "Gemini 2.5 Pro",
+      ]
+    )
+
+    var writes: [(key: String, value: String)] = []
+    let store = MockProviderStore()
+    let model = SettingsViewModel(
+      engine: MockSettingsEngine(
+        providerStore: store,
+        updateConfigObserver: { key, value in writes.append((key, value)) }
+      ),
+      permissionProbe: MockPermissionProbe(),
+      runtimeLlmLaneProvider: { store.runtimeLane($0) }
+    )
+    model.selectLLMModel("grok-4.7", providerId: "xai-responses", for: .assistive)
+    XCTAssertEqual(store.laneProviders[.assistive], "xai-responses")
+    XCTAssertEqual(model.llmLane(.assistive).providerId, "xai-responses")
+    XCTAssertEqual(writes.map(\.key), ["LLM_ASSISTIVE_MODEL"])
+    XCTAssertEqual(writes.map(\.value), ["grok-4.7"])
+  }
+
   /// Every consolidated owner can be constructed from the hermetic preview
   /// injection path. Pixel rendering belongs in a UI/visual test: AppKit-backed
   /// controls (`Slider`, `Picker`, `Toggle`) can recurse in off-window
@@ -1495,14 +1528,14 @@ final class SettingsTruthTests: XCTestCase {
   func testCreatorLanguagePresentationKeepsTruthfulIdentity() {
     let choices = LanguageIdentityPresentation.choices
 
-    XCTAssertEqual(choices.map(\.title), ["Multilingual", "Polish", "English"])
+    XCTAssertEqual(choices.map(\.title), ["Auto", "Polish", "English"])
     XCTAssertEqual(choices.map(\.isFineTuned), [false, true, true])
     // The row sentence explains only the one non-obvious choice; the
     // fine-tuned-models detail left the base view (Founder brief, round 4,
     // 2026-10-10), and the Dictionary footnote moved off this row earlier.
     XCTAssertEqual(
       LanguageIdentityPresentation.supportingCopy,
-      "Multilingual detects the language automatically."
+      "Automatically detects the transcription language."
     )
     XCTAssertFalse(LanguageIdentityPresentation.supportingCopy.contains("model weights"))
     XCTAssertFalse(
@@ -1680,6 +1713,46 @@ final class SettingsTruthTests: XCTestCase {
 
     XCTAssertEqual(writes.map(\.key), ["TRANSCRIPT_TAG_TEMPLATE"])
     XCTAssertEqual(writes.map(\.value), [defaultTranscriptTagTemplate])
+  }
+
+  /// Channel 0's name is one line under `SHARED_CHANNEL_NAME`; an unchanged
+  /// name writes nothing, and Restore default writes the empty name that
+  /// shows the interface's default.
+  func testSharedChannelNameWritesOneLineAndRestoresTheDefault() {
+    var writes: [(key: String, value: String)] = []
+    var stored = CsSettings.sample
+    var engine = MockSettingsEngine(updateConfigObserver: { key, value in
+      writes.append((key, value))
+      if key == "SHARED_CHANNEL_NAME" { stored.sharedChannelName = value }
+    })
+    engine.settingsLoader = { stored }
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
+    XCTAssertEqual(model.settings.sharedChannelName, "")
+
+    model.setSharedChannelName("  Ekipa\n Codescribe ")
+    XCTAssertEqual(model.settings.sharedChannelName, "Ekipa Codescribe")
+    model.setSharedChannelName("Ekipa Codescribe")
+    model.restoreDefaultSharedChannelName()
+
+    XCTAssertEqual(writes.map(\.key), ["SHARED_CHANNEL_NAME", "SHARED_CHANNEL_NAME"])
+    XCTAssertEqual(writes.map(\.value), ["Ekipa Codescribe", ""])
+    XCTAssertEqual(model.settings.sharedChannelName, "")
+  }
+
+  /// Channel 0's name keeps at most 24 characters after the whitespace is
+  /// folded, as the runtime loader does with a hand-edited settings.json.
+  func testSharedChannelNameStopsAtItsLimit() {
+    var stored = CsSettings.sample
+    var engine = MockSettingsEngine(updateConfigObserver: { key, value in
+      if key == "SHARED_CHANNEL_NAME" { stored.sharedChannelName = value }
+    })
+    engine.settingsLoader = { stored }
+    let model = SettingsViewModel(engine: engine, permissionProbe: MockPermissionProbe())
+    model.setSharedChannelName("  Zespół\n  Codescribe   i przyjaciele z daleka ")
+    XCTAssertEqual(model.settings.sharedChannelName, "Zespół Codescribe i przy")
+    XCTAssertEqual(SettingsViewModel.sharedChannelNameLimit, 24)
+    model.setSharedChannelName(String(repeating: "👩‍👩‍👧", count: 30))
+    XCTAssertEqual(model.settings.sharedChannelName.count, 24, "characters, not scalars")
   }
 
   func testResetPreviewMapsLiveCountsIntoConcreteConfirmationCopy() {
@@ -2107,14 +2180,16 @@ final class SettingsTruthTests: XCTestCase {
     let admin = ScriptedMcpAdmin(servers: [])
     let model = SettingsViewModel(
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
-    XCTAssertNil(model.addMcpServer(
-      name: "remote", command: "", args: [], endpoint: "https://example.com/mcp", oauth: true))
+    XCTAssertNil(
+      model.addMcpServer(
+        name: "remote", command: "", args: [], endpoint: "https://example.com/mcp", oauth: true))
     XCTAssertEqual(model.mcpServers.first?.oauth, true)
     model.toggleMcpServer(model.mcpServers[0])
     XCTAssertEqual(model.mcpServers.first?.oauth, true)
-    XCTAssertNil(model.updateMcpServer(
-      model.mcpServers[0], command: "", args: [], endpoint: "https://example.com/mcp",
-      token: "", oauth: false))
+    XCTAssertNil(
+      model.updateMcpServer(
+        model.mcpServers[0], command: "", args: [], endpoint: "https://example.com/mcp",
+        token: "", oauth: false))
     XCTAssertEqual(model.mcpServers.first?.oauth, false)
   }
 
@@ -2143,7 +2218,8 @@ final class SettingsTruthTests: XCTestCase {
   func testMcpEditUpdatesTheExistingServerWithoutLosingArgumentsOrState() async {
     let server = CsMcpServer(
       name: "unicode-puzzles", command: "/opt/homebrew/bin/node script.js", args: [],
-      envKeys: ["TOKEN"], enabled: false, transport: "stdio", endpoint: "", authRef: "", oauth: false)
+      envKeys: ["TOKEN"], enabled: false, transport: "stdio", endpoint: "", authRef: "",
+      oauth: false)
     let admin = ScriptedMcpAdmin(servers: [server])
     let model = SettingsViewModel(
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)
@@ -2168,7 +2244,8 @@ final class SettingsTruthTests: XCTestCase {
   func testMcpEditKeepsSavedAuthenticationAndReturnsValidationFailure() {
     let server = CsMcpServer(
       name: "remote", command: "", args: [], envKeys: [], enabled: true,
-      transport: "remote", endpoint: "https://old.example/mcp", authRef: "saved-account", oauth: false)
+      transport: "remote", endpoint: "https://old.example/mcp", authRef: "saved-account",
+      oauth: false)
     let admin = ScriptedMcpAdmin(servers: [server])
     let model = SettingsViewModel(
       engine: MockSettingsEngine(), permissionProbe: MockPermissionProbe(), mcpAdmin: admin)

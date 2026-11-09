@@ -82,6 +82,85 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
     }
   }
 
+  /// Maciej, 2026-11-06, on the two halves of the Agents window: the roster
+  /// stops at the top of its mailbox card, the transcript ran on through the
+  /// gap between the bar and the conversation label ("zrób po prostu po obu
+  /// stronach tak samo"). The transcript now stops at its label too: rows
+  /// still pass under the label's glass, none shows above it. A conversation
+  /// without the label (a fiszka) keeps flowing under its own header.
+  /// The hosts are never ordered onto the desktop.
+  @MainActor
+  func testTranscriptStopsAtTheTopOfItsConversationLabel() throws {
+    var bus = OverlayChannelDelivery.Bus()
+    for index in 0..<16 {
+      var row = reply(String(format: "%024x", index + 1), delivery: "label-clip-\(index)")
+      row["text"] =
+        "Wiadomość \(index): "
+        + String(repeating: "tekst przewijany pod plakietką rozmowy ", count: 5)
+      bus.consume(row)
+    }
+    let conversation = try lenaConversation(bus)
+    let topInset: CGFloat = 40
+    let size = NSSize(width: 620, height: 520)
+    for dark in [true, false] {
+      let palette: OverlayAppearancePalette = dark ? .dark : .light
+      /// Painted pixels that differ from the flat backdrop, in a band of points.
+      func paintedPixels(hidesNavigation: Bool, band: ClosedRange<CGFloat>) throws -> Int {
+        let view = OverlayConversationView(
+          conversation: conversation, palette: palette, topInset: topInset, bottomInset: 8,
+          pendingControls: [], controlErrors: [:], onControl: { _, _ in },
+          draft: .constant(""), sending: false, sendError: nil, onSend: {},
+          hidesNavigation: hidesNavigation)
+        let host = NSHostingView(
+          rootView: view.frame(width: size.width, height: size.height)
+            .background(palette.desktopBackground.color)
+            .environment(\.colorScheme, dark ? .dark : .light))
+        let window = NSWindow(
+          contentRect: NSRect(origin: NSPoint(x: -10000, y: -10000), size: size),
+          styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.contentView = nil }
+        for _ in 0..<4 {
+          host.layoutSubtreeIfNeeded()
+          RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.25))
+        }
+        XCTAssertFalse(window.isVisible)
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let name = "label-clip-\(dark ? "dark" : "light")-\(hidesNavigation ? "bare" : "label").png"
+        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(
+          to: FileManager.default.temporaryDirectory.appendingPathComponent(name))
+        let scale = CGFloat(bitmap.pixelsHigh) / size.height
+        let backdrop = try XCTUnwrap(bitmap.colorAt(x: 1, y: 1))
+        var painted = 0
+        for y in Int(band.lowerBound * scale)..<Int(band.upperBound * scale) {
+          for x in stride(from: 0, to: bitmap.pixelsWide, by: 3) {
+            let pixel = try XCTUnwrap(bitmap.colorAt(x: x, y: y))
+            let delta =
+              abs(pixel.redComponent - backdrop.redComponent)
+              + abs(pixel.greenComponent - backdrop.greenComponent)
+              + abs(pixel.blueComponent - backdrop.blueComponent)
+            if delta > 0.02 { painted += 1 }
+          }
+        }
+        return painted
+      }
+      let scheme = dark ? "dark" : "light"
+      // The label's card starts 4 pt under the inset; everything above is the gap.
+      let gap: ClosedRange<CGFloat> = 2...(topInset + 2)
+      XCTAssertEqual(
+        try paintedPixels(hidesNavigation: false, band: gap), 0,
+        "no row may show between the bar and the conversation label: \(scheme)")
+      XCTAssertGreaterThan(
+        try paintedPixels(hidesNavigation: false, band: 120...400), 500,
+        "the transcript itself must paint: \(scheme)")
+      XCTAssertGreaterThan(
+        try paintedPixels(hidesNavigation: true, band: gap), 500,
+        "without the label, rows keep flowing under the header: \(scheme)")
+    }
+  }
+
   @MainActor
   func testWholeReplyBubbleKeepsPlaybackCopyAndBottomInsetCompact() throws {
     for state in ["spoken", "playing", "waiting", "stopped"] {
@@ -705,7 +784,16 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       for _ in 0..<6 { scale.increase() }
       settle()
       let viewport = scroll.convert(scroll.bounds, to: host)
-      XCTAssertEqual(host.bounds.maxX - viewport.maxX, 15, accuracy: 1)
+      // The scroller keeps clear of the window's resize band in both
+      // presentations. The Intercom narrows the list for it; the window
+      // keeps the list at the card's measure and insets the scroller alone.
+      let gutter = host.bounds.maxX - viewport.maxX
+      let clearance = presentation == .standard ? scroll.scrollerInsets.right : gutter
+      XCTAssertEqual(
+        clearance, OverlayResizeHit.scrollbarInset, accuracy: 1,
+        "\(presentation): gutter \(gutter), scroller insets \(scroll.scrollerInsets), "
+          + "scroller \(String(describing: scroll.verticalScroller?.frame))")
+      if presentation == .standard { XCTAssertEqual(gutter, 0, accuracy: 1) }
       XCTAssertEqual(viewport.height, host.bounds.height, accuracy: 1)
       XCTAssertLessThanOrEqual(document.bounds.width, viewport.width + 1)
       XCTAssertTrue(try XCTUnwrap(editor(host)) === originalEditor)
@@ -1406,21 +1494,32 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       try png.write(
         to: FileManager.default.temporaryDirectory
           .appendingPathComponent("codescribe-conversation-\(scheme).png"))
-      var warmCount = 0
-      var warmBorderCount = 0
-      var warmBorderX: Double = 0
+      var outlineCount = 0
+      var outlineBorderCount = 0
+      var outlineBorderX: Double = 0
       var neutralCount = 0
       var neutralLeft = 0
       var neutralRight = 0
-      func isWarm(_ x: Int, _ y: Int) -> Bool {
+      // The user's bubble wears a secondary-ink hairline (no brand colour:
+      // the brand is for listening only); the agent's keeps the panel edge.
+      // The hairline's rendered grey is the secondary label at the stroke
+      // strength over the shared neutral interior.
+      let agentFill = scheme == .dark ? 0.149 : 0.914
+      let ink = OverlayColorToken(
+        CSPalette.secondaryInk, in: OverlayAppearancePalette.resolve(scheme).appearance)
+      let strokeAlpha = ink.alpha * CSAlpha.selectionStroke
+      let inkGrey = Double((ink.rgb >> 16) & 0xFF) / 255
+      let outlineGrey = inkGrey * strokeAlpha + agentFill * (1 - strokeAlpha)
+      func isOutline(_ x: Int, _ y: Int) -> Bool {
         guard let color = bitmap.colorAt(x: x, y: y) else { return false }
-        return color.redComponent - color.greenComponent > 0.035
-          && color.greenComponent - color.blueComponent > 0.025
+        return abs(color.redComponent - outlineGrey) < 0.03
+          && abs(color.redComponent - color.greenComponent) < 0.03
+          && abs(color.greenComponent - color.blueComponent) < 0.03
       }
-      // Rendered interiors must match; the user's brand hairline stays sparse and on the right.
+      // Rendered interiors must match; the user's hairline stays sparse and on the right.
       // Inspect every physical x: a four-pixel grid can see just one rail of
-      // a one-pixel Retina outline. Continuous vertical edges isolate the
-      // bubble border from warm text, metadata and playback controls.
+      // a one-pixel Retina outline. A vertical run taller than a line of text
+      // isolates the bubble border from antialiased glyph stems of the same grey.
       for y in stride(from: 90, to: bitmap.pixelsHigh - 30, by: 4) {
         for x in 0..<bitmap.pixelsWide {
           guard let color = bitmap.colorAt(x: x, y: y) else {
@@ -1428,28 +1527,26 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
           }
           let r = color.redComponent
           let g = color.greenComponent
-          let b = color.blueComponent
-          if r - g > 0.035 && g - b > 0.025 {
-            warmCount += 1
-            if isWarm(x, y - 4), isWarm(x, y + 4) {
-              warmBorderCount += 1
-              warmBorderX += Double(x)
+          if isOutline(x, y) {
+            outlineCount += 1
+            if [-12, -8, -4, 4, 8, 12].allSatisfy({ isOutline(x, y + $0) }) {
+              outlineBorderCount += 1
+              outlineBorderX += Double(x)
             }
           }
-          let agentFill = scheme == .dark ? 0.149 : 0.914
           if abs(r - agentFill) < 0.018 && abs(r - g) < 0.03 {
             neutralCount += 1
             if x < bitmap.pixelsWide / 2 { neutralLeft += 1 } else { neutralRight += 1 }
           }
         }
       }
-      XCTAssertGreaterThan(warmCount, 10, "the human bubble retains its brand outline")
+      XCTAssertGreaterThan(outlineCount, 10, "the human bubble keeps its secondary-ink outline")
       XCTAssertGreaterThan(neutralLeft, 100, "agent bubble has a neutral interior")
       XCTAssertGreaterThan(neutralRight, 100, "human bubble has the same neutral interior")
-      XCTAssertLessThan(warmCount * 10, neutralCount, "orange is a hairline, never a filled bubble")
+      XCTAssertLessThan(outlineCount * 10, neutralCount, "the outline is a hairline, never a fill")
       let viewportMidpoint = Double(viewport.midX) * Double(bitmap.pixelsWide) / host.bounds.width
-      XCTAssertGreaterThan(warmBorderCount, 10, "the brand outline has visible vertical edges")
-      XCTAssertGreaterThan(warmBorderX / Double(max(1, warmBorderCount)), viewportMidpoint)
+      XCTAssertGreaterThan(outlineBorderCount, 10, "the outline has visible vertical edges")
+      XCTAssertGreaterThan(outlineBorderX / Double(max(1, outlineBorderCount)), viewportMidpoint)
 
     }
   }
@@ -2596,6 +2693,8 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
         + "painted=\(painted)",
       file: file, line: line)
   }
+
+  @MainActor
 
   private func paintedBubblePixels(
     _ bitmap: NSBitmapImageRep, in host: NSView, topInset: CGFloat

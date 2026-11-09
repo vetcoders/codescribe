@@ -26,7 +26,7 @@ use super::{
 impl TranscriptBus {
     /// Copy ownership from the recorder's physical capture-open callback.
     pub(crate) fn observe_capture_opened(&self, session_id: &str, capture_epoch: u64) {
-        if self.session.session_id != session_id || capture_epoch == 0 {
+        if self.capture_session_id() != session_id || capture_epoch == 0 {
             return;
         }
         let mut writer = self
@@ -50,7 +50,7 @@ impl TranscriptBus {
             .writer
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        self.session.session_id == session_id
+        self.capture_session_id() == session_id
             && writer.started
             && writer.ended
             && writer.capture_epoch == Some(capture_epoch)
@@ -96,6 +96,22 @@ impl TranscriptBus {
         &self.session.session_id
     }
 
+    /// Publish this session from a shared capture's ledger. Occurrences keep
+    /// the capture's identity; rows keep this session's.
+    pub(crate) fn with_capture_session(mut self, capture_session_id: String) -> Self {
+        self.capture_session_id = Some(capture_session_id);
+        self
+    }
+
+    /// The ledger namespace every revision and coverage receipt must name:
+    /// the shared capture's, or this session's own when it reads no shared
+    /// capture.
+    pub(crate) fn capture_session_id(&self) -> &str {
+        self.capture_session_id
+            .as_deref()
+            .unwrap_or(&self.session.session_id)
+    }
+
     /// Publish a ledger-free reducer revision authenticated by its embedded
     /// direct capability. Rows keep the existing schemas; the acoustic receipt
     /// list stays honestly empty because no ledger attested this take. The
@@ -107,7 +123,7 @@ impl TranscriptBus {
     ) -> Vec<TranscriptBusEvidenceEvent> {
         // Atomic refusal: no partial rows, sequence changes or last-render
         // update. The capability validator is owned by the reducer.
-        let Some(capability) = revision.authenticates_direct_publication(&self.session.session_id)
+        let Some(capability) = revision.authenticates_direct_publication(self.capture_session_id())
         else {
             return Vec::new();
         };
@@ -304,6 +320,7 @@ impl TranscriptBus {
     ) -> Self {
         Self {
             session,
+            capture_session_id: None,
             path,
             writer: Mutex::new(TranscriptBusWriter {
                 channel_recipients: None,
@@ -391,7 +408,7 @@ impl TranscriptBus {
     /// projection, seal, lifecycle, or delivery disposition. Readers select
     /// this schema explicitly; acoustic document readers continue to see Raw.
     pub(crate) fn record_derived_projection(&self, projection: &DerivedTranscriptProjection) {
-        if projection.session_id != self.session.session_id
+        if projection.session_id != self.capture_session_id()
             || !projection.authenticates_publication()
         {
             return;
@@ -413,7 +430,7 @@ impl TranscriptBus {
         projection: &DerivedTranscriptProjection,
     ) -> Option<TranscriptBusEvidenceEvent> {
         if !projection.authenticates_publication()
-            || projection.session_id != self.session.session_id
+            || projection.session_id != self.capture_session_id()
         {
             return None;
         }
@@ -475,7 +492,7 @@ impl TranscriptBus {
         payload: &str,
         disposition: TranscriptDelivery,
     ) {
-        if projection.session_id != self.session.session_id
+        if projection.session_id != self.capture_session_id()
             || !projection.authenticates_publication()
         {
             return;

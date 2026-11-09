@@ -160,9 +160,6 @@ pub(super) fn prepare_env_import(
     if let Some(v) = migrated_value(file_env, "QUICK_NOTES_ENABLED") {
         settings.quick_notes_enabled = Some(v == "1" || v.eq_ignore_ascii_case("true"));
     }
-    if let Some(v) = migrated_value(file_env, "QUICK_NOTES_SAVE_ONLY") {
-        settings.quick_notes_save_only = Some(v == "1" || v.eq_ignore_ascii_case("true"));
-    }
     if let Some(v) = migrated_value(file_env, "START_AT_LOGIN") {
         settings.start_at_login = Some(v == "1" || v.eq_ignore_ascii_case("true"));
     }

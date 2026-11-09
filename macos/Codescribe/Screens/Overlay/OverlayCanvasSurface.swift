@@ -1,6 +1,13 @@
 import AppKit
 import SwiftUI
 
+/// Reading surfaces retain their quiet canvas; window chrome exposes the
+/// native optical material without an additional opaque backing.
+enum OverlayGlassRole {
+  case readingCanvas
+  case chrome
+}
+
 /// Appearance-aware physical sheet. Window interaction is owned by explicit
 /// inert regions in `DictationOverlayView`, not by a full-sheet AppKit layer.
 struct OverlayCanvasSurface<Content: View>: View {
@@ -9,6 +16,7 @@ struct OverlayCanvasSurface<Content: View>: View {
   @Environment(\.csReduceTransparencyOverride) private var reduceTransparencyOverride
   @Environment(\.csContrastOverride) private var contrastOverride
   let palette: OverlayAppearancePalette
+  var glassRole: OverlayGlassRole = .readingCanvas
   @ViewBuilder let content: Content
 
   var body: some View {
@@ -17,13 +25,16 @@ struct OverlayCanvasSurface<Content: View>: View {
         OverlayCanvasBackdrop(
           palette: palette,
           reduceTransparency: reduceTransparencyOverride ?? reduceTransparency,
-          increasedContrast: (contrastOverride ?? contrast) == .increased)
+          increasedContrast: (contrastOverride ?? contrast) == .increased,
+          role: glassRole)
       }
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous))
       .overlay {
-        RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous)
-          .strokeBorder(palette.border.color, lineWidth: 1)
-          .allowsHitTesting(false)
+        if glassRole == .readingCanvas {
+          RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous)
+            .strokeBorder(palette.border.color, lineWidth: 1)
+            .allowsHitTesting(false)
+        }
       }
       .shadow(
         color: .black.opacity(palette.shadowOpacity),
@@ -43,6 +54,9 @@ struct OverlayCanvasBackdrop: View {
   let reduceTransparency: Bool
   var increasedContrast = false
   var cornerRadius: CGFloat = CSRadius.window
+  var role: OverlayGlassRole = .readingCanvas
+  var tuningSurface: ChromeGlassSurface = .compactOverlay
+  var glassPreferences = ChromeGlassPreferences()
 
   var body: some View {
     ZStack {
@@ -51,11 +65,18 @@ struct OverlayCanvasBackdrop: View {
       {
         Rectangle().fill(palette.desktopBackground.color)
       } else {
-        OverlayDesktopMaterial(palette: palette, cornerRadius: cornerRadius)
-        Rectangle()
-          .fill(Color(nsColor: Self.glassVeil(palette)))
-          .allowsHitTesting(false)
-          .accessibilityHidden(true)
+        OverlayDesktopMaterial(
+          palette: palette, cornerRadius: cornerRadius,
+          tintColor: role == .chrome && glassPreferences.tint(for: tuningSurface) > 0
+            ? palette.desktopBackground.nsColor.withAlphaComponent(
+              glassPreferences.tint(for: tuningSurface))
+            : nil)
+        if role == .readingCanvas {
+          Rectangle()
+            .fill(Color(nsColor: Self.glassVeil(palette)))
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
       }
     }
   }
@@ -83,6 +104,7 @@ struct OverlayCanvasBackdrop: View {
 private struct OverlayDesktopMaterial: NSViewRepresentable {
   let palette: OverlayAppearancePalette
   let cornerRadius: CGFloat
+  var tintColor: NSColor? = nil
 
   func makeNSView(context: Context) -> NSView {
     if #available(macOS 26, *) {
@@ -115,11 +137,9 @@ private struct OverlayDesktopMaterial: NSViewRepresentable {
       view.appearance = NSAppearance(named: name)
     }
     if #available(macOS 26, *), let glass = view as? OverlayDesktopGlassView,
-      glass.tintColor != nil
+      glass.tintColor != tintColor
     {
-      // The sheet colour lives in `OverlayCanvasBackdrop.glassVeil` above the
-      // glass; a tint here would vanish whenever the window is not key.
-      glass.tintColor = nil
+      glass.tintColor = tintColor
     }
   }
 }
@@ -146,14 +166,37 @@ struct OverlayControlGlass: ViewModifier {
   @Environment(\.colorScheme) private var colorScheme
   var cornerRadius: CGFloat = CSRadius.window
   var isEnabled = true
+  var role: OverlayGlassRole = .readingCanvas
+  var showsBorder = true
+  var glassPreferences = ChromeGlassPreferences()
 
   @ViewBuilder
   func body(content: Content) -> some View {
     let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+    let tint = glassPreferences.tint(for: .busHeader)
+    // Surface glass stays still under the pointer; controls own interaction.
+    let base = Glass.regular
+    let material =
+      role == .chrome && tint > 0
+      ? base.tint(
+        (colorScheme == .dark
+          ? Color(red: 0.08, green: 0.08, blue: 0.09)
+          : Color(red: 0.97, green: 0.96, blue: 0.94)).opacity(tint))
+      : base
+    let veilColor =
+      colorScheme == .dark
+      ? Color(red: 0.08, green: 0.08, blue: 0.09).opacity(0.76)
+      : Color(red: 0.97, green: 0.96, blue: 0.94).opacity(0.82)
     Group {
       if #available(macOS 26.0, *) {
         // Control glass does not dim with the window (Maciej, 2026-11-01).
-        content.glassEffect(isEnabled ? .regular.interactive() : .identity, in: shape)
+        // A soft backing veil keeps scrolling rows legible as a hint rather
+        // than colliding line-for-line with the foreground labels.
+        content
+          .background {
+            if isEnabled && role == .readingCanvas { shape.fill(veilColor) }
+          }
+          .glassEffect(isEnabled ? material : .identity, in: shape)
           .environment(\.controlActiveState, .key)
       } else {
         content.background {
@@ -162,7 +205,7 @@ struct OverlayControlGlass: ViewModifier {
       }
     }
     .overlay {
-      if isEnabled {
+      if isEnabled && role == .readingCanvas && showsBorder {
         // A short, soft contour separates glass from passing letters without
         // shadowing the panel's text or spreading across the clear gaps.
         shape.strokeBorder(
@@ -185,6 +228,8 @@ struct OverlayControlGlass: ViewModifier {
 /// as a view, so an environment read on it would see the default.
 struct OverlayComposerSurface: ViewModifier {
   let palette: OverlayAppearancePalette
+  var role: OverlayGlassRole = .readingCanvas
+  var showsBorder = true
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
   @Environment(\.csReduceTransparencyOverride) private var reduceTransparencyOverride
 
@@ -199,6 +244,8 @@ struct OverlayComposerSurface: ViewModifier {
         }
       }
       .modifier(
-        OverlayControlGlass(cornerRadius: CSRadius.composer, isEnabled: !opaque))
+        OverlayControlGlass(
+          cornerRadius: CSRadius.composer, isEnabled: !opaque, role: role,
+          showsBorder: showsBorder))
   }
 }

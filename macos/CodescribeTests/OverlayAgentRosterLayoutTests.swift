@@ -52,10 +52,11 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     let richRow = try XCTUnwrap(card.range(of: "HStack(spacing: 6) {"))
     try assertOrder(
       [
-        "Text(verbatim: identity.displayDigit)", "OverlayReceptionMarks(",
+        "Text(verbatim: identity.displayDigit)",
         "OverlayIntercomStatusMark(",
         // The name and its inline descriptor share OverlayIntercomNameLine.
-        "OverlayIntercomNameLine( name: name,", "OverlayIntercomFocusButton(", "audioSlot(",
+        "OverlayIntercomNameLine( name: name,", "OverlayReceptionMarks(",
+        "OverlayIntercomFocusButton(", "audioSlot(",
       ], in: String(card[richRow.lowerBound...]))
 
     let instance = try sourceSection(
@@ -64,9 +65,10 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     let drawn = try XCTUnwrap(instance.range(of: "return HStack(spacing: 3) {"))
     try assertOrder(
       [
-        "Text(verbatim: instance.displayDigit)", "OverlayReceptionMarks(",
+        "Text(verbatim: instance.displayDigit)",
         "OverlayIntercomStatusMark(",
-        "if mini {", "OverlayIntercomFocusButton(", "OverlayIntercomAudioControls(",
+        "if mini {", "OverlayReceptionMarks(",
+        "OverlayIntercomFocusButton(", "OverlayIntercomAudioControls(",
       ], in: String(instance[drawn.lowerBound...]))
   }
 
@@ -125,9 +127,10 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
               open: open, loud: false, autosealDeadline: nil, followerAlive: alive)
           ])
         XCTAssertEqual(roster.hasDeadFollower(channel), alive == false)
+        // Presence alone: the fixture's received stage never reaches the dot.
         let expected: OverlayAgentDotKind =
-          alive == false ? .sleeping : open ? .listening : .received
-        XCTAssertEqual(roster.statusDotKind(for: channel), expected)
+          alive == false ? .sleeping : open ? .listening : alive == true ? .present : .idle
+        XCTAssertEqual(roster.presenceDotKind(for: channel), expected)
       }
     }
   }
@@ -218,18 +221,23 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     let stale = Date().addingTimeInterval(-(OverlayState.followerStallHorizon + 60))
     XCTAssertTrue(roster(alive: false).isInactive(channel), "a gone follower")
     XCTAssertTrue(roster(alive: true, unreadSince: stale).isInactive(channel), "nobody reads")
-    XCTAssertEqual(roster(alive: true, unreadSince: stale).statusSymbol(for: channel), "zzz")
+    // The stall's mark is the presence dot's "!", never the moon's "zzz" (L6).
+    XCTAssertEqual(roster(alive: true, unreadSince: stale).presenceDotKind(for: channel), .stalled)
+    XCTAssertNotEqual(roster(alive: true, unreadSince: stale).statusSymbol(for: channel), "zzz")
     XCTAssertFalse(roster(alive: true).isInactive(channel), "a reading agent")
     XCTAssertFalse(
       roster(alive: true, unreadSince: Date()).isInactive(channel), "a fresh unread message")
     XCTAssertFalse(roster(alive: nil).isInactive(channel), "no claim is not a claim of death")
 
     let widget = try overlaySource("OverlayIntercomWidget.swift")
-    XCTAssertFalse(widget.contains("roster.hasDeadFollower("), "every Intercom dim reads both")
     XCTAssertEqual(
-      widget.components(separatedBy: "OverlayDisconnectedRowDim(disconnected: current && inactive)")
-        .count
-        - 1, 2, "current cards and instances share the follower inactivity dim")
+      widget.components(separatedBy: "roster.hasDeadFollower(").count - 1, 3,
+      "only a gone follower dims the row or replaces the presence dot")
+    XCTAssertEqual(
+      widget.components(
+        separatedBy: "OverlayDisconnectedRowDim(disconnected: current && disconnected)"
+      ).count
+        - 1, 2, "current cards and instances dim only when the follower is gone")
     XCTAssertEqual(
       widget.components(separatedBy: "OverlayDisconnectedRowDim(disconnected: !current)").count
         - 1, 3, "stale owner chrome has its own dim, independently of the current follower")
@@ -259,6 +267,10 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     XCTAssertTrue(
       body.contains(".frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)"),
       "progressive content starts under the fixed header")
+    XCTAssertTrue(body.contains("OverlayIntercomMessagePreview("))
+    XCTAssertFalse(body.contains("OverlayRosterMessagePreview("))
+    XCTAssertFalse(body.contains("OverlayComposerSurface"))
+    XCTAssertFalse(body.contains("palette.desktopBackground.color.opacity"))
     let handles = try sourceSection(
       "OverlayIntercomWidget.swift", from: "private struct OverlayIntercomResizeHandles: View {",
       to: "private struct OverlayIntercomInstanceCard: View {")
@@ -377,12 +389,9 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
         "let channelRow = current ? intercomChannelRow(state: state, digit: instance.digit) : nil"))
     XCTAssertTrue(instanceHeader.contains("OverlayIntercomAudioControls("))
     XCTAssertTrue(instanceHeader.contains("conversation: current ? conversation : nil"))
-    let dim = try sourceSection(
-      "OverlayChannelStatusView.swift", from: "struct OverlayDisconnectedRowDim: ViewModifier {",
-      to: "struct OverlayRowHoverHighlight: ViewModifier {")
-    XCTAssertEqual(OverlayDisconnectedRowDim.opacity, 0.45)
-    XCTAssertTrue(dim.contains(".opacity(disconnected ? Self.opacity : 1)"))
-    XCTAssertTrue(dim.contains(".grayscale(disconnected ? 1 : 0)"))
+    // A gone agent fades but keeps half its colour (L5 variant 3).
+    XCTAssertEqual(OverlayDisconnectedRowDim.opacity, 0.65)
+    XCTAssertEqual(OverlayDisconnectedRowDim.grayscale, 0.5)
     let marks = try sourceSection(
       "OverlayChannelStatusView.swift", from: "struct OverlayReceptionMarks: View {",
       to: "struct OverlayChannelStatusView: View {")
@@ -486,6 +495,257 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
       XCTAssertEqual(drawer.frame, .zero)
       XCTAssertNil(state.selectedConversationID)
     }
+  }
+
+  /// Monika, 2026-11-07 ("to spychanie nie jest akceptowalne"; then, from
+  /// her screenshot, the empty band above the rows): the list's fold stands
+  /// in the pane's top corner, in the band between the window header and the
+  /// first row, so the button moves no row. The rail's unfold stands in the
+  /// same band, in the top-right corner on the pills' trailing edge, and the
+  /// pills start just below it, each lower by the same drop, on a 34 pt pitch
+  /// at scale 1 (Monika, 2026-11-07, from her mock of the narrower rail). The
+  /// list renders under the column's gap, as in the Bus window. Ink bands are
+  /// the pixel rows that carry text or glyphs.
+  func testFoldButtonsLeaveTheRowsAndPillsWhereTheyStand() throws {
+    let all = OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    let inbox = OverlayConversation(
+      id: "10", channel: "10", name: "Your Inbox", owner: nil, messages: [])
+    let lena = OverlayChannelDelivery(
+      channel: "3", agent: "Lena", deliveryID: nil, stage: nil, isOpen: false)
+    func roster(folds: Bool) -> OverlayChannelStatusView {
+      var view = OverlayChannelStatusView(
+        channels: [lena], unavailable: false, palette: .light, animates: false,
+        onToggleChannel: { _ in }, conversations: [all, inbox], onSelectConversation: { _ in })
+      if folds {
+        view.onFoldList = {}
+        view.onUnfoldList = {}
+      }
+      return view
+    }
+    let gap = OverlayChannelStatusView.listColumnTopGap
+    let band = OverlayChannelStatusView.listTopBand
+    let side = OverlayChannelStatusView.listFoldSide
+    XCTAssertGreaterThanOrEqual(side, 20, "the fold keeps a 20 pt hit target")
+    XCTAssertLessThan(side, band, "the fold fits the band above the rows")
+    var report: [String] = ["band (header to first row frame) = \(band) pt at every scale"]
+    for scale in [CGFloat(1), 1.5, 2] {
+      let width = 360 * scale
+      let height = 300 * scale
+      let plain = try renderBitmap(
+        roster(folds: false).monitorBody(maximumHeight: height).padding(.top, gap), width: width,
+        height: height, scale: scale)
+      let folded = try renderBitmap(
+        roster(folds: true).monitorBody(maximumHeight: height).padding(.top, gap), width: width,
+        height: height, scale: scale)
+      let pixels = CGFloat(plain.pixelsWide) / width
+      let strip = 40 * scale
+      let left = 0..<(width - strip)
+      let titleBand = try XCTUnwrap(inkBands(plain, width: width, columns: left).first)
+      XCTAssertEqual(
+        inkBands(folded, width: width, columns: left), inkBands(plain, width: width, columns: left),
+        "the rows keep their places beside the fold button at scale \(scale)")
+      let plainStrip = inkBands(plain, width: width, columns: (width - strip)..<width)
+      let foldedStrip = inkBands(folded, width: width, columns: (width - strip)..<width)
+      XCTAssertEqual(
+        Array(foldedStrip.dropFirst()), plainStrip,
+        "the button is a band of its own above the row controls at scale \(scale)")
+      let button = try XCTUnwrap(foldedStrip.first)
+      // The rows' frames start where the band ends; the button's ink stays
+      // inside the band, above every row's ink.
+      XCTAssertGreaterThan(CGFloat(button.lowerBound), 0)
+      XCTAssertLessThan(CGFloat(button.upperBound), band * pixels, "scale \(scale)")
+      XCTAssertLessThan(button.upperBound, titleBand.lowerBound, "scale \(scale)")
+      if let firstControl = plainStrip.first {
+        XCTAssertLessThan(button.upperBound, firstControl.lowerBound, "scale \(scale)")
+      }
+      XCTAssertEqual(
+        CGFloat(button.lowerBound + button.upperBound) / 2 / pixels, band / 2, accuracy: 2,
+        "the button is centred in the band at scale \(scale)")
+      let ink = try XCTUnwrap(inkColumns(folded, width: width, rows: button))
+      let contentEdge = width - OverlayChannelStatusView.listFoldTrailingInset
+      XCTAssertLessThanOrEqual(CGFloat(ink.upperBound) / pixels, contentEdge, "scale \(scale)")
+      XCTAssertGreaterThan(
+        CGFloat(ink.lowerBound) / pixels, contentEdge - side,
+        "the button ends at the rows' trailing content at scale \(scale)")
+      let frameTop = (band - side) / 2
+      report.append(
+        "scale \(scale): title ink y \(CGFloat(titleBand.lowerBound) / pixels)-"
+          + "\(CGFloat(titleBand.upperBound + 1) / pixels) pt; button frame y \(frameTop)-"
+          + "\(frameTop + side) pt, x \(contentEdge - side)-\(contentEdge) of \(width) pt; "
+          + "button ink y \(CGFloat(button.lowerBound) / pixels)-"
+          + "\(CGFloat(button.upperBound + 1) / pixels) pt")
+
+      // Mounted as `DictationOverlayView.agentRail` mounts it: the resize
+      // band's inset on both sides of the rail's width. Monika, 2026-11-07:
+      // narrower rail.
+      let railWidth = OverlayAgentDrawerLayout.railWidth(textScale: scale)
+      let pillWidth = OverlayAgentDrawerLayout.railPillWidth(textScale: scale)
+      let trailingInset = OverlayAgentDrawerLayout.railTrailingInset(textScale: scale)
+      XCTAssertEqual(
+        railWidth, OverlayResizeHit.band + pillWidth + trailingInset, accuracy: 0.001,
+        "the rail is the pill and its two insets at scale \(scale)")
+      if scale == 1 {
+        XCTAssertEqual(railWidth, 66, accuracy: 2, "Monika's mock: about 66 pt")
+      }
+      let plainRail = try renderBitmap(
+        roster(folds: false).railBody(maximumHeight: height)
+          .padding(.horizontal, OverlayResizeHit.band).padding(.top, gap),
+        width: railWidth, height: height, scale: scale)
+      let foldedRail = try renderBitmap(
+        roster(folds: true).railBody(maximumHeight: height)
+          .padding(.horizontal, OverlayResizeHit.band).padding(.top, gap),
+        width: railWidth, height: height, scale: scale)
+      let plainPills = inkBands(plainRail, width: railWidth, columns: 0..<railWidth)
+      let foldedPills = inkBands(foldedRail, width: railWidth, columns: 0..<railWidth)
+      XCTAssertFalse(plainPills.isEmpty)
+      XCTAssertEqual(
+        foldedPills.count, plainPills.count + 1,
+        "the unfold button is one band above the pills at scale \(scale)")
+      let unfold = try XCTUnwrap(foldedPills.first)
+      let railPixels = CGFloat(plainRail.pixelsWide) / railWidth
+      // The button stands in the top band, where the list's fold stands.
+      XCTAssertGreaterThan(unfold.lowerBound, 0)
+      XCTAssertLessThan(CGFloat(unfold.upperBound) / railPixels, band, "scale \(scale)")
+      XCTAssertEqual(
+        CGFloat(unfold.lowerBound + unfold.upperBound) / 2 / railPixels, band / 2, accuracy: 2,
+        "the unfold is centred in the band at scale \(scale)")
+      // The pills' column is the widest pill, a band in from the divider; the
+      // button's frame ends on the pills' trailing edge, in the corner.
+      let firstRow = try XCTUnwrap(plainPills.first).lowerBound
+      let lastRow = try XCTUnwrap(plainPills.last).upperBound
+      let pillsInk = try XCTUnwrap(
+        inkColumns(plainRail, width: railWidth, rows: firstRow...lastRow))
+      let unfoldInk = try XCTUnwrap(inkColumns(foldedRail, width: railWidth, rows: unfold))
+      let pillsEdge = railWidth - trailingInset
+      XCTAssertEqual(
+        CGFloat(pillsInk.lowerBound + pillsInk.upperBound + 1) / 2 / railPixels,
+        pillsEdge - pillWidth / 2, accuracy: 1.5, "the pills' column at scale \(scale)")
+      XCTAssertEqual(
+        CGFloat(unfoldInk.lowerBound + unfoldInk.upperBound + 1) / 2 / railPixels,
+        pillsEdge - side / 2, accuracy: 1.5,
+        "the unfold's frame ends on the pills' trailing edge at scale \(scale)")
+      XCTAssertLessThanOrEqual(CGFloat(unfoldInk.upperBound + 1) / railPixels, pillsEdge)
+      XCTAssertGreaterThan(CGFloat(unfoldInk.lowerBound) / railPixels, pillsEdge - side)
+      // The pills start below the button, every one lower by the same drop:
+      // their own spacing is unchanged.
+      let drop = OverlayChannelStatusView.railFoldDrop * railPixels
+      let pills = Array(foldedPills.dropFirst())
+      XCTAssertGreaterThan(try XCTUnwrap(pills.first).lowerBound, unfold.upperBound)
+      for (moved, original) in zip(pills, plainPills) {
+        XCTAssertEqual(CGFloat(moved.lowerBound - original.lowerBound), drop, accuracy: 1)
+        XCTAssertEqual(CGFloat(moved.upperBound - original.upperBound), drop, accuracy: 1)
+      }
+      // The pitch between pill centres: 34 pt at scale 1 (24 pt pills, a 10 pt gap).
+      let centres = plainPills.map { CGFloat($0.lowerBound + $0.upperBound + 1) / 2 / railPixels }
+      let pitch = centres[1] - centres[0]
+      XCTAssertEqual(
+        pitch, 24 * scale + OverlayChannelStatusView.railPillGap, accuracy: 1,
+        "pill pitch at scale \(scale)")
+      let firstPill = try XCTUnwrap(pills.first)
+      let pillFrameTop = gap + 8 + OverlayChannelPill.railBadgeRise * scale + drop / railPixels
+      report.append(
+        "scale \(scale): rail unfold frame y 1-23 pt, ink y "
+          + "\(CGFloat(unfold.lowerBound) / railPixels)-"
+          + "\(CGFloat(unfold.upperBound + 1) / railPixels) pt, ink x "
+          + "\(CGFloat(unfoldInk.lowerBound) / railPixels)-"
+          + "\(CGFloat(unfoldInk.upperBound + 1) / railPixels) of \(railWidth) pt "
+          + "(frame x \(pillsEdge - side)-\(pillsEdge)); pill pitch \(pitch) pt; "
+          + "first pill frame top y \(pillFrameTop) pt, ink y "
+          + "\(CGFloat(firstPill.lowerBound) / railPixels) pt (without the button "
+          + "\(CGFloat(plainPills[0].lowerBound) / railPixels) pt); pills' column ink x "
+          + "\(CGFloat(pillsInk.lowerBound) / railPixels)-"
+          + "\(CGFloat(pillsInk.upperBound + 1) / railPixels) pt")
+    }
+    let measurements = XCTAttachment(string: report.joined(separator: "\n"))
+    measurements.name = "fold-band-measurements"
+    measurements.lifetime = .keepAlways
+    add(measurements)
+  }
+
+  private func renderBitmap<Content: View>(
+    _ view: Content, width: CGFloat, height: CGFloat, scale: CGFloat
+  ) throws -> NSBitmapImageRep {
+    let host = NSHostingView(
+      rootView:
+        view
+        .frame(width: width, height: height, alignment: .top)
+        .background(Color.white)
+        .environment(\.csTextScale, scale)
+        .environment(\.colorScheme, .light)
+        .transaction { $0.disablesAnimations = true })
+    host.sizingOptions = []
+    host.frame = NSRect(x: 0, y: 0, width: width, height: height)
+    let panel = NSPanel(
+      contentRect: host.frame, styleMask: [.borderless, .nonactivatingPanel],
+      backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    panel.appearance = NSAppearance(named: .aqua)
+    panel.contentView = host
+    defer {
+      panel.contentView = nil
+      panel.close()
+    }
+    settle(host)
+    let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+    host.cacheDisplay(in: host.bounds, to: bitmap)
+    XCTAssertFalse(panel.isVisible, "the fixture does not claim the user's desktop")
+    return bitmap
+  }
+
+  /// Runs of pixel rows (top down) holding dark ink within `columns` (points).
+  private func inkBands(
+    _ bitmap: NSBitmapImageRep, width: CGFloat, columns: Range<CGFloat>
+  ) -> [ClosedRange<Int>] {
+    guard bitmap.bitsPerSample == 8, bitmap.samplesPerPixel >= 3, let data = bitmap.bitmapData
+    else {
+      XCTFail("unexpected bitmap layout")
+      return []
+    }
+    let pixels = CGFloat(bitmap.pixelsWide) / width
+    let first = Int((columns.lowerBound * pixels).rounded(.down))
+    let last = min(bitmap.pixelsWide, Int((columns.upperBound * pixels).rounded(.down)))
+    let offset = bitmap.bitmapFormat.contains(.alphaFirst) ? 1 : 0
+    var bands: [ClosedRange<Int>] = []
+    var start: Int?
+    for y in 0..<bitmap.pixelsHigh {
+      var ink = false
+      for x in first..<last {
+        let base = y * bitmap.bytesPerRow + x * bitmap.samplesPerPixel + offset
+        let sum = Int(data[base]) + Int(data[base + 1]) + Int(data[base + 2])
+        if sum < 3 * 180 {
+          ink = true
+          break
+        }
+      }
+      if ink, start == nil { start = y }
+      if !ink, let open = start {
+        bands.append(open...(y - 1))
+        start = nil
+      }
+    }
+    if let open = start { bands.append(open...(bitmap.pixelsHigh - 1)) }
+    return bands
+  }
+
+  /// The span of columns (pixels) holding dark ink within `rows` (pixels).
+  private func inkColumns(
+    _ bitmap: NSBitmapImageRep, width: CGFloat, rows: ClosedRange<Int>
+  ) -> ClosedRange<Int>? {
+    guard let data = bitmap.bitmapData else { return nil }
+    let offset = bitmap.bitmapFormat.contains(.alphaFirst) ? 1 : 0
+    var first: Int?
+    var last: Int?
+    for y in rows {
+      for x in 0..<bitmap.pixelsWide {
+        let base = y * bitmap.bytesPerRow + x * bitmap.samplesPerPixel + offset
+        let sum = Int(data[base]) + Int(data[base + 1]) + Int(data[base + 2])
+        guard sum < 3 * 180 else { continue }
+        first = min(first ?? x, x)
+        last = max(last ?? x, x)
+      }
+    }
+    guard let first, let last else { return nil }
+    return first...last
   }
 
   private func overlaySource(_ file: String) throws -> String {

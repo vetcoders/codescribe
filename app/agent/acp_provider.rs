@@ -124,6 +124,12 @@ impl AgentProvider for AcpProvider {
         false
     }
 
+    /// The external agent process owns its context and its own compaction;
+    /// Codescribe must not prune history it does not send.
+    fn context_window(&self, _options: &StreamOptions) -> Option<u64> {
+        None
+    }
+
     async fn stream(
         &self,
         messages: &[Message],

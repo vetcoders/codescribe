@@ -20,6 +20,7 @@ struct CreatorPanel: View {
 
   private static let permissionKinds: [PermissionKind] = [
     .microphone, .accessibility, .inputMonitoring, .screenRecording, .speechRecognition,
+    .spotifyAutomation,
   ]
 
   var body: some View {
@@ -105,15 +106,20 @@ struct CreatorPanel: View {
       // The checklist shows live status; the header link opens the privacy
       // pane itself so a granted scope can still be reviewed or revoked.
       SettingsSectionHeaderRow(String(localized: "Permissions")) {
-        Button(
-          String(
-            localized: "System Settings…",
-            comment: "Permissions header action: opens the Privacy & Security pane")
-        ) { PermissionKind.openPrivacySettings() }
+        SettingsChipButton(action: { PermissionKind.openPrivacySettings() }) {
+          Text(
+            String(
+              localized: "System Settings…",
+              comment: "Permissions header action: opens the Privacy & Security pane")
+          )
+          .font(SettingsScale.controlLabel)
+          .foregroundStyle(Color.primary)
+        }
+        .controlSize(.regular)
         .accessibilityIdentifier("settings-permissions-system-settings")
       }
       .padding(.top, SettingsScale.sectionGap)
-      // With every scope granted the five rows fold into one verified line;
+      // With every listed scope granted the rows fold into one verified line;
       // a missing scope brings the full list back on its own.
       VStack(spacing: 0) {
         if allPermissionsGranted {
@@ -194,24 +200,22 @@ struct CreatorPanel: View {
     .task { await model.refreshMaxToolApprovals() }
   }
 
-  /// A neutral action chip with its glyph before the label, like the other
+  /// A neutral text-only action chip, like the other
   /// Settings actions (D2: actions read through their shape, not a hue).
   /// No explanation beside it: each step opens on the current value, but
   /// Continue on the shortcuts step writes that step's preset, so "your
   /// settings stay" would not be true.
   private var openWizardButton: some View {
     SettingsChipButton(action: { model.onOpenSetupWizard() }) {
-      HStack(spacing: 5) {
-        CSIconView(icon: .setupWizard, size: 10, weight: .semibold)
-        Text(
-          String(
-            localized: "Open Setup Wizard…",
-            comment: "General page title row: reopens the setup wizard window")
-        )
-        .font(SettingsScale.controlLabel)
-      }
+      Text(
+        String(
+          localized: "Open Setup Wizard…",
+          comment: "General page title row: reopens the setup wizard window")
+      )
+      .font(SettingsScale.controlLabel)
       .foregroundStyle(Color.primary)
     }
+    .controlSize(.regular)
     .accessibilityIdentifier("settings-creator-open-wizard")
   }
 
@@ -636,12 +640,12 @@ struct LanguageIdentityPresentation: Identifiable, Equatable {
   /// fine-tuned-models detail moved out of the base view (Founder brief,
   /// round 4, 2026-10-10).
   static let supportingCopy = String(
-    localized: "Multilingual detects the language automatically.",
+    localized: "Automatically detects the transcription language.",
     comment: "Transcription language row explanation"
   )
 
   static let choices: [LanguageIdentityPresentation] = [
-    .init(language: .auto, title: String(localized: "Multilingual"), isFineTuned: false),
+    .init(language: .auto, title: CsLanguage.auto.displayName, isFineTuned: false),
     .init(language: .polish, title: String(localized: "Polish"), isFineTuned: true),
     .init(language: .english, title: String(localized: "English"), isFineTuned: true),
   ]
@@ -669,6 +673,7 @@ private struct RecognitionLanguageRow: View {
             guard LanguageIdentityPresentation.choices.indices.contains(index) else { return }
             $selection.wrappedValue = LanguageIdentityPresentation.choices[index].language
           }),
+        matchingTitles: AppAppearanceChoice.allCases.map(\.title),
         accessibilityLabel: String(
           localized: "Transcription language",
           comment: "Settings row: the language the speech is transcribed in"),
@@ -783,6 +788,7 @@ private struct AppearanceRow: View {
             guard AppAppearanceChoice.allCases.indices.contains(index) else { return }
             model.selectAppearance(AppAppearanceChoice.allCases[index])
           }),
+        matchingTitles: LanguageIdentityPresentation.choices.map(\.title),
         accessibilityLabel: String(
           localized: "Appearance", comment: "Settings row: light, dark or system"),
         accessibilityIdentifier: "settings-appearance"
@@ -851,6 +857,7 @@ private struct PermissionChecklistRow: View {
   var onRequested: (() -> Void)? = nil
   /// Re-probe after an in-app request (Speech Recognition dialog).
   var onStateChanged: (() -> Void)? = nil
+  @State private var requestPending = false
 
   private var granted: Bool { state.isGranted }
 
@@ -863,10 +870,15 @@ private struct PermissionChecklistRow: View {
           .font(CSFont.ui(14, .medium))
           .foregroundStyle(Color.primary)
           .accessibilityValue(granted ? "" : state.label)
+        if kind == .spotifyAutomation {
+          Text("Optional")
+            .font(.caption)
+            .foregroundStyle(CSColor.secondaryInk)
+        }
         if let note {
           Text(note)
             .font(.caption)
-            .foregroundStyle(CSColor.dangerLight)
+            .foregroundStyle(kind.isRequiredForSetup ? CSColor.dangerLight : CSColor.secondaryInk)
             .fixedSize(horizontal: false, vertical: true)
         }
       }
@@ -882,13 +894,16 @@ private struct PermissionChecklistRow: View {
         // visible label stays generic; VoiceOver keeps the specific one.
         if repair.requestsNatively {
           SettingsChipButton("Allow access", tint: CSColor.secondaryInk) {
+            requestPending = true
             onRequested?()
             Task { @MainActor in
+              defer { requestPending = false }
               // The return value is not a grant; the following probe is.
               _ = await kind.requestInApp()
               onStateChanged?()
             }
           }
+          .disabled(requestPending)
           .accessibilityLabel(Text("allow \(kind.displayName)"))
         }
         if repair.opensSettings {
@@ -907,8 +922,11 @@ private struct PermissionChecklistRow: View {
   /// granted one wears the olive capsule the wizard shows (Founder, 2026-10-26).
   private var missingMark: some View {
     ZStack {
-      Circle().fill(CSColor.dangerLight.opacity(0.2))
-      CSIconView(icon: .warning, size: 11, weight: .semibold, color: CSColor.dangerLight)
+      Circle().fill(
+        (kind.isRequiredForSetup ? CSColor.dangerLight : CSColor.secondaryInk).opacity(0.2))
+      CSIconView(
+        icon: .warning, size: 11, weight: .semibold,
+        color: kind.isRequiredForSetup ? CSColor.dangerLight : CSColor.secondaryInk)
     }
     .frame(width: 20, height: 20)
   }

@@ -536,7 +536,10 @@ final class OverlayStateTests: XCTestCase {
       text: "Edited", attachments: [attachment])
     state.conversationDrafts[other.id] = "Other draft"
     var sends = 0
-    state.publishConversationText = { _, _, _, _ in sends += 1 }
+    state.publishConversationText = { _, _, _, _ in
+      sends += 1
+      return .empty
+    }
     await state.toggleDraftMicrophone(in: origin)
     state.openConversation(for: other.owner!)
     projectText(
@@ -728,11 +731,15 @@ final class OverlayStateTests: XCTestCase {
       XCTAssertEqual(reference, first)
       state.conversationDrafts[origin.id] = "Newer draft"
       state.conversationReplies[origin.id] = newer
+      return .empty
     }
     await state.sendConversationText(origin)
     XCTAssertEqual(state.conversationDrafts[origin.id], "Newer draft")
     XCTAssertEqual(state.conversationReplies[origin.id], newer)
-    state.publishConversationText = { _, _, reference, _ in XCTAssertEqual(reference, newer) }
+    state.publishConversationText = { _, _, reference, _ in
+      XCTAssertEqual(reference, newer)
+      return .empty
+    }
     await state.sendConversationText(origin)
     XCTAssertEqual(state.conversationDrafts[origin.id], "")
     XCTAssertNil(state.conversationReplies[origin.id])
@@ -840,7 +847,10 @@ final class OverlayStateTests: XCTestCase {
       if state.channelRosterNames["2"] != nil { readyPainted.fulfill() }
       if state.channelRosterNames["3"] != nil { changePainted.fulfill() }
     }
-    let observation = state.observeChannelDelivery { _ in
+    // The closure seam is explicitly driven: each roster read below follows a
+    // wake this test issues, never a timer, while history stays suspended.
+    let source = OverlayChannelObservationSource.manual()
+    let observation = state.observeChannelDelivery(source: source) { _ in
       await withCheckedContinuation { continuation in
         historyResponse = continuation
         historyEntered.fulfill()
@@ -856,12 +866,16 @@ final class OverlayStateTests: XCTestCase {
     let first = try XCTUnwrap(rosterResponse)
     rosterResponse = nil
     first.resume(returning: [])
+    // The roster consumer holds one pending wake, so this lands whether or not
+    // the first read has finished applying; history keeps only its own pending one.
+    source.wake()
     await fulfillment(of: [readyRoster], timeout: 2)
     XCTAssertFalse(state.hasLoadedChannelRoster)
     let broadcast = navigationRoster(channel: "0", open: false)
     let second = try XCTUnwrap(rosterResponse)
     rosterResponse = nil
     second.resume(returning: [broadcast, navigationRoster(open: false)])
+    source.wake()
     await fulfillment(of: [readyPainted, changedRoster], timeout: 2)
     XCTAssertTrue(state.hasLoadedChannelRoster)
     XCTAssertNotNil(historyResponse, "History is still held at the same barrier")
@@ -878,6 +892,129 @@ final class OverlayStateTests: XCTestCase {
     historyResponse = nil
     history.resume(returning: .init(deliveries: [], conversations: []))
     await observation.value
+  }
+
+  /// FSEvents reports real paths, while Foundation's resolvingSymlinksInPath
+  /// strips `/private` from a temporaryDirectory path, so the observer's root
+  /// filter would never match it. A scratch root under the repo's ignored
+  /// build/ directory crosses no symlink, so both sides see one path.
+  private func channelObservationScratchRoot() throws -> URL {
+    let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+      .deletingLastPathComponent().deletingLastPathComponent()
+    let root = repo.appendingPathComponent(
+      "build/test-scratch/channel-observation-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(
+      at: root.appendingPathComponent("buses", isDirectory: true),
+      withIntermediateDirectories: true)
+    return root
+  }
+
+  func testFileSystemChannelObservationWakesOnBridgeWrite() async throws {
+    let root = try channelObservationScratchRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let state = OverlayState()
+    let bootstrap = expectation(description: "bootstrap read before any bridge write")
+    let written = expectation(description: "bridge write woke the history reader")
+    // FileEvents can split one write into a few coalesced batches; a reread
+    // loop would exceed this bound many times over inside the idle window.
+    let idleLoop = expectation(description: "history kept rereading after the write settled")
+    idleLoop.isInverted = true
+    idleLoop.expectedFulfillmentCount = 3
+    let channelLog = root.appendingPathComponent("buses/channel-4.jsonl")
+    var reads = 0
+    var readsAfterWrite = 0
+    let source = OverlayChannelObservationSource.fileSystem(root: root)
+    let observation = state.observeChannelDelivery(source: source) { _ in
+      reads += 1
+      if reads == 1 { bootstrap.fulfill() }
+      if FileManager.default.fileExists(atPath: channelLog.path) {
+        readsAfterWrite += 1
+        if readsAfterWrite == 1 { written.fulfill() } else { idleLoop.fulfill() }
+      }
+      return .init(deliveries: [], conversations: [])
+    }
+    defer { state.stopObservingChannelDelivery() }
+    await fulfillment(of: [bootstrap], timeout: 5)
+    // No `source.wake()` from here on: only the native file event may wake.
+    try Data("{\"kind\":\"agent_reply\"}\n".utf8).write(to: channelLog)
+    await fulfillment(of: [written], timeout: 5)
+    await fulfillment(of: [idleLoop], timeout: 0.5)
+    state.stopObservingChannelDelivery()
+    await observation.value
+  }
+
+  func testFileSystemChannelObservationFiresScheduledDeadlineOnce() async throws {
+    let root = try channelObservationScratchRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let state = OverlayState()
+    let deadline = Date().addingTimeInterval(0.25)
+    let deadlineUnixMs = Int64(deadline.timeIntervalSince1970 * 1000)
+    let bootstrap = expectation(description: "bootstrap read")
+    let deadlineRead = expectation(description: "deadline woke the history reader")
+    let expiredLoop = expectation(description: "an expired deadline woke the reader again")
+    expiredLoop.isInverted = true
+    var reads = 0
+    var firedAtDeadline = false
+    let source = OverlayChannelObservationSource.fileSystem(root: root)
+    let observation = state.observeChannelDelivery(
+      source: source, nextDeadlineUnixMs: { deadlineUnixMs },
+      readSnapshot: { _ in
+        reads += 1
+        if reads == 1 { bootstrap.fulfill() }
+        // The bootstrap read never stands in for the deadline. The timer has a
+        // 5 ms leeway and never fires early; allow skew between DispatchTime
+        // and wall-clock Date.
+        if reads > 1, Date() >= deadline.addingTimeInterval(-0.02) {
+          if firedAtDeadline { expiredLoop.fulfill() } else { deadlineRead.fulfill() }
+          firedAtDeadline = true
+        }
+        return .init(deliveries: [], conversations: [])
+      })
+    defer { state.stopObservingChannelDelivery() }
+    await fulfillment(of: [bootstrap], timeout: 5)
+    XCTAssertLessThan(
+      Date(), deadline, "The deadline must be scheduled before it elapses to prove the wake")
+    await fulfillment(of: [deadlineRead], timeout: 5)
+    // Both consumers already re-passed the expired deadline after that read;
+    // passing it once more must not arm an immediate wakeup either.
+    source.setDeadline(deadlineUnixMs)
+    await fulfillment(of: [expiredLoop], timeout: 0.4)
+    state.stopObservingChannelDelivery()
+    await observation.value
+  }
+
+  func testStoppingChannelObservationFinishesConsumerStreams() async throws {
+    let root = try channelObservationScratchRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let state = OverlayState()
+    let bootstrap = expectation(description: "bootstrap read")
+    let lateRead = expectation(description: "a stopped observation read again")
+    lateRead.isInverted = true
+    var reads = 0
+    let source = OverlayChannelObservationSource.fileSystem(root: root)
+    let observation = state.observeChannelDelivery(source: source) { _ in
+      reads += 1
+      if reads == 1 { bootstrap.fulfill() } else { lateRead.fulfill() }
+      return .init(deliveries: [], conversations: [])
+    }
+    await fulfillment(of: [bootstrap], timeout: 5)
+    state.stopObservingChannelDelivery()
+    // Joining the parent proves both consumers and the fan-out loop returned.
+    await observation.value
+    // The cancelled source finished its stream: draining terminates, at most
+    // after one buffered wake, instead of waiting for further events.
+    let drained = expectation(description: "cancelled source stream finished")
+    Task {
+      for await _ in source.events {}
+      drained.fulfill()
+    }
+    await fulfillment(of: [drained], timeout: 2)
+    // The native stream is closed: neither a bridge write nor an explicit wake
+    // reaches a reader any more.
+    source.wake()
+    try Data("{\"kind\":\"agent_reply\"}\n".utf8)
+      .write(to: root.appendingPathComponent("buses/channel-4.jsonl"))
+    await fulfillment(of: [lateRead], timeout: 0.4)
   }
 
   func testStoppedChannelObservationRejectsLateRosterAndHistory() async throws {
@@ -1072,6 +1209,35 @@ final class OverlayStateTests: XCTestCase {
       .init(
         deliveries: [], conversations: [replyFocusConversation(lena, id: "reply:second"), astra]))
     XCTAssertEqual(state.selectedConversationID, lena.id)
+  }
+
+  /// A reply heard to the end counts as read (L14b, 2026-11-07): the
+  /// playback state its bubble reads as "Spoken". Waiting, playing,
+  /// stopped, failed and refused replies and a reply with no playback stay
+  /// unread until viewed.
+  func testSpokenReplyCountsAsRead() throws {
+    let state = OverlayState()
+    let lena = try navigationConversation()
+    let owner = try XCTUnwrap(lena.owner)
+    func reply(_ id: String, _ playback: String?) -> OverlayConversationMessage {
+      OverlayConversationMessage(
+        id: id, kind: .reply, text: "Gotowe.", order: 1, emittedAt: "2026-11-06T19:36:00Z",
+        owner: owner, recipients: [], deliveryID: nil, replyTo: nil, unsolicited: true,
+        playback: playback.map {
+          OverlayReplyPlayback(
+            replyID: id, ticket: "t-\(id)", state: $0, reason: nil, spoken: $0 == "spoken",
+            emittedAt: "2026-11-06T19:36:01Z")
+        }, busPath: "/dev/null")
+    }
+    for (playback, unread) in [
+      ("spoken", 0), ("playing", 1), ("waiting", 1), ("stopped", 1), ("failed", 1),
+      ("refused", 1), (nil, 1),
+    ] as [(String?, Int)] {
+      let conversation = OverlayConversation(
+        id: lena.id, channel: lena.channel, name: lena.name, owner: owner,
+        messages: [reply("reply:\(playback ?? "none")", playback)])
+      XCTAssertEqual(state.unreadReplies(in: conversation), unread, playback ?? "none")
+    }
   }
 
   func testReplyAdmissionAmbiguousOwnersPreserveManualViewAndUnread() throws {
@@ -1569,6 +1735,36 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertFalse(state.showsAgentMonitor)
     XCTAssertEqual(state.agentDrawerFocusRevision, focus + 2)
     XCTAssertEqual(state.selectedConversationID, astra.id)
+  }
+
+  /// The expanded window's Agents control and "Show agents" return from the
+  /// transcription to the Agents view the user left: the list without a
+  /// conversation, or the conversation with its panes as they were.
+  func testExpandedAgentsPressAndShowAgentsRestoreTheAgentsViewTheUserLeft() throws {
+    let state = OverlayState()
+    let lena = try navigationConversation()
+    let astra = try navigationConversation(channel: "3", session: "astra", lease: "b")
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [lena, astra]))
+    state.setPresentationMode(.expanded)
+
+    state.showAgentMonitor()
+    XCTAssertTrue(state.showsAgentMonitor)
+    XCTAssertNil(state.selectedConversationID)
+    state.showTranscription()
+    XCTAssertEqual(state.windowContentSurface, .transcription)
+    state.toggleAgentSidebar()
+    XCTAssertEqual(state.windowContentSurface, .agents)
+    XCTAssertTrue(state.showsAgentMonitor, "the list comes back, not a conversation")
+    XCTAssertNil(state.selectedConversationID)
+
+    state.setAgentsLayout(.agents)
+    state.selectConversation(astra.id)
+    state.showTranscription()
+    XCTAssertEqual(state.windowContentSurface, .transcription)
+    state.showAgents()
+    XCTAssertEqual(state.selectedConversationID, astra.id)
+    XCTAssertEqual(state.agentsLayout, .agents, "the panes stay as the user left them")
+    XCTAssertFalse(state.showsAgentMonitor)
   }
 
   func testAgentsPressOpensTheDrawerOnlyWithNothingToShow() throws {
@@ -2171,11 +2367,12 @@ final class OverlayStateTests: XCTestCase {
       XCTAssertTrue(peers.isEmpty, "An ordinary send has no sync co-addressing")
       XCTAssertEqual(text, "Pierwszy szkic")
       state.conversationDrafts[owner.id] = "Nowszy szkic"
+      return .empty
     }
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDrafts[owner.id], "Nowszy szkic")
     XCTAssertNil(state.textMessageErrors[owner.id])
-    state.publishConversationText = { _, _, _, _ in }
+    state.publishConversationText = { _, _, _, _ in .empty }
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDrafts[owner.id], "")
     let focus = state.conversationFocusRevision
@@ -2205,14 +2402,105 @@ final class OverlayStateTests: XCTestCase {
       XCTAssertTrue(peers.isEmpty, "Broadcast must not inherit a sync cohort")
       XCTAssertEqual(text, "Do wszystkich")
       state.conversationDrafts["0"] = "Nowy szkic"
+      return .empty
     }
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDrafts["0"], "Nowy szkic")
     XCTAssertNil(state.textMessageErrors["0"])
-    state.publishConversationText = { _, _, _, _ in }
+    state.publishConversationText = { _, _, _, _ in .empty }
     await state.sendConversationText(conversation)
     XCTAssertEqual(state.conversationDrafts["0"], "")
     XCTAssertTrue(state.pendingTextMessages.isEmpty)
+  }
+
+  func testDecodeBusTextPublicationExtractsRecipientsAndSkippedFromMessagePublishedJSON() throws {
+    let payload = """
+      {"kind":"other_diagnostic","ignored":true}
+      {"kind":"message_published","hold_until":"2026-11-04T02:00:05.000000+00:00","message_id":"0123456789abcdef01234567","recipients":[{"channel":"1","audience":"as","name":"as","provider":"claude","provider_session_id":"sess-as","lease_id":"11111111111111111111111111111111","bus":"/tmp/bus.jsonl","broadcast":"on"}],"skipped":[{"channel":"2","reason":"not_listening","audience":"beta","name":"beta","provider":"codex","provider_session_id":"sess-beta","lease_id":"22222222222222222222222222222222","bus":"/tmp/bus.jsonl"}]}
+
+      """
+    let publication = RealAgentBridgeInstaller.decodeBusTextPublication(
+      from: Data(payload.utf8))
+    XCTAssertEqual(publication.messageID, "0123456789abcdef01234567")
+    XCTAssertEqual(publication.holdUntil, "2026-11-04T02:00:05.000000+00:00")
+    XCTAssertEqual(publication.recipients.count, 1)
+    XCTAssertEqual(publication.recipients.first?.name, "as")
+    XCTAssertEqual(publication.recipients.first?.channel, "1")
+    XCTAssertEqual(publication.recipients.first?.provider, "claude")
+    XCTAssertEqual(publication.recipients.first?.providerSessionID, "sess-as")
+    XCTAssertEqual(
+      publication.recipients.first?.leaseID, "11111111111111111111111111111111")
+    XCTAssertEqual(publication.skipped.count, 1)
+    let skipped = try XCTUnwrap(publication.skipped.first)
+    XCTAssertEqual(skipped.channel, "2")
+    XCTAssertEqual(skipped.reason, "not_listening")
+    XCTAssertEqual(skipped.reasonText, String(localized: "not listening"))
+    XCTAssertEqual(skipped.displayName, "beta")
+    XCTAssertEqual(skipped.owner?.name, "beta")
+    XCTAssertEqual(skipped.owner?.channel, "2")
+    XCTAssertEqual(skipped.owner?.leaseID, "22222222222222222222222222222222")
+    XCTAssertEqual(
+      RealAgentBridgeInstaller.decodeBusTextPublication(from: Data()),
+      .empty)
+  }
+
+  @MainActor
+  func testBroadcastSendConversationTextClearsDraftAndSurfacesSkippedRecipients() async throws {
+    let state = OverlayState()
+    let conversation = OverlayConversation(
+      id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    state.applyConversationSnapshot(
+      OverlayChannelDeliverySnapshot(deliveries: [], conversations: [conversation]))
+    state.conversationDrafts["0"] = "Broadcast with skipped recipient"
+    let skippedBeta = AgentBusSkippedRecipient(
+      channel: "2",
+      reason: "not_listening",
+      audience: "beta",
+      name: "beta",
+      provider: "codex",
+      providerSessionID: "sess-beta",
+      leaseID: String(repeating: "b", count: 32),
+      bus: "/tmp/bus.jsonl")
+    let skippedGamma = AgentBusSkippedRecipient(
+      channel: "4",
+      reason: "stale_lease",
+      audience: "gamma",
+      name: nil)
+    let messageID = "abcdef0123456789abcdef01"
+    state.publishConversationText = { owner, text, _, peers in
+      XCTAssertNil(owner)
+      XCTAssertEqual(text, "Broadcast with skipped recipient")
+      XCTAssertTrue(peers.isEmpty)
+      return AgentBusTextPublication(
+        messageID: messageID,
+        holdUntil: nil,
+        recipients: [],
+        skipped: [skippedBeta, skippedGamma])
+    }
+    await state.sendConversationText(conversation)
+    XCTAssertEqual(state.conversationDraft(for: "0"), "")
+    XCTAssertEqual(state.publishedMessageSkips[messageID], [skippedBeta, skippedGamma])
+    let beta = String(
+      localized: "Skipped \("beta") (channel \("2")): \(String(localized: "not listening"))")
+    let gamma = String(
+      localized:
+        "Skipped \("gamma") (channel \("4")): \(String(localized: "connection out of date"))")
+    XCTAssertEqual(state.textMessageErrors["0"], "\(beta); \(gamma)")
+    // The helper's raw code never reaches the screen.
+    XCTAssertFalse(try XCTUnwrap(state.textMessageErrors["0"]).contains("stale_lease"))
+    XCTAssertFalse(try XCTUnwrap(state.textMessageErrors["0"]).contains("not_listening"))
+  }
+
+  func testSkippedRecipientWithoutNameFallsBackToLocalizedChannelAndUnknownReasonIsSkipped() {
+    let nameless = AgentBusSkippedRecipient(channel: "7", reason: "some_new_code")
+    XCTAssertEqual(nameless.displayName, String(localized: "channel \("7")"))
+    XCTAssertEqual(nameless.reasonText, String(localized: "skipped"))
+    XCTAssertEqual(
+      OverlayState.formatSkippedRecipientsNotice([nameless]),
+      String(
+        localized:
+          "Skipped \(String(localized: "channel \("7")")) (channel \("7")): \(String(localized: "skipped"))"
+      ))
   }
 
   func testSelectingConversationExpandsTheCanvasWithoutChangingCapture() {
@@ -4335,11 +4623,12 @@ final class OverlayStateTests: XCTestCase {
     XCTAssertEqual(state.toast, "⌘⌥V")
   }
 
-  func testInsertFallsBackToTaggedCopyWhenHotkeyRegistrationFails() async {
+  func testInsertShowsBindingFailureWhileKeepingDeferredText() async {
     let clock = OverlayStateTestClock()
     let state = makeFinalizedState(clock: clock, text: "fallback transcript")
     let engine = OverlayStateTestEngine()
-    engine.deferOutcome = .copiedToClipboard
+    engine.deferOutcome = .deferredInsertArmed
+    engine.deferredInsertShortcutValue = nil
     engine.deferredInsertFailureValue = "Paste Here hotkey registration failed"
     engine.pasteTargetAppNameValue = "Pensieve"
     let deferCalled = expectation(description: "deferred insert fallback")
@@ -4351,7 +4640,10 @@ final class OverlayStateTests: XCTestCase {
     await fulfillment(of: [deferCalled], timeout: 1)
     await Task.yield()
 
-    XCTAssertEqual(state.toast, "copied")
+    XCTAssertEqual(state.toast, "Paste Here hotkey registration failed")
+    XCTAssertEqual(engine.deferredText, "fallback transcript")
+    XCTAssertNil(engine.copiedTaggedText)
+    XCTAssertNil(engine.pastedText)
   }
 
   func testInsertShowsCopiedToastWhenControllerGuardDegrades() async {

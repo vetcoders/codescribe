@@ -75,6 +75,31 @@ struct OverlayColorToken: Equatable, Sendable {
     )
   }
 
+  /// The same hue and saturation at a lower HSB brightness: every component
+  /// scaled by `factor` (0...1), the alpha kept.
+  func scaledBrightness(_ factor: Double) -> OverlayColorToken {
+    let value = components
+    let red = UInt32((value.red * factor * 255).rounded())
+    let green = UInt32((value.green * factor * 255).rounded())
+    let blue = UInt32((value.blue * factor * 255).rounded())
+    return OverlayColorToken(red << 16 | green << 8 | blue, alpha: alpha)
+  }
+
+  /// The brightest rung of this hue (`scaledBrightness`, in 1 % steps) that
+  /// reaches `ratio` on every opaque surface; the token itself when it
+  /// already does. Only the brightness moves, never the hue.
+  func darkened(toContrast ratio: Double, on surfaces: [OverlayColorToken]) -> OverlayColorToken {
+    for step in stride(from: 100, through: 0, by: -1) {
+      let rung = scaledBrightness(Double(step) / 100)
+      if surfaces.allSatisfy({
+        Self.contrastRatio(foreground: rung, surface: $0, background: $0) >= ratio
+      }) {
+        return rung
+      }
+    }
+    return scaledBrightness(0)
+  }
+
   static func contrastRatio(
     foreground: OverlayColorToken,
     surface: OverlayColorToken,

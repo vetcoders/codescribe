@@ -1,0 +1,1 @@
+{"at": "2026-11-05T03:14:53Z", "bus": null, "kind": "sent", "message_id": "0123456789abcdef00000009", "schema": "codescribe.message-receipt.v1", "sent_to": [{"channel": "2", "name": "Borys"}, {"channel": "5", "name": "Łukasz"}, {"channel": "7", "name": "Nela"}, {"channel": "8", "name": "Kaja"}, {"channel": "9", "name": "Olek"}]}

@@ -39,6 +39,7 @@ final class OnboardingWindowController {
       model.onApplyInterfaceLanguage = applyInterfaceLanguage
       model.onFinished = { [weak self] in self?.close() }
       let hosting = NSHostingController(rootView: OnboardingView(model: model))
+      hosting.sizingOptions = []
       let window = NSWindow(contentViewController: hosting)
       window.title = model.windowTitle
       window.setContentSize(NSSize(width: 720, height: 620))

@@ -288,6 +288,64 @@ class RuntimeModelTests(unittest.TestCase):
             reader.refresh()
         self.assertEqual(self.model(reader), "gpt-6-luna")
 
+    def test_refresh_reports_only_observed_context_changes(self):
+        path = self.codex_file()
+        self.rows(path, self.context("gpt-6.1-sol"), append=True)
+        lease = self.lease()
+        self.assertEqual(lease._provider_model_reader.projection.get("model"), "gpt-6.1-sol")
+        self.assertFalse(lease.refresh_provider_model(), "an unchanged session is not a change")
+        self.rows(path, self.context("gpt-6-astra", "2026-10-07T16:01:00Z"), append=True)
+        self.assertTrue(lease.refresh_provider_model(), "a model switch is a change")
+        self.assertFalse(lease.refresh_provider_model())
+        thread = {"thread_id": SESSION, "app_bundle_id": "com.openai.codex", "rollout": False, "remote": True}
+        with mock.patch.object(DEMUX, "codex_context", return_value=thread):
+            self.assertTrue(lease.refresh_provider_model(), "a moved Codex thread is a change")
+            self.assertFalse(lease.refresh_provider_model())
+
+    def test_idle_heartbeat_rewrites_lease_only_on_change_or_age(self):
+        path = self.codex_file()
+        self.rows(path, self.context("gpt-6.1-sol"), append=True)
+        lease = DEMUX.SessionLease(
+            root=self.root, provider="codex", provider_session_id=SESSION, name="astra",
+            bus=self.bus, requested_id=None, ttl_seconds=120, follow_from_end=False,
+            provider_metadata_home=self.home)
+        self.addCleanup(lease._release_lock)
+        self.assertEqual(lease.heartbeat_persist_interval(), 30.0)
+
+        def written():
+            status = lease.path.stat()
+            return status.st_ino, status.st_mtime_ns
+
+        before = written()
+        for _ in range(5):
+            self.assertFalse(lease.heartbeat(cursor=lease.cursor))
+        self.assertEqual(written(), before, "an unchanged lease is not rewritten every second")
+
+        self.assertTrue(lease.heartbeat(cursor=lease.cursor + 7), "a cursor move persists at once")
+        self.assertEqual(json.loads(lease.path.read_text())["cursor"], 7)
+        self.assertNotEqual(written(), before)
+
+        before = written()
+        self.rows(path, self.context("gpt-6-astra", "2026-10-07T16:01:00Z"), append=True)
+        self.assertTrue(lease.heartbeat(cursor=lease.cursor), "a model switch persists at once")
+        self.assertEqual(json.loads(lease.path.read_text())["model"], "gpt-6-astra")
+        self.assertNotEqual(written(), before)
+
+        before = written()
+        self.assertFalse(lease.heartbeat(cursor=lease.cursor))
+        self.assertEqual(written(), before)
+        lease.persisted_at -= lease.heartbeat_persist_interval()
+        heartbeat = json.loads(lease.path.read_text())["heartbeat_unix"]
+        self.assertTrue(lease.heartbeat(cursor=lease.cursor), "an aging heartbeat is refreshed inside the TTL")
+        self.assertGreaterEqual(json.loads(lease.path.read_text())["heartbeat_unix"], heartbeat)
+        self.assertNotEqual(written(), before)
+
+    def test_heartbeat_persist_interval_stays_inside_ttl(self):
+        lease = self.lease()
+        for ttl, interval in ((120, 30.0), (30, 7.5), (2, 1.0), (3600, 30.0)):
+            lease.ttl_seconds = ttl
+            self.assertEqual(lease.heartbeat_persist_interval(), interval)
+
 
 if __name__ == "__main__":
     unittest.main()

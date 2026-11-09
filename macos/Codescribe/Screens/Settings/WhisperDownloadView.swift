@@ -33,7 +33,7 @@ struct WhisperDownloadView: View {
         .font(CSFont.ui(13, .semibold))
         Text(installLabel)
           .font(CSFont.ui(11, .medium))
-          .foregroundStyle(store.status.available ? CSColor.oliveLight : CSColor.secondaryInk)
+          .foregroundStyle(CSColor.secondaryInk)
         Spacer(minLength: 0)
       }
       Text(store.status.modelId)

@@ -226,4 +226,62 @@ final class OverlayComposerAttachmentPreviewTests: XCTestCase {
       to: ".clipShape(RoundedRectangle(cornerRadius: CSRadius.card")
     XCTAssertTrue(viewport.contains(".padding(Self.imageInset)"), "the image carries the inset")
   }
+
+  func testAttachmentPreviewWindowUsesMediumDefaultAndMinimumSizes() {
+    XCTAssertEqual(
+      AttachmentPreviewWindowController.defaultContentSize,
+      NSSize(width: 560, height: 520))
+    XCTAssertEqual(
+      AttachmentPreviewWindowController.minimumContentSize,
+      NSSize(width: 460, height: 400))
+  }
+
+  func testFittedZoomScalesLargeImagesToViewportAndKeepsSmallImagesAtOneToOne() {
+    let viewport = CGSize(width: 528, height: 328)
+    XCTAssertEqual(
+      AttachmentPreviewSheet.fittedZoom(
+        imageSize: CGSize(width: 200, height: 150), viewportSize: viewport),
+      1.0,
+      accuracy: 0.0001,
+      "small images never upscale above 100%")
+    let large = AttachmentPreviewSheet.fittedZoom(
+      imageSize: CGSize(width: 1000, height: 600), viewportSize: viewport)
+    let expected = (viewport.width - 2 * AttachmentPreviewSheet.imageInset) / 1000.0
+    XCTAssertEqual(large, expected, accuracy: 0.0001)
+    XCTAssertLessThan(large, 1.0)
+  }
+
+  func testWindowModeUsesCompactChromeFitButtonAndCollapsedPathDisclosure() throws {
+    let source = try source(at: "Codescribe/Screens/AgentChat/MessageList.swift")
+    let sheet = try section(
+      of: source, from: "struct AttachmentPreviewSheet: View", to: "private func missingBanner")
+    XCTAssertTrue(sheet.contains("attachment-preview-fit"))
+    XCTAssertTrue(sheet.contains("DisclosureGroup(\"Path\", isExpanded: $showsPath)"))
+    XCTAssertTrue(sheet.contains("ViewThatFits(in: .horizontal)"))
+
+    let path = try pastedImage()
+    let attachment = MessageAttachment(
+      name: "Pasted screenshot of an expanded Intercom conversation.png",
+      url: URL(fileURLWithPath: path))
+    for size in [
+      AttachmentPreviewWindowController.defaultContentSize,
+      AttachmentPreviewWindowController.minimumContentSize,
+    ] {
+      let host = NSHostingView(
+        rootView: AttachmentPreviewSheet(attachment: attachment, onClose: {})
+          .environment(\.colorScheme, .dark).background(Color.black))
+      host.sizingOptions = []
+      host.frame = NSRect(origin: .zero, size: size)
+      let window = NSWindow(
+        contentRect: NSRect(origin: NSPoint(x: -10000, y: -10000), size: size),
+        styleMask: .borderless, backing: .buffered, defer: false)
+      window.isReleasedWhenClosed = false
+      window.contentView = host
+      defer { window.close() }
+      host.layoutSubtreeIfNeeded()
+      RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+      host.layoutSubtreeIfNeeded()
+      XCTAssertEqual(host.bounds.size, size)
+    }
+  }
 }

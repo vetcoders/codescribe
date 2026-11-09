@@ -56,6 +56,10 @@ enum AgentContextPanelCopy {
     String(localized: "Model", comment: "Context panel fact: the conversation's model")
   }
 
+  static var queuedFact: String {
+    String(localized: "Queued", comment: "Context panel fact: accepted turns waiting to run")
+  }
+
   static var messagesFact: String {
     String(
       localized: "Messages",
@@ -95,7 +99,7 @@ struct AgentConversationHeader: View {
         AgentLiveStatusPill(activity: store.selectedHeaderActivity)
           .layoutPriority(2)
       }
-      Text(verbatim: Self.identityLine(model: store.currentThread?.model))
+      Text(verbatim: Self.identityLine(model: store.selectedModelIdentity))
         .font(CSFont.mono(10, .medium))
         .foregroundStyle(CSColor.secondaryInk)
         .lineLimit(1)
@@ -110,7 +114,8 @@ struct AgentConversationHeader: View {
   }
 
   /// "Agent · grok-4.5" when the thread carries a model, "Agent" otherwise.
-  /// Shows only what the thread already stores; there is no model switcher.
+  /// The store supplies the active turn's accepted model, then its historical
+  /// value after that execution ends; this line owns no model selection.
   static func identityLine(model: String?) -> String {
     if let model = model?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty {
       return String(
@@ -133,9 +138,9 @@ struct AgentLiveStatusPill: View {
     case .thinking:
       StatusPill(text: activity.statusLabel ?? "", color: CSColor.amberLight, rippling: true)
     case .answering:
-      StatusPill(text: activity.statusLabel ?? "", color: CSColor.terracottaText, rippling: true)
+      StatusPill(text: activity.statusLabel ?? "", color: CSColor.secondaryInk, rippling: true)
     case .usingTools:
-      StatusPill(text: activity.statusLabel ?? "", color: CSColor.oliveLight, rippling: true)
+      StatusPill(text: activity.statusLabel ?? "", color: CSColor.secondaryInk, rippling: true)
     case .awaitingApproval:
       StaticStatusPill(text: activity.statusLabel ?? "", color: CSColor.amberLight)
     case .stopping:
@@ -176,7 +181,8 @@ struct AgentWidthModeButton: View {
     .fixedSize()
     .help(mode.label)
     .accessibilityLabel(
-      String(localized: "Conversation width", comment: "Submenu of the Agent header menu"))
+      String(localized: "Conversation width", comment: "Submenu of the Agent header menu")
+    )
     .accessibilityValue(mode.label)
     .accessibilityIdentifier("agent-width-mode")
   }
@@ -229,20 +235,28 @@ struct AgentContextToggle: View {
 // MARK: - Context panel
 
 /// "Agent context": a fixed-width trailing column with what the selected
-/// conversation already stores and one way into the tool settings. It owns no
-/// state and starts nothing: every fact comes from `ChatThread`, and the tools
-/// row only opens Settings › Agent › Tools.
+/// conversation's stored facts and live execution, plus tool settings. It owns
+/// no execution state: the same store feeds the header, rail and this panel.
 struct AgentContextPanel: View {
-  let thread: ChatThread?
+  @ObservedObject var store: AgentChatStore
   let close: () -> Void
   let openToolSettings: () -> Void
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+  @Environment(\.colorSchemeContrast) private var contrast
+  @Environment(\.csReduceTransparencyOverride) private var reduceTransparencyOverride
+  @Environment(\.csContrastOverride) private var contrastOverride
+
+  private var opaqueSurface: Bool {
+    (reduceTransparencyOverride ?? reduceTransparency)
+      || (contrastOverride ?? contrast) == .increased
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       header
       Divider()
       VStack(alignment: .leading, spacing: 18) {
-        if let thread {
+        if let thread = store.currentThread {
           section(AgentContextPanelCopy.conversationSection) {
             conversationCard(thread)
           }
@@ -259,6 +273,12 @@ struct AgentContextPanel: View {
     // never widens it (Founder, 2026-10-20).
     .frame(width: AgentWindowMetrics.contextPanelWidth)
     .frame(maxHeight: .infinity, alignment: .top)
+    // One real-content surface below the existing window header. The reading
+    // canvas belongs to the conversation, so it never covers this glass.
+    .background {
+      if opaqueSurface { CSColor.sheet }
+    }
+    .glassEffect(opaqueSurface ? .identity : .regular, in: Rectangle())
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("agent-context-panel")
   }
@@ -310,11 +330,18 @@ struct AgentContextPanel: View {
           .fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .leading)
       }
-      if let model = Self.model(of: thread) {
+      AgentLiveStatusPill(activity: store.headerActivity(in: thread.id))
+        .accessibilityIdentifier("agent-context-activity")
+      if let model = store.modelIdentity(for: thread) {
         fact(AgentContextPanelCopy.modelFact) {
           Text(verbatim: model)
         }
+        .accessibilityIdentifier("agent-context-model")
       }
+      fact(AgentContextPanelCopy.queuedFact) {
+        Text(verbatim: "\(store.queuedTurns(in: thread.id).count)")
+      }
+      .accessibilityIdentifier("agent-context-queued-count")
       if !thread.messages.isEmpty {
         fact(AgentContextPanelCopy.messagesFact) {
           Text(verbatim: "\(thread.messages.count)")
@@ -371,13 +398,6 @@ struct AgentContextPanel: View {
     .csFocusRing(cornerRadius: CSRadius.card)
     .help(AgentContextPanelCopy.toolSettingsHelp)
     .accessibilityIdentifier("agent-context-tool-settings")
-  }
-
-  static func model(of thread: ChatThread) -> String? {
-    guard let model = thread.model?.trimmingCharacters(in: .whitespacesAndNewlines),
-      !model.isEmpty
-    else { return nil }
-    return model
   }
 }
 

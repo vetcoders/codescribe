@@ -146,18 +146,29 @@ include whether the attachment was added before, during or after capture.
 ### Preview and Markup
 
 Open an attachment's preview to inspect it. In a **nightly build**, preview uses
-its own movable, resizable window and supported images offer **Markup**. Save the edited
-image to update the draft attachment; the annotated copy does not overwrite
-the original source file. Review the resulting attachment before sending it.
+its own compact, movable, resizable window. The whole image initially fits the
+available area; use **Fit** to return to that view after zooming. The source path
+is under the **Path** disclosure, while Copy path, Reveal in Finder and Open
+remain available. Supported draft images offer **Markup**. Save the edited image
+to update the draft attachment; the annotated copy does not overwrite the
+original source file. Review the resulting attachment before sending it.
 
 Markup availability is a build distinction. The presence of a preview in a
 public release does not imply that its annotation action is available there.
 
 ## Delivery and read states
 
-The message's status distinguishes publication, queue acceptance and recipient
-read/ACK. A **Read N/M** state counts recipients that acknowledged the delivery.
-It does not certify that their requested work is done or correct.
+The message's status distinguishes publication, queue acceptance, delivery and
+recipient read/ACK. A **Read N/M** state counts recipients that acknowledged the
+delivery. It does not certify that their requested work is done or correct.
+
+The sidebar shows a single neutral grey check for **Queue accepted**, two
+neutral grey checks for **Delivered**, and the same two checks in the palette's
+theme-adaptive olive for **Read**. Queue acceptance alone does not confirm
+delivery to the recipient's mailbox. Delivered and Read differ only in colour,
+not in shape. The individual Read label uses the same olive; the aggregate
+Read N/M remains a neutral count. Receipt colour is separate from agent presence
+and voice activity.
 
 An external agent's response can arrive as text and, if configured and unmuted,
 as speech. Playback state is separate from message delivery. A missing voice

@@ -9,6 +9,7 @@
 //! Two properties are load-bearing and easy to break:
 //!
 //! - **The tap claims only what Codescribe owns.** Channel digit chords, the
+//!   configured Deferred Paste chord,
 //!   middle button while the agent gesture is on, and — only while the
 //!   overlay's agent chooser holds its lease — the scroll wheel, the left
 //!   click and Escape. Every other keyboard and mouse event keeps its normal
@@ -47,11 +48,12 @@ fn preempts_stop_paste(event: &HotkeyEvent) -> bool {
     )
 }
 
-/// Track claimed digit edges even when the modifier is released first.
+/// Track owned keyboard edges even when the modifier is released first.
 #[cfg(any(target_os = "macos", test))]
 #[derive(Default)]
 struct ChannelKeyClaims {
     down: [bool; 10],
+    deferred_insert_down: bool,
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -62,6 +64,21 @@ impl ChannelKeyClaims {
         config: super::config::HotkeyRuntimeConfig,
     ) -> bool {
         match input {
+            HotkeyDetectorInput::KeyDown {
+                key: HotkeyPhysicalKey::V,
+                modifiers,
+                ..
+            } => {
+                self.deferred_insert_down |= super::detector::deferred_insert_modifiers_match(
+                    config.deferred_insert_shortcut,
+                    *modifiers,
+                );
+                self.deferred_insert_down
+            }
+            HotkeyDetectorInput::KeyUp {
+                key: HotkeyPhysicalKey::V,
+                ..
+            } => std::mem::take(&mut self.deferred_insert_down),
             HotkeyDetectorInput::KeyDown {
                 key: HotkeyPhysicalKey::Digit(digit),
                 modifiers,
@@ -1033,7 +1050,8 @@ mod macos {
     ///
     /// Consumes channel digit down/repeat/up events, the middle button while
     /// the agent gesture is on, and the chooser's events while it holds its
-    /// lease. Modifier events, ordinary typing and deferred paste pass through.
+    /// lease. The configured deferred-paste chord is owned too. Ordinary
+    /// typing and our marked synthetic keys pass through unchanged.
     extern "C" fn event_callback(
         _proxy: CGEventTapProxy,
         event_type: CGEventType,
@@ -1042,6 +1060,18 @@ mod macos {
     ) -> CGEventRef {
         // Skip processing if hotkeys are disabled
         if !ENABLED.load(Ordering::Relaxed) {
+            return event;
+        }
+
+        if matches!(event_type, K_CG_EVENT_KEY_DOWN | K_CG_EVENT_KEY_UP)
+            // SAFETY: read-only metadata on the callback-owned event.
+            && unsafe {
+                CGEventGetIntegerValueField(
+                    event,
+                    core_graphics::event::EventField::EVENT_SOURCE_USER_DATA,
+                )
+            } == crate::os::clipboard::SYNTHETIC_KEY_EVENT_TAG
+        {
             return event;
         }
 
@@ -1628,6 +1658,46 @@ pub use macos::{HotkeyRuntime, disable, enable, is_enabled, start_listener};
 mod stop_preemption_tests {
     use super::*;
     use crate::os::hotkeys::{HoldAction, HoldMode};
+
+    #[test]
+    fn deferred_chord_claims_its_edges_without_claiming_plain_paste_or_logging_text() {
+        let mut claims = ChannelKeyClaims::default();
+        let mut config = get_hotkey_runtime_config();
+        config.deferred_insert_shortcut = crate::config::DeferredInsertShortcut::CommandOptionV;
+        let chord = HotkeyModifierSnapshot {
+            cmd: true,
+            option: true,
+            ..Default::default()
+        };
+        let down = |modifiers| HotkeyDetectorInput::KeyDown {
+            now: Instant::now(),
+            key: HotkeyPhysicalKey::V,
+            modifiers,
+        };
+        let plain_paste = HotkeyModifierSnapshot {
+            cmd: true,
+            ..Default::default()
+        };
+        assert!(!claims.claim(&down(plain_paste), config));
+        assert!(claims.claim(&down(chord), config));
+        assert!(!tap_journal_admits(&down(chord), true, config));
+        assert!(
+            claims.claim(&down(Default::default()), config),
+            "repeat remains owned"
+        );
+        let up = HotkeyDetectorInput::KeyUp {
+            key: HotkeyPhysicalKey::V,
+            modifiers: Default::default(),
+        };
+        assert!(
+            claims.claim(&up, config),
+            "release remains owned after modifiers lift"
+        );
+        assert!(!claims.claim(&up, config));
+        assert!(!claims.claim(&down(plain_paste), config));
+        config.deferred_insert_shortcut = crate::config::DeferredInsertShortcut::Disabled;
+        assert!(!claims.claim(&down(chord), config));
+    }
 
     #[test]
     fn channel_claim_consumes_repeat_and_release_but_preserves_ordinary_typing() {

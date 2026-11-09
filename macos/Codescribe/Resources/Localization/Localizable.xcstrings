@@ -1149,6 +1149,17 @@
         }
       }
     },
+    "%lld h ago" : {
+      "comment" : "Agent hover card: whole hours since a gone agent's last heartbeat, under a day",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%lld godz. temu"
+          }
+        }
+      }
+    },
     "%lld integrations await their first run" : {
       "comment" : "Plural: optional integrations configured but not yet discovered",
       "localizations" : {
@@ -1226,6 +1237,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%lld min"
+          }
+        }
+      }
+    },
+    "%lld min ago" : {
+      "comment" : "Agent hover card: whole minutes since a gone agent's last heartbeat, under an hour",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%lld min temu"
           }
         }
       }
@@ -1688,6 +1710,41 @@
         }
       }
     },
+    "%lld unread" : {
+      "comment" : "Channel chip hover card: new replies from the agent not read yet",
+      "localizations" : {
+        "pl" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "needs_review",
+                  "value" : "%lld nieprzeczytane"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "needs_review",
+                  "value" : "%lld nieprzeczytanych"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "needs_review",
+                  "value" : "%lld nieprzeczytana"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "needs_review",
+                  "value" : "%lld nieprzeczytane"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "%lld unread replies" : {
       "localizations" : {
         "en" : {
@@ -1908,29 +1965,19 @@
         }
       }
     },
-    "0 · All" : {
+    "0 · %@ (%lld of %lld)" : {
+      "comment" : "Channel zero: its display name, then agents woken by broadcasts out of all bound agents",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "0 · All"
+            "value" : "0 · %1$@ (%2$lld of %3$lld)"
           }
         },
         "pl" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "0 · Wszyscy"
-          }
-        }
-      }
-    },
-    "0 · All (%lld of %lld)" : {
-      "comment" : "Channel zero: agents woken by broadcasts out of all bound agents",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
             "state" : "translated",
-            "value" : "0 · Wszyscy (%1$lld z %2$lld)"
+            "value" : "0 · %1$@ (%2$lld z %3$lld)"
           }
         }
       }
@@ -3214,6 +3261,40 @@
         }
       }
     },
+    "Allow Codescribe to control Spotify in Privacy & Security > Automation." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allow Codescribe to control Spotify in Privacy & Security > Automation."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pozwól Codescribe sterować Spotify w ustawieniach Prywatność i ochrona > Automatyzacja."
+          }
+        }
+      }
+    },
+    "Allow Spotify control" : {
+      "comment" : "Explicit action that asks macOS for Spotify Automation access without changing volume",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allow Spotify control"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zezwól na sterowanie Spotify"
+          }
+        }
+      }
+    },
     "Allow access" : {
       "comment" : "In-app permission repair chip; the row title already names the permission",
       "localizations" : {
@@ -3826,6 +3907,40 @@
         }
       }
     },
+    "Audio output in use" : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Audio output in use"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aktywne wyjścia audio"
+          }
+        }
+      }
+    },
+    "Audio playback status is unavailable." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Audio playback status is unavailable."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stan odtwarzania dźwięku jest niedostępny."
+          }
+        }
+      }
+    },
     "Audio retention" : {
       "localizations" : {
         "pl" : {
@@ -3862,8 +3977,8 @@
       "localizations" : {
         "pl" : {
           "stringUnit" : {
-            "state" : "translated",
-            "value" : "Automatycznie"
+            "state" : "needs_review",
+            "value" : "Auto"
           }
         }
       }
@@ -3951,6 +4066,17 @@
         }
       }
     },
+    "Automatically detects the transcription language." : {
+      "comment" : "Transcription language row explanation",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Automatycznie wykrywa język transkrypcji."
+          }
+        }
+      }
+    },
     "Awaiting receipt" : {
       "localizations" : {
         "pl" : {
@@ -3999,6 +4125,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Wyważona redakcja transkrypcji."
+          }
+        }
+      }
+    },
+    "Bar" : {
+      "comment" : "Widget size picker: the bar with the channel map",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Belka"
           }
         }
       }
@@ -4202,6 +4339,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zbudowano: %@"
+          }
+        }
+      }
+    },
+    "Bus header" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bus header"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Belka busa"
           }
         }
       }
@@ -4609,6 +4764,17 @@
         }
       }
     },
+    "Cards" : {
+      "comment" : "Intercom cards router button",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fiszki"
+          }
+        }
+      }
+    },
     "Cards (beta)" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -4716,6 +4882,17 @@
         }
       }
     },
+    "Channel %@" : {
+      "comment" : "Overlay channel 0 chip at rest, when no key plus digit opens a channel",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Kanał %@"
+          }
+        }
+      }
+    },
     "Channel %@, %@" : {
       "comment" : "Compact overlay channel chip when no key plus digit opens a channel: digit, agent name",
       "localizations" : {
@@ -4791,6 +4968,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Kanał %@, mikrofon otwarty"
+          }
+        }
+      }
+    },
+    "Channel %@, shortcut %@" : {
+      "comment" : "Overlay channel 0 chip at rest: digit, the channel chord (e.g. Ctrl 0)",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Channel %1$@, shortcut %2$@"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Kanał %1$@, skrót %2$@"
           }
         }
       }
@@ -5690,6 +5884,17 @@
         }
       }
     },
+    "Codescribe quit while this message was being sent. It may already have reached the agent; check before sending it again." : {
+      "comment" : "A held message returned to the composer after a crash during its handoff",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codescribe zamknął się w trakcie wysyłania tej wiadomości. Mogła już dotrzeć do agenta; sprawdź, zanim wyślesz ją ponownie."
+          }
+        }
+      }
+    },
     "Codescribe records on whichever microphone macOS currently uses." : {
       "localizations" : {
         "pl" : {
@@ -6026,17 +6231,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zatwierdzanie fragmentów transkrypcji"
-          }
-        }
-      }
-    },
-    "Compact" : {
-      "comment" : "Sidebar state",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Kompaktowy"
           }
         }
       }
@@ -6380,7 +6574,7 @@
       }
     },
     "Copied" : {
-      "comment" : "Tray banner: the transcript was copied",
+      "comment" : "Button state after copying\nTray banner: the transcript was copied",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -6411,6 +6605,7 @@
       }
     },
     "Copy" : {
+      "comment" : "Button: copy this code block\nButton: copy this message",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -7635,6 +7830,24 @@
         }
       }
     },
+    "Developer preview only. Changes appear immediately." : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Developer preview only. Changes appear immediately."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tylko podgląd deweloperski. Zmiany widać od razu."
+          }
+        }
+      }
+    },
     "Device Control and Data Access" : {
       "comment" : "Privacy permission pane name on macOS 27 and later; formerly Accessibility",
       "localizations" : {
@@ -7995,6 +8208,17 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Nie blokuje Agenta"
+          }
+        }
+      }
+    },
+    "Does not hear: %@ (channel 0)" : {
+      "comment" : "Channel chip hover card, VoiceOver: the agent left channel 0; the argument is channel 0's display name, kept in the nominative",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nie słyszy: %@ (kanał 0)"
           }
         }
       }
@@ -8795,17 +9019,6 @@
         }
       }
     },
-    "Finishing…" : {
-      "comment" : "Overlay cap while the take is transcribed",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Końcowe przetwarzanie…"
-          }
-        }
-      }
-    },
     "First dictation confirmation" : {
       "comment" : "User panel section",
       "localizations" : {
@@ -8813,6 +9026,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Potwierdzenie pierwszego dyktowania"
+          }
+        }
+      }
+    },
+    "Fit" : {
+      "comment" : "Attachment preview: zoom back to fit the whole image in the window",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Dopasuj"
           }
         }
       }
@@ -9329,6 +9553,42 @@
         }
       }
     },
+    "Glass tint" : {
+      "comment" : "Developer Lab native glass tint control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Glass tint"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tonowanie szkła"
+          }
+        }
+      }
+    },
+    "Glass tuning" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Glass tuning"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Regulacja szkła"
+          }
+        }
+      }
+    },
     "Global playback on" : {
       "comment" : "Broadcast channel playback and input controls",
       "localizations" : {
@@ -9456,6 +9716,17 @@
         }
       }
     },
+    "Hears: %@ (channel 0)" : {
+      "comment" : "Channel chip hover card, VoiceOver: broadcasts reach this agent; the argument is channel 0's display name, kept in the nominative",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Słyszy: %@ (kanał 0)"
+          }
+        }
+      }
+    },
     "Held" : {
       "comment" : "Agent message waiting in the edit and withdrawal window",
       "localizations" : {
@@ -9483,6 +9754,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Proces pomocniczy %@ daje taki sam wynik jak bieżąca transkrypcja."
+          }
+        }
+      }
+    },
+    "Hide agents list" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Schowaj listę agentów"
           }
         }
       }
@@ -9945,6 +10226,17 @@
         }
       }
     },
+    "Invalid license payload: %@" : {
+      "comment" : "License details. The placeholder is the core's reason, in English",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nieprawidłowa treść licencji: %@"
+          }
+        }
+      }
+    },
     "JetBrains Mono — meta 11" : {
       "shouldTranslate" : false
     },
@@ -10177,6 +10469,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ostatnia poprawka na tym Macu: brak zapisanych"
+          }
+        }
+      }
+    },
+    "Last reply" : {
+      "comment" : "Chip hover card, VoiceOver: the newest message is the agent's",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Ostatnia odpowiedź"
+          }
+        }
+      }
+    },
+    "Last sent message" : {
+      "comment" : "Chip hover card, VoiceOver: the newest message is yours",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Ostatnia wysłana wiadomość"
           }
         }
       }
@@ -10458,6 +10772,41 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Długość niedostępna"
+          }
+        }
+      }
+    },
+    "Less tint" : {
+      "comment" : "Developer Lab native glass tint control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Less tint"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mniej tonowania"
+          }
+        }
+      }
+    },
+    "Let Codescribe lower Spotify by 70 percent for the whole recording and restore it afterwards. Dictation works without this permission." : {
+      "comment" : "Optional Automation grant for Spotify volume control, without pausing playback",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Let Codescribe lower Spotify by 70 percent for the whole recording and restore it afterwards. Dictation works without this permission."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codescribe ścisza Spotify o 70% na cały czas nagrania, a potem przywraca głośność. Dyktowanie działa także bez tego uprawnienia."
           }
         }
       }
@@ -11123,6 +11472,40 @@
         }
       }
     },
+    "Message unavailable" : {
+      "comment" : "Conversation hover preview",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Message unavailable"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wiadomość niedostępna"
+          }
+        }
+      }
+    },
+    "Message withdrawn" : {
+      "comment" : "Conversation hover preview",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Message withdrawn"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wiadomość wycofana"
+          }
+        }
+      }
+    },
     "Messages" : {
       "comment" : "Context panel fact: how many turns the conversation holds",
       "localizations" : {
@@ -11383,6 +11766,35 @@
         }
       }
     },
+    "Mini" : {
+      "comment" : "Widget size picker: the small tool capsule",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Mini"
+          }
+        }
+      }
+    },
+    "Mini and MIDI" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mini and MIDI"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mini i midi"
+          }
+        }
+      }
+    },
     "Minimize" : {
       "localizations" : {
         "pl" : {
@@ -11508,6 +11920,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Więcej działań"
+          }
+        }
+      }
+    },
+    "More tint" : {
+      "comment" : "Developer Lab native glass tint control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "More tint"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Więcej tonowania"
           }
         }
       }
@@ -11761,27 +12191,6 @@
         }
       }
     },
-    "Multilingual" : {
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wielojęzyczny"
-          }
-        }
-      }
-    },
-    "Multilingual detects the language automatically." : {
-      "comment" : "Transcription language row explanation",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wielojęzyczny automatycznie wykrywa język."
-          }
-        }
-      }
-    },
     "Mute" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -12004,6 +12413,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nowe nagrania otwierają się z transkrypcją. Wyłącz, aby pokazywać tylko pasek nagrywania."
+          }
+        }
+      }
+    },
+    "Newer message" : {
+      "comment" : "Conversation hover preview",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Newer message"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nowsza wiadomość"
           }
         }
       }
@@ -12322,6 +12748,17 @@
         }
       }
     },
+    "No data" : {
+      "comment" : "Channel chip hover card: the roster makes no liveness claim for the agent",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Brak danych"
+          }
+        }
+      }
+    },
     "No effort sent; the model decides" : {
       "comment" : "Model default reasoning entry",
       "localizations" : {
@@ -12498,6 +12935,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Na tym Macu nie zapisano nowszej poprawki."
+          }
+        }
+      }
+    },
+    "No other application has an active audio output." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No other application has an active audio output."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Żadna inna aplikacja nie ma aktywnego wyjścia audio."
           }
         }
       }
@@ -12780,6 +13234,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Do tego nagrania nie dopuszczono żadnych słów."
+          }
+        }
+      }
+    },
+    "Not active" : {
+      "comment" : "Channel chip hover card: no live follower reported; cautious, not offline",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nieaktywny"
           }
         }
       }
@@ -13271,6 +13736,23 @@
         }
       }
     },
+    "Older message" : {
+      "comment" : "Conversation hover preview",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Older message"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Starsza wiadomość"
+          }
+        }
+      }
+    },
     "Oldest first" : {
       "comment" : "Sorting option for saved conversations: oldest activity first",
       "localizations" : {
@@ -13331,6 +13813,24 @@
         }
       }
     },
+    "Onboarding" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Onboarding"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kreator"
+          }
+        }
+      }
+    },
     "One anonymous event with the app version and the macOS version. Never audio or text." : {
       "comment" : "User panel: opt-in switch subtitle",
       "localizations" : {
@@ -13370,6 +13870,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zakup jednorazowy"
+          }
+        }
+      }
+    },
+    "Online" : {
+      "comment" : "Channel chip hover card: the agent's follower is alive in the roster sample",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Online"
           }
         }
       }
@@ -13444,6 +13955,23 @@
         }
       }
     },
+    "Open Automation settings" : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open Automation settings"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwórz ustawienia Automatyzacji"
+          }
+        }
+      }
+    },
     "Open Lab" : {
       "localizations" : {
         "pl" : {
@@ -13482,6 +14010,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Otwórz kreator…"
+          }
+        }
+      }
+    },
+    "Open Spotify, then allow Codescribe to lower its volume while recording. If access was denied, enable Spotify under Codescribe in Privacy & Security > Automation." : {
+      "comment" : "Optional Spotify control permission; Spotify must be running to ask macOS",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open Spotify, then allow Codescribe to lower its volume while recording. If access was denied, enable Spotify under Codescribe in Privacy & Security > Automation."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwórz Spotify, a następnie zezwól Codescribe na ściszanie muzyki podczas nagrywania. Jeśli odmówiono dostępu, włącz Spotify dla Codescribe w Ustawieniach systemowych → Prywatność i ochrona → Automatyzacja."
           }
         }
       }
@@ -13735,7 +14280,7 @@
       }
     },
     "Optional" : {
-      "comment" : "Optional scope skipped in setup\nScreen Recording and Full Disk Access never block setup completion\nStatus chip",
+      "comment" : "Optional feature permissions never block setup completion\nOptional scope skipped in setup\nStatus chip",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -14296,6 +14841,23 @@
         }
       }
     },
+    "Playback during recording" : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Playback during recording"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odtwarzanie podczas nagrywania"
+          }
+        }
+      }
+    },
     "Playback status unavailable" : {
       "localizations" : {
         "pl" : {
@@ -14719,13 +15281,13 @@
         }
       }
     },
-    "Pulsing red" : {
+    "Pulsing terracotta" : {
       "comment" : "Recording light colour",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Pulsujący czerwony"
+            "value" : "Pulsująca terakota"
           }
         }
       }
@@ -14768,6 +15330,7 @@
       }
     },
     "Queued" : {
+      "comment" : "Context panel fact: accepted turns waiting to run",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -15513,17 +16076,6 @@
         }
       }
     },
-    "Red" : {
-      "comment" : "Recording light colour",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Czerwony"
-          }
-        }
-      }
-    },
     "Redo" : {
       "localizations" : {
         "pl" : {
@@ -16235,6 +16787,24 @@
         }
       }
     },
+    "Reset glass" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reset glass"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Resetuj szkło"
+          }
+        }
+      }
+    },
     "Reset model" : {
       "comment" : "Clears the lane's model override",
       "localizations" : {
@@ -16320,6 +16890,7 @@
       }
     },
     "Restore default" : {
+      "comment" : "Settings: puts the shared channel's default name back",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -17567,6 +18138,16 @@
         }
       }
     },
+    "Shared channel name" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nazwa kanału wspólnego"
+          }
+        }
+      }
+    },
     "Shared conversation" : {
       "localizations" : {
         "pl" : {
@@ -17615,6 +18196,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pokazuj kanały agentów w widoku mini i kompaktowym."
+          }
+        }
+      }
+    },
+    "Show agents list" : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pokaż listę agentów"
           }
         }
       }
@@ -18136,6 +18727,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Pomiń"
+          }
+        }
+      }
+    },
+    "Skipped %@ (channel %@): %@" : {
+      "comment" : "Line under a conversation after a broadcast skipped an agent: name, channel, why",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Skipped %1$@ (channel %2$@): %3$@"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Pominięto %1$@ (kanał %2$@): %3$@"
           }
         }
       }
@@ -18769,6 +19377,91 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Odtworzono"
+          }
+        }
+      }
+    },
+    "Spotify control" : {
+      "comment" : "Optional target-specific Automation permission in General settings and setup",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify control"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sterowanie Spotify"
+          }
+        }
+      }
+    },
+    "Spotify is lowered by 70 percent for the whole recording and restored afterwards." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify is lowered by 70 percent for the whole recording and restored afterwards."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Głośność Spotify jest zmniejszana o 70 procent na cały czas nagrania, a potem przywracana."
+          }
+        }
+      }
+    },
+    "Spotify is quieter while the microphone is recording." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify is quieter while the microphone is recording."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify jest ściszone na czas nagrywania mikrofonu."
+          }
+        }
+      }
+    },
+    "Spotify keeps playing. Its volume changes only while recording." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify keeps playing. Its volume changes only while recording."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify odtwarza dalej. Jego głośność zmienia się tylko podczas nagrywania."
+          }
+        }
+      }
+    },
+    "Spotify volume could not be adjusted. Recording continues." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify volume could not be adjusted. Recording continues."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się zmienić głośności Spotify. Nagrywanie trwa dalej."
           }
         }
       }
@@ -19422,6 +20115,24 @@
         }
       }
     },
+    "Surface" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Surface"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Powierzchnia"
+          }
+        }
+      }
+    },
     "Switch to Cloud" : {
       "comment" : "Cloud consent confirmation: button that grants consent and selects Cloud",
       "localizations" : {
@@ -19679,6 +20390,17 @@
         }
       }
     },
+    "Terracotta" : {
+      "comment" : "Recording light colour",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Terakota"
+          }
+        }
+      }
+    },
     "Test" : {
       "comment" : "Button label: run a connection test\nButton: send one formatting request\nSettings row: send one formatting request now",
       "localizations" : {
@@ -19898,6 +20620,22 @@
         }
       }
     },
+    "The accepted turn has no model configuration. Send it again." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The accepted turn has no model configuration. Send it again."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zaakceptowana tura nie ma zapisanej konfiguracji modelu. Wyślij ją ponownie."
+          }
+        }
+      }
+    },
     "The app bundle does not contain the Codescribe agent bridge payload." : {
       "localizations" : {
         "pl" : {
@@ -20084,6 +20822,61 @@
         }
       }
     },
+    "The license key has an unsupported prefix." : {
+      "comment" : "License details: the key does not start with a known prefix",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klucz licencji ma nieobsługiwany prefiks."
+          }
+        }
+      }
+    },
+    "The license key must have three dot-separated parts." : {
+      "comment" : "License details: the key's shape is wrong",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klucz licencji musi mieć trzy części oddzielone kropkami."
+          }
+        }
+      }
+    },
+    "The license payload is not valid base64url." : {
+      "comment" : "License details: the key's middle part is not decodable",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Treść licencji nie jest poprawnym base64url."
+          }
+        }
+      }
+    },
+    "The license signature could not be verified." : {
+      "comment" : "License details: the signature does not match the payload",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się zweryfikować podpisu licencji."
+          }
+        }
+      }
+    },
+    "The license signature is not a valid Ed25519 signature." : {
+      "comment" : "License details: the key's last part is not a signature",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Podpis licencji nie jest poprawnym podpisem Ed25519."
+          }
+        }
+      }
+    },
     "The local Whisper model files are missing or invalid. Local power is not ready until they are valid." : {
       "comment" : "Live Whisper refinement card: the model files failed the check",
       "localizations" : {
@@ -20132,6 +20925,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lista modeli wymaga klucza API. Model możesz wpisać ręcznie."
+          }
+        }
+      }
+    },
+    "The name of channel 0 on the bar, in the agents list and in its conversation." : {
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Nazwa kanału 0 na belce, na liście agentów i w jego rozmowie."
           }
         }
       }
@@ -20509,6 +21312,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "To powiązanie nie pasuje już do agenta na tym kanale. Wiadomość do niego nie pójdzie."
+          }
+        }
+      }
+    },
+    "This message is already being sent." : {
+      "comment" : "Cancel/Edit came after the send hold ended",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ta wiadomość jest już wysyłana."
           }
         }
       }
@@ -22215,6 +23029,17 @@
         }
       }
     },
+    "Window" : {
+      "comment" : "Widget size picker: the transcription and agents window",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Okno"
+          }
+        }
+      }
+    },
     "Wire" : {
       "localizations" : {
         "pl" : {
@@ -22635,6 +23460,23 @@
         }
       }
     },
+    "Your manual Spotify volume change takes priority." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Your manual Spotify volume change takes priority."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Twoja ręczna zmiana głośności Spotify ma pierwszeństwo."
+          }
+        }
+      }
+    },
     "Your own values — edit them under Detailed settings." : {
       "localizations" : {
         "pl" : {
@@ -23032,6 +23874,17 @@
         }
       }
     },
+    "channel %@" : {
+      "comment" : "Name of a skipped recipient with no name and no audience: its channel number",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "kanał %@"
+          }
+        }
+      }
+    },
     "chat.callout.caution" : {
       "comment" : "Callout header in agent chat: an action with a risky outcome",
       "extractionState" : "extracted_with_value",
@@ -23199,6 +24052,17 @@
         }
       }
     },
+    "connection out of date" : {
+      "comment" : "Why a broadcast skipped an agent: its lease no longer matches its binding",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "połączenie nieaktualne"
+          }
+        }
+      }
+    },
     "context" : {
       "localizations" : {
         "pl" : {
@@ -23210,23 +24074,12 @@
       }
     },
     "copied" : {
-      "comment" : "Button state after copying\nDictionary: quality record action",
+      "comment" : "Dictionary: quality record action",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "skopiowano"
-          }
-        }
-      }
-    },
-    "copy" : {
-      "comment" : "Button: copy this code block\nButton: copy this message",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "kopiuj"
           }
         }
       }
@@ -24076,6 +24929,17 @@
         }
       }
     },
+    "in channel 0" : {
+      "comment" : "Agents list row: member of channel 0",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "na kanale 0"
+          }
+        }
+      }
+    },
     "incomplete coverage" : {
       "localizations" : {
         "pl" : {
@@ -24430,6 +25294,17 @@
         }
       }
     },
+    "not listening" : {
+      "comment" : "Why a broadcast skipped an agent: its listener process is gone",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "nie nasłuchuje"
+          }
+        }
+      }
+    },
     "not loaded yet" : {
       "localizations" : {
         "pl" : {
@@ -24469,6 +25344,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "teraz"
+          }
+        }
+      }
+    },
+    "off channel 0" : {
+      "comment" : "Agents list row: not on channel 0",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "poza kanałem 0"
           }
         }
       }
@@ -24631,6 +25517,42 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Lokalnie"
+          }
+        }
+      }
+    },
+    "overlay.sharedChannel.defaultName" : {
+      "comment" : "Default display name of the shared channel 0 on the Bus",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Shared"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wspólny"
+          }
+        }
+      }
+    },
+    "overlay.sharedChannel.defaultShortName" : {
+      "comment" : "Short form of the shared channel's default name for a tight bar (Polish: Wsp.); the same word when it is already short",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Shared"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wsp."
           }
         }
       }
@@ -26566,6 +27488,17 @@
         }
       }
     },
+    "skipped" : {
+      "comment" : "Why a broadcast skipped an agent, for a reason code the app does not know",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "pominięto"
+          }
+        }
+      }
+    },
     "source: %@" : {
       "comment" : "Placeholder is an identifier",
       "localizations" : {
@@ -27490,6 +28423,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "wczoraj"
+          }
+        }
+      }
+    },
+    "yesterday %@" : {
+      "comment" : "Agent hover card: a gone agent's last heartbeat yesterday; the placeholder is a time",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "wczoraj %@"
           }
         }
       }

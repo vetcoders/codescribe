@@ -315,10 +315,12 @@ publishes nothing and keeps the DMG, its checksum and the signed appcast as the
 environment gate applies, so the rehearsal waits for the same reviewer. Download
 that run's `codescribe-rehearsal-dmg` artifact into a fresh directory, verify its
 checksum and DMG payload, then mount that verified DMG read-only. Install the
-app from the mounted volume through the guarded prebuilt path:
+app from the mounted volume the way a user does, then let the idle restart
+swap the running application:
 
 ```bash
-make install-if-idle INSTALL_APP_SOURCE="/Volumes/<verified-rehearsal-volume>/Codescribe.app"
+rsync -a --delete "/Volumes/<verified-rehearsal-volume>/Codescribe.app/" /Applications/Codescribe.app/
+make restart-if-idle
 ```
 
 Use the mounted app's exact path; a local build directory does not establish

@@ -167,15 +167,15 @@ final class OnboardingPatternTests: XCTestCase {
 
     XCTAssertTrue(components.contains("func csChoice(selected: Bool)"), "a choice has a style")
     XCTAssertTrue(
-      components.contains("CSColor.brandAccent.opacity(isEnabled ? CSAlpha.selectionWash"))
+      components.contains("CSColor.chromeAccent.opacity(isEnabled ? CSAlpha.selectionWash"))
     XCTAssertTrue(steps.contains(".csChoice(selected: isSelected)"))
-    XCTAssertTrue(steps.contains("isSelected ? CSColor.brandAccent : CSColor.secondaryInk"))
+    XCTAssertTrue(steps.contains("isSelected ? CSColor.chromeAccent : CSColor.secondaryInk"))
     XCTAssertFalse(steps.contains(".csAction(prominent: isSelected)"), "a selection is no action")
     XCTAssertTrue(frame.contains("CSProgressBar(value: model.progressFraction)"), "progress")
     XCTAssertTrue(components.contains("struct CSProgressBar"), "the brand bar lives in the system")
     XCTAssertFalse(frame.contains("ProgressView("), "the native bar ignores a brand tint")
     // The step icon carries an explicit tone rather than a hardcoded colour
-    // (W0-20): every step wears the brand accent except the wizard's
+    // (W0-20): every step wears the system accent except the wizard's
     // not-ready verdict, which is neutral ink — see
     // testNotReadyHeadingWearsNeutralInk below.
     XCTAssertTrue(frame.contains(".foregroundStyle(current.tone)"), "the step icon")
@@ -185,11 +185,13 @@ final class OnboardingPatternTests: XCTestCase {
 
     XCTAssertTrue(components.contains("struct CSStatusBadge"), "one badge for wizard and Settings")
     XCTAssertTrue(steps.contains("CSProgressBar(value: SettingsViewModel.calibrationProgress("))
-    // The capsule takes the mark's tint (W0-03): olive for saved and verified,
-    // the danger rung with the warning sign only for a state that blocks;
-    // terracotta is choice and progress, never a problem (W0-17).
-    XCTAssertTrue(components.contains("Capsule().fill(tint.opacity(0.14))"))
-    XCTAssertTrue(components.contains("case .saved, .verified: CSColor.oliveLight"))
+    // A correct state wears no colour (secondaryInk + neutral fill); only a
+    // blocked state tints its capsule in the danger rung with the warning sign.
+    XCTAssertTrue(
+      components.contains(
+        "Capsule().fill(mark == .blocked ? tint.opacity(0.14) : Color.primary.opacity(CSAlpha.fill))"
+      ))
+    XCTAssertTrue(components.contains("case .none, .saved, .verified: CSColor.secondaryInk"))
     XCTAssertTrue(components.contains("case .blocked: CSColor.dangerLight"))
     XCTAssertTrue(
       components.contains(
@@ -247,8 +249,8 @@ final class OnboardingPatternTests: XCTestCase {
       "the not-ready heading icon is neutral ink")
     XCTAssertFalse(
       frame.contains(
-        "CSColor.brandAccent,\n        String(\n          localized: LocalizedStringResource(\n            \"Codescribe is not ready yet.\""
-      ), "the not-ready heading never wears the brand accent")
+        "CSColor.chromeAccent,\n        String(\n          localized: LocalizedStringResource(\n            \"Codescribe is not ready yet.\""
+      ), "the not-ready heading never wears the accent")
     XCTAssertFalse(
       frame.contains("\"exclamationmark.circle\",\n        CSColor.terracottaLight,"),
       "the not-ready heading never wears terracotta")

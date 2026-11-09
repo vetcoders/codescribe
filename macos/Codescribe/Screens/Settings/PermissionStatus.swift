@@ -17,7 +17,7 @@ import Speech
 
 /// Tri-state permission result. `.notDetermined` is rendered as actionable
 /// ("open System Settings") rather than as a hard failure.
-enum PermissionState: Equatable {
+enum PermissionState: Equatable, Sendable {
   case granted
   case denied
   case notDetermined
@@ -49,8 +49,8 @@ enum PermissionState: Equatable {
   }
 }
 
-/// Native privacy scopes. Screen Recording and Full Disk Access are optional
-/// feature grants; dictation and hotkey scopes retain their specific purposes.
+/// Native privacy scopes. Screen Recording, Full Disk Access and Spotify
+/// control are optional feature grants; dictation retains its own prerequisites.
 enum PermissionKind: String, CaseIterable, Identifiable {
   case microphone = "Microphone"
   case accessibility = "Accessibility"
@@ -58,11 +58,12 @@ enum PermissionKind: String, CaseIterable, Identifiable {
   case screenRecording = "Screen Recording"
   case speechRecognition = "Speech Recognition"
   case fullDiskAccess = "Full Disk Access"
+  case spotifyAutomation = "Spotify Automation"
 
   var id: String { rawValue }
 
   var isOptionalForSetup: Bool {
-    self == .screenRecording || self == .fullDiskAccess
+    self == .screenRecording || self == .fullDiskAccess || self == .spotifyAutomation
   }
 
   /// Grants setup cannot finish without. Mirrors `REQUIRED_SETUP_PERMISSIONS`
@@ -82,6 +83,13 @@ enum PermissionKind: String, CaseIterable, Identifiable {
   /// that macOS may apply only after Codescribe reopens. `nil` otherwise.
   func repairNote(for state: PermissionState, requested: Bool, locale: Locale) -> String? {
     guard !state.isGranted else { return nil }
+    if self == .spotifyAutomation {
+      return String(
+        localized: LocalizedStringResource(
+          "Open Spotify, then allow Codescribe to lower its volume while recording. If access was denied, enable Spotify under Codescribe in Privacy & Security > Automation.",
+          locale: locale,
+          comment: "Optional Spotify control permission; Spotify must be running to ask macOS"))
+    }
     if state == .denied, self == .microphone || self == .speechRecognition {
       return String(
         localized: LocalizedStringResource(
@@ -98,8 +106,8 @@ enum PermissionKind: String, CaseIterable, Identifiable {
     return nil
   }
 
-  /// Display name for the privacy scope. The identity (`rawValue`) is the
-  /// System Settings pane name and must never reach the screen directly.
+  /// Display name for the privacy scope. Its stable identity (`rawValue`)
+  /// must never reach the screen directly.
   var displayName: String {
     displayName(locale: Locale(identifier: Bundle.main.preferredLocalizations.first ?? "en"))
   }
@@ -124,6 +132,8 @@ enum PermissionKind: String, CaseIterable, Identifiable {
       String(localized: LocalizedStringResource("Speech Recognition", locale: locale))
     case .fullDiskAccess:
       String(localized: LocalizedStringResource("Full Disk Access", locale: locale))
+    case .spotifyAutomation:
+      String(localized: LocalizedStringResource("Spotify control", locale: locale))
     }
   }
 
@@ -137,6 +147,7 @@ enum PermissionKind: String, CaseIterable, Identifiable {
     case .screenRecording: return URL(string: base + "Privacy_ScreenCapture")
     case .speechRecognition: return URL(string: base + "Privacy_SpeechRecognition")
     case .fullDiskAccess: return URL(string: base + "Privacy_AllFiles")
+    case .spotifyAutomation: return URL(string: base + "Privacy_Automation")
     }
   }
 
@@ -163,7 +174,7 @@ enum PermissionKind: String, CaseIterable, Identifiable {
       return PermissionRepair(requestsNatively: false, opensSettings: false)
     }
     switch self {
-    case .microphone, .speechRecognition:
+    case .microphone, .speechRecognition, .spotifyAutomation:
       if observed == .notDetermined {
         return PermissionRepair(requestsNatively: true, opensSettings: false)
       }
@@ -192,6 +203,10 @@ enum PermissionKind: String, CaseIterable, Identifiable {
     let observed = probe.snapshot().state(self)
     guard repair(for: observed).requestsNatively else { return observed }
     switch self {
+    case .spotifyAutomation:
+      let decided = await client.requestSpotifyAutomation()
+      let probed = probe.snapshot().spotifyAutomation
+      return probed == .granted ? .granted : decided
     case .speechRecognition:
       let decided = await client.requestSpeechRecognition()
       let probed = probe.snapshot().speechRecognition
@@ -225,7 +240,7 @@ struct PermissionRepair: Equatable, Sendable {
   var opensSettings: Bool
 }
 
-/// Snapshot of all four scopes captured at one moment.
+/// Native permission scopes captured at one moment, without prompting.
 struct PermissionSnapshot: Equatable, Sendable {
   var microphone: PermissionState
   var accessibility: PermissionState
@@ -237,6 +252,8 @@ struct PermissionSnapshot: Equatable, Sendable {
   /// Optional scope, probed only for the onboarding wizard. Settings never
   /// reads it (its matrix lists the dictation scopes explicitly).
   var fullDiskAccess: PermissionState = .notDetermined
+  /// Optional target-specific Automation grant, read without prompting.
+  var spotifyAutomation: PermissionState = .notDetermined
 
   func state(_ kind: PermissionKind) -> PermissionState {
     switch kind {
@@ -246,6 +263,7 @@ struct PermissionSnapshot: Equatable, Sendable {
     case .screenRecording: return screenRecording
     case .speechRecognition: return speechRecognition
     case .fullDiskAccess: return fullDiskAccess
+    case .spotifyAutomation: return spotifyAutomation
     }
   }
 
@@ -256,7 +274,8 @@ struct PermissionSnapshot: Equatable, Sendable {
     inputMonitoring: .granted,
     screenRecording: .granted,
     speechRecognition: .granted,
-    fullDiskAccess: .granted
+    fullDiskAccess: .granted,
+    spotifyAutomation: .granted
   )
 }
 
@@ -280,6 +299,7 @@ protocol PermissionRequesting: Sendable {
   func requestAccessibilityPrompt() -> Bool
   func requestMicrophone() async -> Bool
   func requestSpeechRecognition() async -> PermissionState
+  func requestSpotifyAutomation() async -> PermissionState
 }
 
 struct NativePermissionRequestClient: PermissionRequesting, Sendable {
@@ -309,6 +329,12 @@ struct NativePermissionRequestClient: PermissionRequesting, Sendable {
   func requestSpeechRecognition() async -> PermissionState {
     await SpeechRecognitionPermission.request()
   }
+
+  func requestSpotifyAutomation() async -> PermissionState {
+    await Task.detached(priority: .userInitiated) {
+      SpotifyAppleEvents.automationPermission(askUserIfNeeded: true)
+    }.value
+  }
 }
 
 /// Live system probe. Reads — never prompts.
@@ -320,7 +346,8 @@ struct NativePermissionProbe: PermissionProbing, Sendable {
       inputMonitoring: inputMonitoringState(),
       screenRecording: CGPreflightScreenCaptureAccess() ? .granted : .denied,
       speechRecognition: speechRecognitionState(),
-      fullDiskAccess: fullDiskAccessState()
+      fullDiskAccess: fullDiskAccessState(),
+      spotifyAutomation: SpotifyAppleEvents.automationPermission(askUserIfNeeded: false)
     )
   }
 

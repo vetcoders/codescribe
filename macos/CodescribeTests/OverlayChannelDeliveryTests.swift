@@ -131,7 +131,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       OverlayConversationOwner(row: [
         "provider": "codex", "provider_session_id": "menu-session", "name": "james", "channel": "1",
         "lease_id": AgentPlaybackIdentity.leaseIdentifier(
-          provider: "codex", session: "menu-session"),
+          provider: "codex", session: "menu-session")!,
       ]))
     let state = OverlayState()
     state.applyChannelRoster([
@@ -155,7 +155,10 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     let conversation = try XCTUnwrap(roster.conversation(for: channel))
     let generation = state.captureGeneration
     state.conversationDrafts[conversation.id] = "retain my draft"
-    state.publishConversationText = { _, _, _, _ in XCTFail("Menu presentation is not sending") }
+    state.publishConversationText = { _, _, _, _ in
+      XCTFail("Menu presentation is not sending")
+      return .empty
+    }
     let action = try XCTUnwrap(roster.onShowAgentInMonitor)
     action(channel.channel)
     XCTAssertEqual(reveals, 1)
@@ -213,7 +216,10 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       desktopStore: OverlayIntercomDesktopStore(defaults: defaults))
     defer { controller.invalidate() }
     let generation = state.captureGeneration
-    state.publishConversationText = { _, _, _, _ in XCTFail("Opening is not sending") }
+    state.publishConversationText = { _, _, _, _ in
+      XCTFail("Opening is not sending")
+      return .empty
+    }
     state.conversationDrafts["0"] = "shared draft"
     state.conversationDrafts["10"] = "private retained text"
     for route in ["10", "0"] {
@@ -303,6 +309,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     state.conversationDrafts[inbox.id] = "This cannot be sent to myself"
     state.publishConversationText = { _, _, _, _ in
       XCTFail("An inbox with no linked agents has no recipient to publish to")
+      return .empty
     }
     await state.sendConversationText(inbox)
     XCTAssertEqual(state.conversationDrafts[inbox.id], "This cannot be sent to myself")
@@ -472,6 +479,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     state.publishConversationText = { owner, outgoing, _, _ in
       XCTAssertEqual(owner, empty.owner)
       publishedText = outgoing
+      return .empty
     }
     await state.sendConversationText(empty)
     let parts = ConversationDraft.split(try XCTUnwrap(publishedText))
@@ -640,7 +648,10 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       refused.fulfill()
       throw CocoaError(.fileWriteNoPermission)
     }
-    state.publishConversationText = { _, _, _, _ in XCTFail("Recovery must never send a message") }
+    state.publishConversationText = { _, _, _, _ in
+      XCTFail("Recovery must never send a message")
+      return .empty
+    }
     let generation = state.captureGeneration
     XCTAssertTrue(state.stageConversationAttachments([path], in: conversation))
     await fulfillment(of: [refused], timeout: 2)
@@ -2910,7 +2921,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       })
     panel.contentView?.layoutSubtreeIfNeeded()
     XCTAssertEqual(panel.frame.height, before, accuracy: 0.5)
-    XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
+    XCTAssertEqual(panel.frame.height, DictationOverlayWindow.miniHeight, accuracy: 0.5)
   }
 
   func testChannelChromeIsOutsideCollapseGateAndDragStillPrecedesGlass() throws {
@@ -3388,7 +3399,20 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       }
     }
     if name.hasPrefix("native-menu-") {
-      let expected = try XCTUnwrap(palette.mutedText.nsColor.usingColorSpace(.deviceRGB))
+      // The muted ink is the system's secondary label, translucent since the
+      // overlay took the system colours: what reaches the screen is that ink
+      // over the glyph's plate (the same ink at 12 %) over the sheet, not its
+      // raw components.
+      let ink = palette.mutedText
+      let plateRGB = OverlayColorToken(ink.rgb, alpha: ink.alpha * 0.12)
+        .composited(over: palette.desktopBackground)
+      let plate = OverlayColorToken(
+        UInt32((plateRGB.red * 255).rounded()) << 16
+          | UInt32((plateRGB.green * 255).rounded()) << 8 | UInt32((plateRGB.blue * 255).rounded()))
+      let muted = ink.composited(over: plate)
+      let expected = try XCTUnwrap(
+        NSColor(srgbRed: muted.red, green: muted.green, blue: muted.blue, alpha: 1)
+          .usingColorSpace(.deviceRGB))
       XCTAssertLessThan(
         max(
           abs(strongestColor.redComponent - expected.redComponent),
@@ -3598,21 +3622,36 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       XCTAssertEqual(style.colorScheme, palette.appearance == .dark ? .dark : .light)
       XCTAssertEqual(style.primaryText, palette.primaryText)
       XCTAssertEqual(style.bodyText, palette.bodyText)
-      XCTAssertEqual(style.mutedText, palette.mutedText)
+      XCTAssertEqual(palette.roster, style, "the roster's views read the same inks")
 
+      // The inks the roster draws: receipts wear the receipt ink and the
+      // header slot's glyphs (no longer the orange and green of before
+      // 2026-11-05). The waiting spinner is an icon at rest: the 3:1
+      // non-text floor (L8, 2026-11-06).
       for (role, foreground, minimum) in [
         ("channel name", style.primaryText, 4.5),
         ("receipt and dead follower", style.bodyText, 4.5),
-        ("secondary text", style.mutedText, 4.5),
+        ("secondary text", style.secondaryText, 4.5),
+        ("delivered and read marks", style.receipt, 4.5),
         ("open microphone", palette.listeningStatus, 4.5),
-        ("queued receipt", palette.processingStatus, 4.5),
-        ("confirmed receipt", palette.successStatus, 4.5),
-        ("toggle failure", palette.errorStatus, 4.5),
+        ("waiting for receipt glyph", OverlayAgentGlyph.awaitingReceipt.tone(in: palette), 3.0),
+        ("confirmed receipt glyph", OverlayAgentGlyph.acknowledged.tone(in: palette), 4.5),
+        // Status messages (round 5 decision (a), 2026-11-07): the words in
+        // the text ink; the colour is on the icon, below.
+        ("toggle failure text", OverlayStatusNotice.textInk(palette), 4.5),
       ] {
         let ratio = OverlayColorToken.contrastRatio(
           foreground: foreground, surface: style.surface, background: style.surface)
         XCTAssertGreaterThanOrEqual(
           ratio, minimum, "\(palette.appearance) \(role) contrast was \(ratio):1")
+      }
+      // A status icon carries a dark "!" on its red or orange fill.
+      for severity in [OverlayStatusNotice.Severity.error, .warning] {
+        let mark = OverlayColorToken.contrastRatio(
+          foreground: OverlayStatusNotice.markInk(palette),
+          surface: OverlayStatusNotice.fill(severity, palette), background: style.surface)
+        XCTAssertGreaterThanOrEqual(
+          mark, 3.0, "\(palette.appearance) \(severity) mark on its fill was \(mark):1")
       }
     }
   }

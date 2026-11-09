@@ -53,7 +53,7 @@ struct RippleMic: View {
         icon: state.icon,
         size: ComposerControlMetrics.glyphSize,
         weight: isActive ? .semibold : .regular,
-        color: isActive ? CSColor.terracottaText : CSColor.textTertiary
+        color: isActive ? CSColor.terracotta : CSColor.textTertiary
       )
     }
     .frame(
@@ -77,12 +77,12 @@ private struct ExpandingRing: View {
   }
 }
 
-/// Blinking terracotta caret shown while a turn streams.
+/// Blinking accent caret shown while a turn streams.
 struct BlinkCaret: View {
   @State private var on = true
   var body: some View {
     Rectangle()
-      .fill(CSColor.terracotta)
+      .fill(CSColor.chromeAccent)
       .frame(width: 7, height: 15)
       .opacity(on ? 1 : 0)
       .onAppear { withAnimation(CSMotion.blink) { on = false } }
@@ -275,7 +275,7 @@ struct MarkdownText: View {
   }
 
   /// A `- [x]` / `- [ ]` checklist row: a filled/empty SF Symbol checkbox in
-  /// place of the literal brackets, olive when done, faint when open. Done
+  /// place of the literal brackets, secondary ink when done, faint when open. Done
   /// items read slightly dimmer so an open task stands out.
   @ViewBuilder
   private func taskRow(indent: Int, done: Bool, text: String, isLast: Bool) -> some View {
@@ -284,7 +284,7 @@ struct MarkdownText: View {
         icon: done ? .checkboxOn : .checkboxOff,
         size: s - 1,
         weight: done ? .semibold : .regular,
-        color: done ? CSColor.oliveLight : CSColor.textTertiary
+        color: done ? CSColor.secondaryInk : CSColor.textTertiary
       )
       .frame(minWidth: 14, alignment: .trailing)
       inlineText(
@@ -478,16 +478,16 @@ struct MarkdownText: View {
         linkRanges.append(run.range)
       }
     }
-    // Inline code: mono + olive over a raised chip so it detaches from prose
+    // Inline code: mono over a raised chip so it detaches from prose
     // (also inside checkboxes and table cells, which route through here).
     for range in codeRanges {
       attr[range].font = CSFont.mono(fontSize - 1)
-      attr[range].foregroundColor = CSColor.oliveLight
+      attr[range].foregroundColor = baseColor
       attr[range].backgroundColor = Color.primary.opacity(CSAlpha.line)
     }
-    // Links use the operator's system accent and a subtle underline.
+    // Links use the system link role and a subtle underline.
     for range in linkRanges {
-      attr[range].foregroundColor = CSColor.chromeAccent
+      attr[range].foregroundColor = Color(nsColor: .linkColor)
       attr[range].underlineStyle = .single
     }
     return attr
@@ -593,9 +593,9 @@ enum CalloutKind {
 
   var tint: Color {
     switch self {
-    case .note: return CSColor.secondaryInk  // neutral (palette carries no blue)
-    case .tip: return CSColor.oliveLight
-    case .important: return CSColor.terracottaDeep
+    case .note: return CSColor.secondaryInk
+    case .tip: return CSColor.secondaryInk
+    case .important: return CSColor.chromeAccent
     case .warning: return CSColor.amberLight
     case .caution: return CSColor.dangerLight
     }
@@ -735,8 +735,8 @@ private struct CodeBlockView: View {
         CSIconView(icon: copied ? .check : .copy, size: 9, weight: .semibold)
         Text(
           copied
-            ? String(localized: "copied", comment: "Button state after copying")
-            : String(localized: "copy", comment: "Button: copy this code block")
+            ? String(localized: "Copied", comment: "Button state after copying")
+            : String(localized: "Copy", comment: "Button: copy this code block")
         )
         .font(CSFont.ui(10, .semibold))
       }
@@ -746,10 +746,10 @@ private struct CodeBlockView: View {
     .buttonStyle(.plain)
     .conversationActionHover(
       restingColor: copied
-        ? CSColor.oliveLight.opacity(0.8)
+        ? CSColor.secondaryInk
         : OverlayAppearancePalette.resolve(colorScheme).mutedText.color,
       hoverColor: copied
-        ? CSColor.oliveLight : OverlayAppearancePalette.resolve(colorScheme).primaryText.color
+        ? CSColor.secondaryInk : OverlayAppearancePalette.resolve(colorScheme).primaryText.color
     )
     .accessibilityLabel(Text(verbatim: codeCopyHint))
     .accessibilityHint(Text("Copy code"))
@@ -757,7 +757,7 @@ private struct CodeBlockView: View {
 
   private var codeCopyHint: String {
     copied
-      ? String(localized: "copied", comment: "Button state after copying")
+      ? String(localized: "Copied", comment: "Button state after copying")
       : String(localized: "Copy code")
   }
 }

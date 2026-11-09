@@ -149,15 +149,15 @@ DH1's explicit pairing operation creates a private regular file
 never part of an incoming projection. It has schema `codescribe.station-pair.v1`
 and these required fields:
 
-| Field                            | Contract                                                                                                                                                                                                        |
-| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pair_id`                        | Shared opaque 24-lowercase-hex pairing identity.                                                                                                                                                                |
-| `home_host_id`                   | One of the two host IDs; identifies the existing native thread's home.                                                                                                                                          |
-| `owner`                          | Exactly `provider`, `provider_session_id`, `lease_id`. Provider is lowercase, native session is exact, lease is the first 32 hex digits of SHA-256 of `provider + NUL + session`.                               |
-| `bridge_root`, `local_bus`       | Canonical absolute local paths, chosen by local admission.                                                                                                                                                      |
-| `local`, `peer`                  | Each has `host_id` (32 lowercase hex), `generation_id` (canonical nonnil UUID stream ID), `channel` (`1`–`9`).                                                                                                  |
-| `transitions`                    | At most 64 records with `host_id`, `from`, `to`, `receipt_id`. Each names a canonical old-to-new stream receipt for one paired host; chains must reach that host's current generation, without cycles or forks. |
-| `guest_broadcast_off_receipt_id` | 24-lowercase-hex receipt for the guest's durably acknowledged initial OFF admission.                                                                                                                            |
+| Field                            | Contract                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pair_id`                        | Shared opaque 24-lowercase-hex pairing identity.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `home_host_id`                   | One of the two host IDs; identifies the existing native thread's home.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `owner`                          | Exactly `provider`, `provider_session_id`, `lease_id`. Provider is an ASCII client token: ASCII whitespace trimmed, `[A-Za-z0-9][A-Za-z0-9-]{0,63}`, ASCII lower-cased; any other provider, any non-ASCII character included, is refused at `cs-bus --provider` and by every reader, never folded (`provider_token` in `scripts/bus-demux.py` states the rule), native session is exact and never trimmed, lease is the first 32 hex digits of SHA-256 of `provider + NUL + session`; `scripts/tests/fixtures/lease-identity-vectors.json` pins the rule in all three languages. |
+| `bridge_root`, `local_bus`       | Canonical absolute local paths, chosen by local admission.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `local`, `peer`                  | Each has `host_id` (32 lowercase hex), `generation_id` (canonical nonnil UUID stream ID), `channel` (`1`–`9`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `transitions`                    | At most 64 records with `host_id`, `from`, `to`, `receipt_id`. Each names a canonical old-to-new stream receipt for one paired host; chains must reach that host's current generation, without cycles or forks.                                                                                                                                                                                                                                                                                                                                                                  |
+| `guest_broadcast_off_receipt_id` | 24-lowercase-hex receipt for the guest's durably acknowledged initial OFF admission.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 
 The private bridge root contains `host-instance.json` with schema
 `codescribe.host-instance.v1` and durable opaque `host_id`, allocated once by
@@ -648,12 +648,11 @@ that has no later `session_ended` (or legacy `transcript_sealed`) for that
 same `session_id`. Historical `session_started` rows without terminals are
 abandoned takes — crash residue or buses written before the controller
 always published an end — not a live recording.
-`scripts/install-if-idle.sh` keys on that current pair, plus any unpaired
-`source=cli_file_verdict` session (the CLI does not hold the install flock),
-and on the agent-turn lease (`~/.codescribe/agent-turn.lock`, held shared by
-the app for the whole turn). A merely running app does not refuse install
-(Founder, 2026-09-08); the process-lifetime runtime lock only stops a _new_
-app start while an idle-time install is copying the bundle. Never tear down
+`bus-demux --assert-install-idle` keys on that current pair, plus any
+unpaired `source=cli_file_verdict` session (the CLI holds no app lock).
+Idle-gated restarts also take the agent-turn lease
+(`~/.codescribe/agent-turn.lock`, held shared by the app for the whole turn).
+A merely running app is not busy (Founder, 2026-09-08). Never tear down
 the app mid-take or mid-turn; never refuse install forever because an old
 session lacked an end line.
 
@@ -1491,6 +1490,29 @@ naming someone else does not suppress the existing name gate: rows still reach
 a follower if the transcript text addresses them by assignment, exact match,
 or fuzzy discovery. Rows without `audience` behave exactly as before.
 
+Spoken channel-zero messages have a minimum of three words (Maciej,
+2026-11-08). The follower's `consider` admission gate suppresses a sealed
+`mode: agent`, `audience: "*"` snapshot whose capture session belongs to
+channel `0` when its complete text contains fewer than three words. Unicode
+letter/digit words count, retaining internal apostrophes and hyphens;
+punctuation and `<unclear>` tags do not count. This keeps accidental
+microphone interjections such as `Dziękuję!` or `Dzień dobry` out of held
+delivery, terminal pending envelopes, seal hooks and native wakeups.
+It preserves the committed transcript and source history. Typed and peer
+messages, ordinary dictation, channels 1–9, live drafts and messages carrying
+attachments bypass this length gate. A short draft may grow into a message
+of three or more words before closing. A refused closing snapshot retires
+only its own previews, identified by `draft_key`, from persisted pending and
+the buffered human output. The same rule removes a preview waiting in the
+current decoded batch or selected as the `--once` result. Removing pending
+previews is persisted without an ACK or a synthetic terminal message, so
+repeated interjections cannot fill the mailbox or reappear on resume.
+An earlier read pass may already have printed a live preview on `--watch`;
+the refusal cannot recall that output. Such previews do not wake
+`--until-event`, and the refused take leaves no preview in the mailbox.
+Unrelated previews and accepted terminal/held deliveries retain their
+existing recovery and control behavior.
+
 The digit that produced the row is configured in
 `vc.agent-audience-binding.v1.json` under the agent-bridge home
 (`CODESCRIBE_AGENT_BRIDGE_HOME`, otherwise `~/.codescribe/agent-bridge`).
@@ -1498,6 +1520,42 @@ Each digit `1`–`9` names one agent session (`audience`, `provider`,
 `provider_session_id`). Digit `0` is the broadcast and does not need a row
 in that file. A missing or malformed file refuses the channel instead of
 opening the microphone.
+
+`audience` is the casefolded identity: `cs-bus --attach --name Kaja` binds
+`kaja`, and every comparison (occupancy, `--takeover` of the same name, `--to`
+addressing, the follower's audience gate, voice profiles) casefolds both
+sides. The spelling the agent gave is kept beside it as `display_name` on the
+binding entry, the lease (`codescribe.agent-bridge.lease.v1`), the attach
+receipt and `--status`, and it travels with messages for people to read: the
+peer sender block (`sender.display_name`) and the published target
+(`target.recipients[].name` as that spelling), the typed message's owner
+block and `sent_to`, and the controller's frozen channel recipients carry the
+spelling next to the unchanged `audience`. A peer message's frozen
+`recipients[]` entries carry no `display_name`: their `name` is the
+casefolded `audience` (`scripts/bus-demux.py`, the peer publication). Readers
+that match (seals, acks, receipts, routing) keep using `audience`; surfaces
+that show a name prefer `display_name` and fall back to `audience` for
+bindings written before it existed (Founder, 2026-11-04: the Bus window
+showed every agent in lowercase). A re-attach of the same session with
+`--takeover` refreshes the spelling without changing the identity.
+
+The field `name` is therefore a label in some records and the identity in
+others:
+
+| Record                                                                                | `name` carries                         | Spelling beside it                         |
+| ------------------------------------------------------------------------------------- | -------------------------------------- | ------------------------------------------ |
+| Lease (`codescribe.agent-bridge.lease.v1`)                                            | identity (casefolded)                  | `display_name`                             |
+| Per-copy receipts (`<delivery_id>.delivered.json`, `.read.json`; `receipt_recipient`) | identity (casefolded; `audience` wins) | `display_name` when it casefolds to `name` |
+| `--status`                                                                            | identity (casefolded)                  | `display_name`                             |
+| Peer message frozen `recipients[]`                                                    | identity (`audience`)                  | none                                       |
+| `binding_identity`                                                                    | spelling                               | `audience` beside it is the identity       |
+| `sent_to`, `message_published` `target.recipients[]`                                  | spelling                               | `audience` where present                   |
+| Rust `frozen_channel_recipients`                                                      | spelling                               | `display_name`; `audience` is the identity |
+
+Rule for consumers: compare identities by `audience` or by a casefolded key
+(`name` casefolded together with the channel, as `--receipts` does), never
+by `name` with `==`; `Bruno` in `sent_to` and `bruno` in a lease are one
+agent.
 
 ### Broadcast policy
 
@@ -1648,8 +1706,9 @@ pause frozen at open (`agent_channel.send_pause_sec`, or the env override
 `CODESCRIBE_CHANNEL_AUTOSEAL_SECS`, rounded up; `0` = off).
 
 Under `agent_channel.session_policy = continuous` (default) each message has
-its own document, `<session_id>-s<n>` (`n` from 1), with its own ledger,
-archive and transcript rows. When the send pause elapses after the
+its own document, `<session_id>-s<n>` (`n` from 1), with its own reducer and
+transcript rows on the shared channel capture (see "Shared channel recognition
+and participation intervals"). When the send pause elapses after the
 message's measured Silero speech-end edge, the message closes on a
 `state: segment_sealed` row (`loud: false`, `session_id` = the message
 document, `opened_at` = the message's start, `channel_session_id`,
@@ -1657,7 +1716,10 @@ document, `opened_at` = the message's start, `channel_session_id`,
 this row; the overlay ignores it because its `opened_at` is not the open
 session's. The capture subscription stays the same, the next message starts
 on it, and messages are delivered in order even when an earlier one is still
-being finished. The final held snapshot of each message carries
+being finished. A channel alone on the shared capture turns the capture over at
+that boundary (a fresh capture, ledger and archive, as one recognizer per
+message always had); with other channels listening the capture keeps running and
+the next message's interval starts at the boundary sample. The final held snapshot of each message carries
 `delivered_revision` (`committed` for `segment_finish = off`, `light_plus`,
 or `formatter`) and, when a formatter pass missed `format_wait_sec`, failed
 or was stale, `delivered_revision_fallback` (`formatter_timeout`,
@@ -2036,14 +2098,14 @@ user heard it. Every such fact is one private file under
 `runtime/receipts/<message_id>/`, written once by the process that produces
 the fact and never rewritten, replaced or removed by any other process:
 
-| File                           | Writer                                                                                                              | Content                                                                                                                                                                                |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<delivery_id>.delivered.json` | the follower, when the copy enters `pending` (the backfill, for history)                                            | `name`, `channel`, `lease_id`, `provider`, `provider_session_id`, `bus`, `wake: on\|quiet` (`null` only from the backfill), `at`, `sent_to` when the copy carries the publisher's list |
-| `<delivery_id>.read.json`      | `cs-bus --ack`                                                                                                      | the same identity fields and `read_at`                                                                                                                                                 |
-| `<delivery_id>.skipped.json`   | the follower, instead of `delivered`, when channel zero is `off`                                                    | the same identity fields, `policy: off`, `at`                                                                                                                                          |
-| `withdrawn.<delivery_id>.json` | the follower, on a `withdraw` control of a held copy                                                                | `control_id`, `at`                                                                                                                                                                     |
-| `playback.<ticket>.json`       | the reply player, at the ticket's first terminal state                                                              | `state`, `reason`, `spoken`, `provider`, `provider_session_id`, `at`                                                                                                                   |
-| `sent.json`                    | the helper publisher of a channel-zero text (typed `--send-text --channel 0`, peer `--send --to 0`), at publication | `sent_to` as admitted at sending, `bus` (the sender's bus for a peer text, null for typed text), `at`                                                                                  |
+| File                           | Writer                                                                                                              | Content                                                                                                                                                                                                                                                     |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<delivery_id>.delivered.json` | the follower, when the copy enters `pending` (the backfill, for history)                                            | `name`, `channel`, `lease_id`, `provider`, `provider_session_id`, `bus`, `wake: on\|quiet` (`null` only from the backfill), `at`, `sent_to` when the copy carries the publisher's list, `display_name` when the frozen entry or the binding spells the name |
+| `<delivery_id>.read.json`      | `cs-bus --ack`                                                                                                      | the same identity fields and `read_at`                                                                                                                                                                                                                      |
+| `<delivery_id>.skipped.json`   | the follower, instead of `delivered`, when channel zero is `off`                                                    | the same identity fields, `policy: off`, `at`                                                                                                                                                                                                               |
+| `withdrawn.<delivery_id>.json` | the follower, on a `withdraw` control of a held copy                                                                | `control_id`, `at`                                                                                                                                                                                                                                          |
+| `playback.<ticket>.json`       | the reply player, at the ticket's first terminal state                                                              | `state`, `reason`, `spoken`, `provider`, `provider_session_id`, `at`                                                                                                                                                                                        |
+| `sent.json`                    | the helper publisher of a channel-zero text (typed `--send-text --channel 0`, peer `--send --to 0`), at publication | `sent_to` as admitted at sending, `bus` (the sender's bus for a peer text, null for typed text), `at`                                                                                                                                                       |
 
 Every file carries `schema: codescribe.message-receipt.v1`, `kind` and
 `message_id`; none carries message text or WAV paths. The identity fields
@@ -2095,7 +2157,11 @@ did. Every member of `sent_to` without any file is listed as
 recorded it yet, or the reader predates this generation. `denominator` is
 the number of agents on `sent_to` plus every agent delivered to or read
 outside that list, minus every agent whose copy was skipped (one agent by
-name and channel, however many deliveries reached it); `no_receipt` counts,
+casefolded name and channel, however many deliveries reached it, and however
+the name was spelt: `sent.json` carries the sender's spelling of each name
+(the binding's `display_name`), the readers' files the lease's casefolded
+name, and `recipients[].name` shows the spelling the file's `display_name`
+or the list carries); `no_receipt` counts,
 `skipped` is shown but never counted. The list is frozen at publication
 and a skip is recorded at delivery, so a member of `sent_to` can turn out
 skipped: the skip wins, the entry stays `skipped`, and the count does not
@@ -2248,6 +2314,122 @@ It does not alter `recipients`, address selection, message identity, ACK/CAS,
 transcript text, ledger decisions, microphone ownership or recognition. Remote
 hosts do not implicitly join a local controller's roster.
 
+## Shared channel recognition and participation intervals
+
+Every Live agent channel and ordinary dictation open at the same time listen to ONE capture
+subscriber, ONE `transcription_session`, ONE `AcousticLedger` and ONE archive
+(`StreamingRecorder::begin_channel_session` / `join_channel_session` in
+`core/audio/streaming_recorder.rs`). `RecordingController` stays the only
+microphone owner. The first opener fixes the capture namespace and immutable
+recognition/formatting settings: `agent-channels-<uuid>` when an agent opens it,
+or `dictation-capture-<document UUID>` when dictation opens it. The capture id
+is distinct from every document id even for the initiator. Neither start
+order adds another PCM subscriber, decoder or archive for ordinary dictation.
+The stream, ledger and archive run until the last participant leaves.
+Each channel keeps its own reducer, bus session
+(`agent-channel-<digit>-<uuid>`, `-s<n>` per message), receipts and send hold;
+the bus and reducer authenticate revisions against the capture session.
+Ordinary dictation keeps its own UUID, `Dictation` bus mode, presentation,
+delivery target and version history. Its owner is not a fabricated agent;
+its demux delivery seat is Primary in either start order. UI edits, formatting
+and navigation name that document UUID; the emitter validates it and resolves
+the physical capture namespace before reducer/ledger admission. A reply names
+the document again, while occurrence coordinates keep their physical identity.
+
+The first opener also fixes whether the shared producer formats live. A later
+dictation participant consumes that same stream and its frozen settings. If the
+source does not format live, dictation uses the existing one-pass terminal
+formatter at Stop, retaining its normal delivery target. Formatter-pending
+notifications reach attached and settling sinks; a new attachment or message
+handover inherits the current shared flag, without backfilling earlier text.
+
+What differs per channel is the interval it listened. The capture clock is the
+count of PCM samples the shared session actually received, the same clock its
+ledger stamps on every occurrence. A join at sample `t` opens `[t, …)`; a
+detach at `t` closes it. `core/audio/channel_demux.rs` attributes each
+occurrence by its sample midpoint, so a word split by a join or leave belongs to
+exactly one side while the decoder keeps its acoustic context. Speech that ended
+before a join is never backfilled; speech after a detach never reaches that
+channel, even when the same owner joins again with a new interval. Text is never
+used to attribute, merge or deduplicate.
+
+A continuous channel's message boundary is a participation boundary. With other
+channels listening, the previous message's interval closes at the boundary
+sample and the next message's reducer attaches at that same sample with the same
+delivery seat (`ChannelDemux::hand_over`). A channel alone on the stream turns
+it over instead: the previous capture ends with its full terminal settlement and
+the next message opens a fresh capture.
+
+A detached interval freezes when the decoder's covered-sample frontier reaches
+the detach sample or when the shared capture ends. The frontier includes measured
+silence and respects the window-plan horizon, queued/submitted decoder jobs and
+the session sample end; missing Silero falls back to the work-plan horizon.
+An in-flight DT witness holds its starting sample until return or its existing
+30-second request budget expires. Unsealed owners, speech gaps, open utterances
+and held Apple words do not block decoder coverage. A newer occurrence alone
+cannot advance it. `CHANNEL_DETACH_SETTLE_BUDGET` (10 s) only logs an overrun:
+the participant stays settling until coverage or capture end. The normal 9-second
+window / 3-second step requires under 12 seconds of further capture audio plus
+queue/inference; stalled decoder work still has no finite wall-clock bound.
+A late occurrence update inside a settled interval is counted and warned once
+for that seat, with its range and settlement outcome; the seat is never reopened
+or backfilled. The message then
+publishes its closing projection and seal as before. A message closed while the
+capture keeps running receives no terminal ledger seal of its own, so its
+closing row carries `coverage: refused` unless an occurrence seal already
+certified it; another participant's terminal receipt never seals it.
+
+For a capture with more than one participation, the demux forwards a terminal
+`LedgerSeal` only to unsettled seats that own every sealed occurrence by the
+same midpoint rule. Each withheld delivery logs the seat, capture and occurrence
+counts. Occurrence seals and other settlement events retain their routes. A
+capture with one participation keeps its terminal seal route unchanged, including
+tail occurrences beyond its detach sample.
+
+Bus rows carry the identities:
+
+- `codescribe.channel-recipients.v1` adds `capture_session_id` and
+  `delivery_seat` (`primary` | `projection`). The first open seat of a logical
+  agent session (`provider`, `provider_session_id`) executes delivery; another
+  seat of the same session in this capture only projects history.
+- The `segment_sealed` message row and the `sealed` channel-session row add
+  `participation`: `{capture_session_id, start_sample, end_sample, delivery_seat}`.
+- Evidence rows keep the channel's own `session_id`; occurrence coordinates name
+  the shared capture.
+
+The shared WAV and its retention lease belong to `capture_session_id`, never to
+a channel session, so no follower maps another channel's audio to its own take.
+When more than one interval shared it, the take store records no single
+transcript for it.
+An ordinary Stop uses the existing `ClosedChannel` settlement through its
+retained `ClosedTake`; it does not emit capture EOF to make one document
+terminal. `EventSink::close_participation(capture_session_id, epoch)` defaults
+to refusal. The take's presentation sink validates the exact opened identity
+and closes only its settled reducer lifecycle and direct-document capability,
+then acknowledges the existing publication FIFO. It does not seal the ledger.
+If dictation is the only interval, its exact shared WAV is also its document
+audio. Otherwise the common WAV stays capture-owned and the dictation document
+is saved through the existing text history and version mirror. It has no exact
+per-interval WAV or Retranscribe input; a whole shared recording is never
+misrepresented as that document's audio. Text operations remain available.
+
+Channel buses keep the quiet contract in both `publish_revision` and
+`publish_direct_revision`: one start row per document, terminal publication,
+manual edits and coverage verdicts. Intermediate Raw revisions and corrections
+still reach the HUD and in-process consumers; shared capture authentication does
+not authorize extra persisted rows. The controller finishes each settled message
+independently under the selected segment-finish policy. An absent or failed
+formatter falls back to Light+; pending formatting is bounded by `format_wait_sec`
+and then uses the same fallback. Final delivery and send hold follow that bounded
+finish. Finishing one detached reducer marks only its lifecycle terminal and
+never seals the shared ledger or another seat. The last seat of a capture with
+more than one participation takes this same finish path even when its terminal
+seal was withheld, so its formatter can run. A lone seat keeps the existing
+terminal lifecycle condition.
+
+`co_audience` (above) stays an informational roster snapshot. Participation is
+the sample interval in the sealed row.
+
 ## Native provider queue receipt
 
 The queue message's content depends on who the normalizer attributed the
@@ -2383,6 +2565,20 @@ The overlay reader ignores archive metadata while that exact owner remains
 bound, including a failed binding write or deliberate reattachment. Otherwise
 the conversation remains in saved conversations; an empty history also retains
 an archive entry. Reusing the channel exposes the new owner independently.
+
+The app archives through the controller only: Swift calls
+`archive_agent_channel` over UniFFI and starts no process of its own. The
+controller holds `RecordingController`'s serial lock, the lock that also
+guards opening a channel and autoseal, and refuses to archive a channel that
+is open (`app/controller/agent_channel.rs`).
+
+## Agent model metadata
+
+The model shown for an agent comes only from that exact provider session's
+native transcript: Codex's `session_meta` with `turn_context.model`, or
+Claude's verified `sessionId` with its assistant model. Metadata naming another
+session is rejected, and unrelated messages or global configuration never
+supply a model (`scripts/bus-demux.py`).
 
 ## Agent panel focus in Frame or a terminal tab
 

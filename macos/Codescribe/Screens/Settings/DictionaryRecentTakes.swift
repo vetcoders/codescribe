@@ -32,9 +32,12 @@ struct RecentTake: Identifiable, Sendable, Equatable {
   }
 
   /// Where the take went, derived from the session name the controller
-  /// assigns: `agent-channel-<n>-<uuid>` for the agent bus, anything else is
-  /// dictation into an app.
+  /// assigns: `agent-channels-<uuid>` for shared channel captures, the old
+  /// `agent-channel-<n>-<uuid>` for captures retained before text fan-out.
   var destination: String {
+    if id.hasPrefix("agent-channels-") {
+      return String(localized: "Agents")
+    }
     if let channel = RecentTake.agentChannel(session: id) {
       return String(localized: "Agent · channel \(channel)", comment: "Recent take destination")
     }

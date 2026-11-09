@@ -104,6 +104,7 @@ final class OnboardingViewModel: ObservableObject {
   @Published private(set) var finishPending = false
   /// Scopes requested in-app or opened in System Settings in this process.
   @Published private(set) var requestedPermissions: Set<PermissionKind> = []
+  @Published private(set) var pendingPermissionRequests: Set<PermissionKind> = []
   private var admissionGeneration: UInt64 = 0
   private var whisperDownloadChangeSink: AnyCancellable?
 
@@ -680,6 +681,7 @@ final class OnboardingViewModel: ObservableObject {
     for kind: PermissionKind,
     client: any PermissionRequesting = NativePermissionRequestClient()
   ) {
+    guard !pendingPermissionRequests.contains(kind) else { return }
     let repair = kind.repair(for: permissions.state(kind))
     guard repair.requestsNatively else {
       if repair.opensSettings {
@@ -692,8 +694,10 @@ final class OnboardingViewModel: ObservableObject {
       return
     }
     requestedPermissions.insert(kind)
+    pendingPermissionRequests.insert(kind)
     let permissionProbe = probe
     Task { @MainActor [weak self] in
+      defer { self?.pendingPermissionRequests.remove(kind) }
       // The request's return value is not a grant; only the probe that
       // follows decides what the row shows.
       _ = await kind.requestInApp(client: client, probe: permissionProbe)

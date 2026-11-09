@@ -234,4 +234,56 @@ final class MessageTimestampTests: XCTestCase {
     XCTAssertEqual(restored[0].timestamp, Date(timeIntervalSince1970: 1_791_729_600))
     XCTAssertNil(restored[1].timestamp)
   }
+
+  // MARK: - How long ago an agent was there (hover card, 2026-11-07)
+
+  /// The thresholds of `ago` in both interface languages: under a minute
+  /// is now, whole minutes under an hour, whole hours under a day, then
+  /// yesterday with the clock, then the full date and clock.
+  func testAgoThresholdsInBothLanguages() {
+    let now = instant("2026-11-07T08:10:00Z")  // 09:10 in Warsaw
+    let cases: [(TimeInterval, String, String)] = [
+      (59, "now", "teraz"),
+      (60, "1 min ago", "1 min temu"),
+      (5 * 60 + 59, "5 min ago", "5 min temu"),
+      (59 * 60, "59 min ago", "59 min temu"),
+      (60 * 60, "1 h ago", "1 godz. temu"),
+      (23 * 3_600, "23 h ago", "23 godz. temu"),
+      (23 * 3_600 + 59 * 60, "23 h ago", "23 godz. temu"),
+      (24 * 3_600, "yesterday 09:10", "wczoraj 09:10"),
+      (25 * 3_600 + 10 * 60, "yesterday 08:00", "wczoraj 08:00"),
+      (33 * 3_600 + 51 * 60, "2026-11-05 23:19", "2026-11-05 23:19"),
+      (-30, "now", "teraz"),
+    ]
+    for (elapsed, english, polish) in cases {
+      let date = now.addingTimeInterval(-elapsed)
+      XCTAssertEqual(
+        MessageTimestamp.ago(
+          date, now: now, calendar: calendar(), locale: Locale(identifier: "en_GB"),
+          language: Locale(identifier: "en")),
+        english, "\(elapsed) s, English")
+      XCTAssertEqual(
+        MessageTimestamp.ago(
+          date, now: now, calendar: calendar(), locale: Locale(identifier: "pl_PL"),
+          language: Locale(identifier: "pl")),
+        polish, "\(elapsed) s, Polish")
+    }
+  }
+
+  /// The day word follows the local calendar: 23 h before 09:10 is still
+  /// hours, and 24 h before is yesterday, not the day before.
+  func testAgoYesterdayIsTheLocalCalendarsPreviousDay() {
+    let now = instant("2026-11-07T08:10:00Z")
+    let date = now.addingTimeInterval(-(24 * 3_600 + 9 * 3_600))  // 00:10 on Nov 6, Warsaw
+    XCTAssertEqual(
+      MessageTimestamp.ago(
+        date, now: now, calendar: calendar(), locale: Locale(identifier: "en_GB"),
+        language: Locale(identifier: "en")),
+      "yesterday 00:10")
+    XCTAssertEqual(
+      MessageTimestamp.ago(
+        date, now: now, calendar: calendar("UTC"), locale: Locale(identifier: "en_GB"),
+        language: Locale(identifier: "en")),
+      "2026-11-05 23:10", "in UTC the same instant is two days back")
+  }
 }

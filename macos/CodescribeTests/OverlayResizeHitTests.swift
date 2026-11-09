@@ -230,11 +230,11 @@ final class OverlayResizeHitTests: XCTestCase {
     XCTAssertFalse(panel.beginUserResize(edge: .left, at: .zero))
   }
 
-  // MARK: Compact width follows the channel map
+  // MARK: The expanded bar is sized from its content
 
-  /// Compact's 410 pt is the floor and, with no channel mapped, its whole
-  /// width. With a map it settles to its natural width: the floor plus the
-  /// measured chips, so the chips show by default.
+  /// Without a map the bar is the classic 410 × 46 strip. With one it is as
+  /// wide and as tall as its measured content (bus brief 2026-11-04 §8,
+  /// §11C): `DictationOverlayWindow.midiBarGeometry`, owned by the window.
   private func mapRosterRow(_ channel: String, _ name: String) -> CsChannelRosterState {
     let zero = channel == "0"
     return CsChannelRosterState(
@@ -252,52 +252,61 @@ final class OverlayResizeHitTests: XCTestCase {
         as? FloatingOverlayPanel)
     state.setPresentationMode(.midi)
     panel.settleFrameTransition()
-    // Park the strip near the top-right corner, so growth to the left stays on
-    // screen and display containment does not move the pin.
+    // Park the bar near the top-right corner, so growth to the left and a
+    // second row below stay on screen and display containment does not move
+    // the pin.
     let visible = try XCTUnwrap((panel.screen ?? NSScreen.main)?.visibleFrame)
     panel.setFrameOrigin(
-      NSPoint(x: visible.maxX - 40 - panel.frame.width, y: visible.maxY - 40 - panel.frame.height))
+      NSPoint(
+        x: visible.maxX - 40 - panel.frame.width, y: visible.maxY - 120 - panel.frame.height))
     return (state, panel)
   }
 
   @MainActor
-  private func naturalMidiWidth(_ state: OverlayState, _ panel: FloatingOverlayPanel) -> CGFloat {
-    DictationOverlayWindow.midiNaturalWidth(
+  private func barGeometry(
+    _ state: OverlayState, _ panel: FloatingOverlayPanel
+  ) -> OverlayMidiBarGeometry {
+    DictationOverlayWindow.midiBarGeometry(
       map: state.channelMapLayoutModel, textScale: 1,
       visibleWidth: (panel.screen ?? NSScreen.main)?.visibleFrame.width)
   }
 
   @MainActor
-  func testCompactIsTheFloorWithoutAMapAndItsNaturalWidthWithOne() throws {
+  func testBarIsClassicWithoutAMapAndItsMeasuredContentWithOne() throws {
     let (state, panel) = try makeMidiMapPanel(key: "Resize.midiMap.natural")
     defer { panel.invalidatePresence() }
+    XCTAssertEqual(barGeometry(state, panel), .classic)
     XCTAssertEqual(panel.frame.width, DictationOverlayWindow.midiSize.width, accuracy: 0.5)
-    XCTAssertEqual(naturalMidiWidth(state, panel), DictationOverlayWindow.midiSize.width)
+    XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
+    XCTAssertEqual(panel.minSize, DictationOverlayWindow.midiSize, "the classic floor")
     let pin = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
 
     state.applyChannelRoster([
       mapRosterRow("0", "All"), mapRosterRow("2", "Miksa"), mapRosterRow("3", "Igor"),
     ])
-    let natural = naturalMidiWidth(state, panel)
-    XCTAssertGreaterThan(natural, DictationOverlayWindow.midiSize.width)
-    XCTAssertEqual(panel.frame.width, natural, accuracy: 0.5)
-    XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
+    let bar = barGeometry(state, panel)
+    XCTAssertNotEqual(bar, .classic)
+    XCTAssertEqual(panel.frame.width, bar.naturalWidth, accuracy: 0.5)
+    XCTAssertEqual(panel.frame.height, bar.singleRowHeight, accuracy: 0.5, "two agents: one row")
+    XCTAssertEqual(panel.midiSize.width, bar.naturalWidth, accuracy: 0.5)
     XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5, "the fold button keeps its point")
-    XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5)
-    XCTAssertEqual(panel.minSize, DictationOverlayWindow.midiSize, "410 × 46 stays the floor")
+    XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5, "the top edge stays")
     XCTAssertEqual(
-      DictationOverlayWindow.minimumSize(for: .midi), DictationOverlayWindow.midiSize)
+      panel.minSize,
+      NSSize(width: bar.minimumWidth, height: bar.height(forWidth: bar.minimumWidth)),
+      "the floor is the bar's measured minimum, not 410")
 
-    // Leaving and re-entering compact lands on the same natural width.
+    // Leaving and re-entering the bar lands on the same measured size.
     state.setPresentationMode(.mini)
     panel.settleFrameTransition()
     state.setPresentationMode(.midi)
     panel.settleFrameTransition()
-    XCTAssertEqual(panel.frame.width, natural, accuracy: 0.5)
+    XCTAssertEqual(panel.frame.width, bar.naturalWidth, accuracy: 0.5)
+    XCTAssertEqual(panel.frame.height, bar.singleRowHeight, accuracy: 0.5)
   }
 
   @MainActor
-  func testCompactGrowsAndShrinksWithTheRosterAtItsPin() throws {
+  func testBarGrowsAndShrinksWithTheRosterAtItsPin() throws {
     let (state, panel) = try makeMidiMapPanel(key: "Resize.midiMap.roster")
     defer { panel.invalidatePresence() }
     let three = [mapRosterRow("0", "All"), mapRosterRow("2", "Miksa"), mapRosterRow("3", "Igor")]
@@ -306,8 +315,8 @@ final class OverlayResizeHitTests: XCTestCase {
     let pin = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
 
     state.applyChannelRoster(three + [mapRosterRow("5", "Kuba")])
-    XCTAssertEqual(panel.frame.width, naturalMidiWidth(state, panel), accuracy: 0.5)
-    XCTAssertGreaterThan(panel.frame.width, threeWidth, "a new channel grows the strip")
+    XCTAssertEqual(panel.frame.width, barGeometry(state, panel).naturalWidth, accuracy: 0.5)
+    XCTAssertGreaterThan(panel.frame.width, threeWidth, "a new channel grows the bar")
     XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5)
     XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5)
 
@@ -315,10 +324,9 @@ final class OverlayResizeHitTests: XCTestCase {
     XCTAssertEqual(panel.frame.width, threeWidth, accuracy: 0.5, "a channel that leaves shrinks it")
     XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5)
 
-    // An open microphone does not resize the strip: the badge adds no width,
-    // and the natural width already holds channel 0's chip, which leads the
-    // row while the microphone broadcasts. The width is compared on the
-    // projection.
+    // An open microphone does not resize the bar: the dot overlaps the
+    // circle. Channel 0's chip leads the map at rest as well, so a broadcast
+    // only lights it and resizes nothing. Compared on the projection.
     func map(open: Bool, broadcast: Bool = false) -> OverlayChannelMapModel {
       OverlayChannelMapModel(
         channels: [
@@ -332,26 +340,26 @@ final class OverlayResizeHitTests: XCTestCase {
             open: open, loud: false, autosealDeadline: nil, followerAlive: true),
         ], selectableDigits: [], unreadDigits: [])
     }
-    let closed = DictationOverlayWindow.midiNaturalWidth(map: map(open: false), textScale: 1)
-    XCTAssertEqual(
-      DictationOverlayWindow.midiNaturalWidth(map: map(open: true), textScale: 1), closed)
-    XCTAssertEqual(
-      DictationOverlayWindow.midiNaturalWidth(map: map(open: false, broadcast: true), textScale: 1),
-      closed, "broadcasting on 0 keeps the width")
-    let spacing = OverlayChannelMapView.chipSpacing
+    func natural(_ map: OverlayChannelMapModel) -> CGFloat {
+      DictationOverlayWindow.midiBarGeometry(map: map, textScale: 1).naturalWidth
+    }
+    let closed = natural(map(open: false))
+    XCTAssertEqual(natural(map(open: true)), closed, "the open-channel dot adds no width")
     let broadcasting = map(open: false, broadcast: true)
     XCTAssertEqual(broadcasting.chips.map(\.digit), ["0", "3"])
-    XCTAssertLessThanOrEqual(
-      DictationOverlayWindow.midiSize.width + OverlayChannelMapView.leadingGap
-        + broadcasting.rowWidth(for: .chips, scale: 1, spacing: spacing),
-      closed + 0.5, "the reserved room holds channel 0's chip beside the named row")
+    XCTAssertEqual(map(open: false).chips.map(\.digit), ["0", "3"], "(0) leads at rest")
+    XCTAssertEqual(natural(broadcasting), closed, "a broadcast lights (0) in place")
   }
 
-  /// Mini is as wide as its content (spec §13.4): the counter's figure, the
-  /// agent count or the open digits, resizes it at its upper-right pin, one
-  /// step, as compact follows its chips.
+  /// Mini carries no counter (Founder, 2026-11-04, bus brief §3): at rest it
+  /// is the 127 × 36 capsule of its controls whatever the roster. An open
+  /// channel is a live take (§6, §11D): mini grows leftward by the waveform,
+  /// the clock and the channel's circled digit, at its upper-right pin, and
+  /// folds back to 127 after the take. The saved position is the 200 × 46
+  /// placement strip at the same upper-right corner; the take's width is not
+  /// remembered.
   @MainActor
-  func testMiniFollowsItsCounterAtTheUpperRightPin() throws {
+  func testMiniGrowsByItsTakeAtTheUpperRightPinAndFoldsBackAfterIt() throws {
     let state = OverlayState.previewFormatted()
     optIntoChannelMap(state)
     let panel = try XCTUnwrap(
@@ -364,11 +372,12 @@ final class OverlayResizeHitTests: XCTestCase {
     let visible = try XCTUnwrap((panel.screen ?? NSScreen.main)?.visibleFrame)
     panel.setFrameOrigin(
       NSPoint(x: visible.maxX - 40 - panel.frame.width, y: visible.maxY - 40 - panel.frame.height))
-    XCTAssertEqual(panel.frame.width, DictationOverlayWindow.miniFloorWidth, accuracy: 0.5)
+    let rest = NSSize(
+      width: DictationOverlayWindow.miniFloorWidth, height: DictationOverlayWindow.miniHeight)
+    XCTAssertEqual(rest, NSSize(width: 127, height: 36))
+    XCTAssertEqual(panel.frame.width, rest.width, accuracy: 0.5)
+    XCTAssertEqual(panel.frame.height, rest.height, accuracy: 0.5)
     let pin = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
-    func natural() -> CGFloat {
-      DictationOverlayWindow.miniNaturalWidth(map: state.channelMapLayoutModel, textScale: 1)
-    }
     func roster(open: Bool) -> [CsChannelRosterState] {
       let row = mapRosterRow("3", "Igor")
       return [
@@ -379,41 +388,36 @@ final class OverlayResizeHitTests: XCTestCase {
           autosealDeadlineUnixMs: nil, followerAlive: true, unreadSinceUnixMs: nil),
       ]
     }
+    let take = DictationOverlayWindow.miniTakeWidth(live: true, openDigits: ["3"])
+    XCTAssertGreaterThan(take, 0)
 
-    state.applyChannelRoster(roster(open: false))
-    let counting = natural()
-    XCTAssertGreaterThan(counting, DictationOverlayWindow.miniFloorWidth)
-    XCTAssertEqual(panel.frame.width, counting, accuracy: 0.5, "the counter widens mini")
-    XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
-    XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5, "the controls keep their point")
-    XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5)
-
-    // Opening the channel turns the counter into its digit. With the map on,
-    // the chord keeps mini (bus intercom spec §14 W3).
-    state.applyChannelRoster(roster(open: true))
-    XCTAssertEqual(state.presentationMode, .mini, "the chord keeps mini while the map is on")
-    panel.settleFrameTransition()
-    XCTAssertLessThan(natural(), counting)
-    XCTAssertEqual(panel.frame.width, natural(), accuracy: 0.5, "mini narrows to the digit")
-    XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5)
-
-    state.applyChannelRoster(roster(open: false))
-    XCTAssertEqual(panel.frame.width, counting, accuracy: 0.5, "the count returns")
-    XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5)
-    // The saved position is the placement strip at the same trailing edge.
-    XCTAssertEqual(
-      panel.originForPersistence.x, pin.x - DictationOverlayWindow.miniPlacementSize.width,
-      accuracy: 0.5)
+    for open in [false, true, false] {
+      state.applyChannelRoster(roster(open: open))
+      XCTAssertEqual(state.presentationMode, .mini, "the chord keeps mini while the map is on")
+      XCTAssertEqual(state.miniTakeLive, open, "an open channel is a live take")
+      panel.settleFrameTransition()
+      XCTAssertEqual(
+        panel.frame.width, rest.width + (open ? take : 0), accuracy: 0.5,
+        open ? "the take widens mini" : "mini rests at its controls")
+      XCTAssertEqual(panel.frame.height, rest.height, accuracy: 0.5, "open \(open)")
+      XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5, "the controls keep their point")
+      XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5, "the top edge stays")
+      XCTAssertEqual(
+        panel.originForPersistence,
+        NSPoint(
+          x: pin.x - DictationOverlayWindow.miniPlacementSize.width,
+          y: pin.y - DictationOverlayWindow.miniPlacementSize.height),
+        "open \(open): the placement strip shares mini's upper-right corner")
+    }
   }
 
-  /// A take must not cost the map its tier (bus intercom spec §14 W3): the
-  /// compact header lays out the level meter (`waveformMinWidth`) and the
-  /// session timer at rest as well as during a take, inside the 410 pt floor
-  /// `midiNaturalWidth` starts from. Starting a take with three named agents
-  /// on the strip therefore changes neither the strip's width nor the chips'
-  /// widths, and the counter never replaces them.
+  /// A take must not cost the bar its width or its names (bus intercom spec
+  /// §14 W3, bus brief 2026-11-04 §4): the waveform keeps one 82 pt width at
+  /// rest and while recording, so starting a take with three named agents
+  /// changes neither the bar's width nor the pills' widths, and the counter
+  /// never replaces them.
   @MainActor
-  func testStartingATakeKeepsTheCompactWidthAndTheChipTier() throws {
+  func testStartingATakeKeepsTheBarWidthAndThePills() throws {
     try BackgroundTestWindow.requireIsolatedGUI()
     let (state, panel) = try makeMidiMapPanel(key: "Resize.midiMap.take")
     defer { panel.invalidatePresence() }
@@ -425,47 +429,48 @@ final class OverlayResizeHitTests: XCTestCase {
     ])
     panel.settleFrameTransition()
     XCTAssertEqual(state.channelMapLayoutModel.count, 3)
-    let natural = naturalMidiWidth(state, panel)
+    let natural = barGeometry(state, panel).naturalWidth
     XCTAssertEqual(panel.frame.width, natural, accuracy: 0.5)
-    XCTAssertLessThan(
-      natural, DictationOverlayWindow.midiChannelMapBudget, "three names fit the budget")
 
-    @MainActor func chipWidths() throws -> [Double] {
+    @MainActor func pillWidths() throws -> [Double] {
       panel.contentView?.layoutSubtreeIfNeeded()
       RunLoop.main.run(until: Date().addingTimeInterval(0.1))
       let widths = try ["3", "4", "6"].map { digit in
         let elements = try NativeAccessibilityProbe.waitForElements(
           "overlay-channel-chip-\(digit)"
         ).elements
-        return try XCTUnwrap(elements.first, "chip \(digit)").width
+        return try XCTUnwrap(elements.first, "pill \(digit)").width
       }
       let counter = try NativeAccessibilityProbe.query("overlay-channel-map-toggle").elements
-      XCTAssertTrue(counter.isEmpty, "the chips, not the counter")
+      XCTAssertTrue(counter.isEmpty, "the pills, not the counter")
       return widths
     }
-    let resting = try chipWidths()
+    let resting = try pillWidths()
     for width in resting {
       XCTAssertGreaterThan(
-        width, Double(OverlayChannelPill.chipWidth(name: nil, scale: 1)) + 0.5,
-        "at rest every chip carries its name")
+        width, Double(OverlayChannelPill.chipWidth(nameWidth: 0, form: .stacked, scale: 1)) + 0.5,
+        "at rest every pill carries its name")
     }
 
     state.handleRecordingStarted()
     XCTAssertTrue(state.recording)
     XCTAssertEqual(state.presentationMode, .midi)
     panel.settleFrameTransition()
-    XCTAssertEqual(naturalMidiWidth(state, panel), natural, "a take keeps the natural width")
-    XCTAssertEqual(panel.frame.width, natural, accuracy: 0.5, "a take keeps the strip's width")
-    let recording = try chipWidths()
+    XCTAssertEqual(barGeometry(state, panel).naturalWidth, natural, "a take keeps the width")
+    XCTAssertEqual(panel.frame.width, natural, accuracy: 0.5, "a take keeps the bar's width")
+    let recording = try pillWidths()
     XCTAssertEqual(recording.count, resting.count)
     for (during, before) in zip(recording, resting) {
-      XCTAssertEqual(during, before, accuracy: 0.5, "a take keeps the named tier")
+      XCTAssertEqual(during, before, accuracy: 0.5, "a take keeps the names")
     }
   }
 
+  /// Six to nine agents: the map is the bar's second row of chips. The bar
+  /// is as wide as the wider of its first row and the chips, grows downward
+  /// and keeps its upper-right corner.
   @MainActor
-  func testCompactNeverGrowsPastTheBudgetAndNineAgentsShowDigits() throws {
-    let (state, panel) = try makeMidiMapPanel(key: "Resize.midiMap.budget")
+  func testNineAgentsTakeASecondRowAtThePin() throws {
+    let (state, panel) = try makeMidiMapPanel(key: "Resize.midiMap.twoRows")
     defer { panel.invalidatePresence() }
     let pin = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
     let names = ["Miksa", "Nora", "Igor", "Hania", "Kuba", "Konfig", "Klara", "Leon", "Zofia"]
@@ -474,60 +479,73 @@ final class OverlayResizeHitTests: XCTestCase {
         + names.enumerated().map { mapRosterRow(String($0.offset + 1), $0.element) })
     let map = state.channelMapLayoutModel
     XCTAssertEqual(map.count, 9)
-    let natural = naturalMidiWidth(state, panel)
-    XCTAssertEqual(panel.frame.width, natural, accuracy: 0.5)
-    XCTAssertLessThanOrEqual(
-      panel.frame.width, DictationOverlayWindow.midiChannelMapBudget + 0.5,
-      "nine agents never take compact past 820 pt")
-    XCTAssertGreaterThan(panel.frame.width, DictationOverlayWindow.midiSize.width)
-    XCTAssertEqual(panel.frame.height, DictationOverlayWindow.collapsedHeight, accuracy: 0.5)
+    let bar = barGeometry(state, panel)
+    XCTAssertEqual(bar.singleRowMinimumWidth, .infinity, "nine agents never share one row")
+    XCTAssertEqual(panel.frame.width, bar.naturalWidth, accuracy: 0.5)
+    XCTAssertEqual(panel.frame.height, bar.twoRowHeight, accuracy: 0.5)
+    XCTAssertGreaterThan(panel.frame.height, DictationOverlayWindow.collapsedHeight)
     XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5, "the fold button keeps its point")
-    XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5)
-    // The room beyond the floor holds the digit-only row, not the named one.
-    let spacing = OverlayChannelMapView.chipSpacing
-    let room = natural - DictationOverlayWindow.midiSize.width - OverlayChannelMapView.leadingGap
-    XCTAssertGreaterThanOrEqual(room + 0.5, map.rowWidth(for: .digits, scale: 1, spacing: spacing))
-    XCTAssertLessThan(room, map.rowWidth(for: .chips, scale: 1, spacing: spacing))
+    XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5, "the second row grows downward")
+    // The second row holds every chip with the preferred names.
+    let widths = OverlayChannelMapNameWidths(chips: map.chips, scale: 1)
+    XCTAssertGreaterThanOrEqual(
+      panel.frame.width + 0.5,
+      DictationOverlayWindow.midiOuterPadding
+        + OverlayChannelMapModel.rowWidth(
+          nameWidths: widths.preferred, form: .chip, scale: 1,
+          spacing: OverlayChannelMapView.chipSpacing))
   }
 
   @MainActor
-  func testCompactCounterClickGivesTheNarrowedStripItsNaturalWidthBack() throws {
+  func testCounterRestoreGivesTheNarrowedBarItsNaturalWidthBack() throws {
     let (state, panel) = try makeMidiMapPanel(key: "Resize.midiMap.counter")
     defer { panel.invalidatePresence() }
     let three = [mapRosterRow("0", "All"), mapRosterRow("2", "Miksa"), mapRosterRow("3", "Igor")]
     state.applyChannelRoster(three)
     let natural = panel.frame.width
     let pin = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
+    let bar = barGeometry(state, panel)
     XCTAssertTrue(panel.beginUserResize(edge: .left, at: .zero))
     _ = panel.updateUserResize(to: NSPoint(x: 2_000, y: 0))
     panel.endUserResize()
-    XCTAssertEqual(panel.frame.width, DictationOverlayWindow.midiSize.width, accuracy: 0.5)
-    XCTAssertTrue(panel.midiShrunkByUser, "the strip shows its counter")
+    XCTAssertEqual(panel.frame.width, bar.minimumWidth, accuracy: 0.5, "narrowing stops here")
+    XCTAssertEqual(panel.frame.height, bar.height(forWidth: bar.minimumWidth), accuracy: 0.5)
+    XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5, "the top edge stays")
+    XCTAssertTrue(panel.midiShrunkByUser)
 
     state.activateChannelMapCounter()
     XCTAssertFalse(panel.midiShrunkByUser)
-    XCTAssertEqual(panel.frame.width, natural, accuracy: 0.5, "the chips come back")
+    XCTAssertEqual(panel.frame.width, natural, accuracy: 0.5, "the natural width comes back")
+    XCTAssertEqual(panel.frame.height, bar.singleRowHeight, accuracy: 0.5)
     XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5)
     XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5)
     XCTAssertEqual(state.presentationMode, .midi)
     // The roster drives the width again.
     state.applyChannelRoster(three + [mapRosterRow("5", "Kuba")])
-    XCTAssertEqual(panel.frame.width, naturalMidiWidth(state, panel), accuracy: 0.5)
+    XCTAssertEqual(panel.frame.width, barGeometry(state, panel).naturalWidth, accuracy: 0.5)
     XCTAssertGreaterThan(panel.frame.width, natural)
   }
 
   @MainActor
-  func testCompactKeepsAWidthTheUserNarrowedAndDoesNotRegrowIt() throws {
+  func testBarKeepsAWidthTheUserNarrowedAndStopsAtItsMeasuredFloor() throws {
     let (state, panel) = try makeMidiMapPanel(key: "Resize.midiMap.shrink")
     defer { panel.invalidatePresence() }
     let three = [mapRosterRow("0", "All"), mapRosterRow("2", "Miksa"), mapRosterRow("3", "Igor")]
     state.applyChannelRoster(three)
     let natural = panel.frame.width
+    let bar = barGeometry(state, panel)
+    // Names this short are whole in one row, so a small drag lands in the
+    // dead band between one row and two and snaps back. A drag three
+    // quarters of the way to the floor lands nearer the two-row form.
+    let step = (natural - bar.minimumWidth) * 3 / 4
+    XCTAssertGreaterThan(step, 1, "the bar has room to narrow")
     XCTAssertTrue(panel.beginUserResize(edge: .left, at: .zero))
-    XCTAssertTrue(panel.updateUserResize(to: NSPoint(x: 60, y: 0)))
+    XCTAssertTrue(panel.updateUserResize(to: NSPoint(x: step, y: 0)))
     panel.endUserResize()
     let narrowed = panel.frame.width
-    XCTAssertEqual(narrowed, natural - 60, accuracy: 0.5)
+    XCTAssertLessThan(narrowed, natural - 1, "the drag narrowed the bar")
+    XCTAssertEqual(narrowed, bar.clampedWidth(natural - step), accuracy: 0.5)
+    XCTAssertEqual(panel.frame.height, bar.height(forWidth: narrowed), accuracy: 0.5)
     XCTAssertTrue(panel.midiShrunkByUser)
 
     state.applyChannelRoster(three + [mapRosterRow("5", "Kuba")])
@@ -538,29 +556,132 @@ final class OverlayResizeHitTests: XCTestCase {
     panel.settleFrameTransition()
     XCTAssertEqual(panel.frame.width, narrowed, accuracy: 0.5, "the user's width is kept")
 
-    // A drag past the floor still stops at 410.
+    // A drag past the floor stops at the bar's measured minimum, not 410.
+    let floor = barGeometry(state, panel)
     XCTAssertTrue(panel.beginUserResize(edge: .left, at: .zero))
     _ = panel.updateUserResize(to: NSPoint(x: 2_000, y: 0))
-    XCTAssertEqual(panel.frame.width, DictationOverlayWindow.midiSize.width, accuracy: 0.5)
+    XCTAssertEqual(panel.frame.width, floor.minimumWidth, accuracy: 0.5)
+    XCTAssertEqual(panel.frame.height, floor.height(forWidth: floor.minimumWidth), accuracy: 0.5)
     panel.endUserResize()
   }
 
+  /// Widening stops at every name whole: names of up to six letters are
+  /// whole by default, so the bar has nothing to widen into, and a push
+  /// against that limit is not a width the user chose.
   @MainActor
-  func testCompactWidenedByTheUserGrowsOnlyWhenTheMapOutgrowsIt() throws {
-    let (state, panel) = try makeMidiMapPanel(key: "Resize.midiMap.widen")
+  func testWideningStopsAtWholeNamesAndAPushAtTheLimitIsNotRemembered() throws {
+    let (state, panel) = try makeMidiMapPanel(key: "Resize.midiMap.widenLimit")
     defer { panel.invalidatePresence() }
     let three = [mapRosterRow("0", "All"), mapRosterRow("2", "Miksa"), mapRosterRow("3", "Igor")]
     state.applyChannelRoster(three)
+    let bar = barGeometry(state, panel)
+    XCTAssertEqual(bar.naturalWidth, bar.maximumWidth, accuracy: 0.5)
+    let start = panel.frame
+    XCTAssertTrue(panel.beginUserResize(edge: .right, at: .zero))
+    XCTAssertFalse(panel.updateUserResize(to: NSPoint(x: 200, y: 0)), "the edge stops")
+    panel.endUserResize()
+    XCTAssertEqual(panel.frame, start, "no hole beside the pills")
+    XCTAssertFalse(panel.midiShrunkByUser)
+  }
+
+  /// A width the user widened into is kept; an agent leaving for a moment
+  /// narrows the bar to its new limit and gives the width back when it
+  /// returns. Pushing the edge against that temporary limit records nothing.
+  @MainActor
+  func testWidenedBarSurvivesAnAgentAwayAndAPushAtItsTemporaryLimit() throws {
+    let (state, panel) = try makeMidiMapPanel(key: "Resize.midiMap.widen")
+    defer { panel.invalidatePresence() }
+    let two = [
+      mapRosterRow("0", "All"), mapRosterRow("2", "Konstanty"), mapRosterRow("3", "Bartłomiej"),
+    ]
+    state.applyChannelRoster(two)
+    let bar = barGeometry(state, panel)
     let natural = panel.frame.width
-    XCTAssertTrue(panel.beginUserResize(edge: .left, at: NSPoint(x: 100, y: 0)))
-    _ = panel.updateUserResize(to: .zero)
+    XCTAssertEqual(natural, bar.naturalWidth, accuracy: 0.5)
+    XCTAssertGreaterThan(bar.maximumWidth - natural, 2, "long names have room to widen")
+    let step = min(CGFloat(30), (bar.maximumWidth - natural) / 2)
+    XCTAssertTrue(panel.beginUserResize(edge: .left, at: NSPoint(x: step, y: 0)))
+    XCTAssertTrue(panel.updateUserResize(to: .zero))
     panel.endUserResize()
     let widened = panel.frame.width
-    XCTAssertEqual(widened, natural + 100, accuracy: 0.5)
+    XCTAssertEqual(widened, natural + step, accuracy: 0.5)
     XCTAssertFalse(panel.midiShrunkByUser)
-    // A channel that leaves does not take the user's width away.
-    state.applyChannelRoster(Array(three.prefix(2)))
-    XCTAssertEqual(panel.frame.width, widened, accuracy: 0.5)
+
+    // One agent away: the bar narrows to the one remaining pill's limit.
+    state.applyChannelRoster(Array(two.prefix(2)))
+    let away = barGeometry(state, panel)
+    XCTAssertLessThan(away.maximumWidth, widened, "one pill cannot hold the widened width")
+    XCTAssertEqual(panel.frame.width, away.maximumWidth, accuracy: 0.5)
+    // A push against that limit moves nothing and is not remembered.
+    let parked = panel.frame
+    XCTAssertTrue(panel.beginUserResize(edge: .right, at: .zero))
+    XCTAssertFalse(panel.updateUserResize(to: NSPoint(x: 200, y: 0)))
+    panel.endUserResize()
+    XCTAssertEqual(panel.frame, parked)
+
+    state.applyChannelRoster(two)
+    XCTAssertEqual(panel.frame.width, widened, accuracy: 0.5, "the user's width comes back")
+  }
+
+  /// The bar's measured limits hold every width the frame can take; the
+  /// height is the rows that width holds.
+  @MainActor
+  func testMidiBarGeometryClampsWidthAndPicksTheRowHeight() {
+    let bar = OverlayMidiBarGeometry(
+      naturalWidth: 500, minimumWidth: 380, maximumWidth: 560, singleRowMinimumWidth: 450,
+      singleRowHeight: 51, twoRowHeight: 70)
+    XCTAssertEqual(bar.clampedWidth(100), 380)
+    XCTAssertEqual(bar.clampedWidth(470), 470)
+    XCTAssertEqual(bar.clampedWidth(900), 560)
+    XCTAssertEqual(bar.height(forWidth: 500), 51)
+    XCTAssertEqual(bar.height(forWidth: 450), 51)
+    XCTAssertEqual(bar.height(forWidth: 449.6), 51, "half a point of rounding keeps one row")
+    XCTAssertEqual(bar.height(forWidth: 449), 70, "below one row's floor: two rows")
+    XCTAssertEqual(bar.height(forWidth: 380), 70)
+    let classic = OverlayMidiBarGeometry.classic
+    XCTAssertEqual(classic.naturalWidth, DictationOverlayWindow.midiSize.width)
+    XCTAssertEqual(classic.minimumWidth, DictationOverlayWindow.midiSize.width)
+    XCTAssertEqual(classic.clampedWidth(2_000), 2_000, "the classic bar widens freely")
+    XCTAssertEqual(classic.height(forWidth: 410), DictationOverlayWindow.collapsedHeight)
+    XCTAssertEqual(classic.height(forWidth: 2_000), DictationOverlayWindow.collapsedHeight)
+  }
+
+  /// With 1–5 agents the widths between every name whole in two rows and one
+  /// row of the shortest names are a hole after the chips: the bar snaps to
+  /// the nearer form instead (Founder, 2026-11-04). Without the band, and for
+  /// 6–9 agents, the clamp is unchanged.
+  @MainActor
+  func testMidiBarSnapsAcrossTheDeadBandBetweenTwoRowsAndOneRow() throws {
+    let bar = OverlayMidiBarGeometry(
+      naturalWidth: 500, minimumWidth: 380, maximumWidth: 560, singleRowMinimumWidth: 450,
+      singleRowHeight: 51, twoRowHeight: 70, twoRowMaximumWidth: 400)
+    XCTAssertEqual(bar.clampedWidth(400), 400, "every name whole in two rows")
+    XCTAssertEqual(bar.clampedWidth(410), 400, "nearer the two-row edge: two rows")
+    XCTAssertEqual(bar.clampedWidth(440), 450, "nearer the single row: one row")
+    XCTAssertEqual(bar.clampedWidth(449.6), 450, "half a point of rounding is one row")
+    XCTAssertEqual(bar.clampedWidth(450), 450)
+    XCTAssertEqual(bar.height(forWidth: bar.clampedWidth(410)), 70)
+    XCTAssertEqual(bar.height(forWidth: bar.clampedWidth(440)), 51)
+    let noBand = OverlayMidiBarGeometry(
+      naturalWidth: 500, minimumWidth: 380, maximumWidth: 560, singleRowMinimumWidth: 450,
+      singleRowHeight: 51, twoRowHeight: 70, twoRowMaximumWidth: 470)
+    XCTAssertEqual(noBand.clampedWidth(440), 440, "two rows that reach the single row: no band")
+    let many = OverlayMidiBarGeometry(
+      naturalWidth: 500, minimumWidth: 380, maximumWidth: 560, singleRowMinimumWidth: .infinity,
+      singleRowHeight: 51, twoRowHeight: 70, twoRowMaximumWidth: 560)
+    XCTAssertEqual(many.clampedWidth(440), 440, "6–9 agents: two rows at every width")
+
+    let (_, panel) = try makeMidiMapPanel(key: "Resize.midiMap.dropToOneRow")
+    defer { panel.invalidatePresence() }
+    panel.setMidiBarGeometry(many)
+    XCTAssertTrue(panel.beginUserResize(edge: .left, at: .zero))
+    XCTAssertTrue(panel.updateUserResize(to: NSPoint(x: 90, y: 0)))
+    panel.endUserResize()
+    XCTAssertTrue(panel.midiShrunkByUser)
+    panel.setMidiBarGeometry(bar)
+    XCTAssertFalse(panel.midiShrunkByUser)
+    XCTAssertEqual(panel.frame.width, 500, accuracy: 0.5, "6–9 -> 1–5 resets to natural 1-row width")
+    XCTAssertEqual(panel.frame.height, 51, accuracy: 0.5, "6–9 -> 1–5 returns to 1-row height")
   }
 
   @MainActor
@@ -607,7 +728,8 @@ final class OverlayResizeHitTests: XCTestCase {
           let delta = NSSize(
             width: (targetSize.width - sourceSize.width) * (left ? -1 : 1),
             height: (targetSize.height - sourceSize.height) * (bottom ? -1 : 1))
-          XCTAssertTrue(panel.styleMask.contains(.resizable))
+          XCTAssertTrue(panel.allowsUserResize)
+          XCTAssertFalse(panel.styleMask.contains(.resizable), "never AppKit's resize corner")
           sendSyntheticDrag(through: panel, from: start, delta: delta, eventNumberBase: 9_500)
           panel.settleFrameTransition()
           XCTAssertEqual(state.presentationMode, target, "\(source) → \(target) via \(edge)")
@@ -654,7 +776,17 @@ final class OverlayResizeHitTests: XCTestCase {
 
   @MainActor
   func testMiniBodyClickExpandsButDragAndPointerJitterKeepTheirMeaning() throws {
+    // Klasyczny, pinned here rather than read from the shared preference: a
+    // still click on the collapsed overlay opens the window (Maciej,
+    // 2026-11-06). Belka's mini <-> bar cycle is pinned at the state level
+    // (`testBelkaHeaderClickTogglesMiniAndTheBarAndLeavesTheWindowForTheBar`).
+    let name = "CodescribeTests.mini-click.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: name)!
+    addTeardownBlock { defaults.removePersistentDomain(forName: name) }
+    let preference = OverlayChannelMapPreference(defaults: defaults)
+    preference.selectMode(.classic)
     let state = OverlayState.previewListening()
+    state.channelMapPreference = preference
     state.setPresentationMode(.mini)
     let panel = try XCTUnwrap(
       DictationOverlayWindow.make(
@@ -690,7 +822,8 @@ final class OverlayResizeHitTests: XCTestCase {
       through: panel, from: point,
       delta: NSSize(width: 1, height: 1), eventNumberBase: 9520)
     XCTAssertEqual(
-      state.presentationMode, .midi, "A body click with normal pointer jitter expands mini")
+      state.presentationMode, .expanded,
+      "A body click with normal pointer jitter opens the window from mini")
     XCTAssertEqual(state.recording, recording, "Expanding never starts or stops capture")
     XCTAssertEqual(
       panel.frame.maxX, parked.maxX, accuracy: 1,
@@ -706,7 +839,7 @@ final class OverlayResizeHitTests: XCTestCase {
     panel.contentView = OverlayContentContainer(hosting: drag)
     defer { panel.orderOut(nil) }
     panel.setPresentationMode(.mini)
-    XCTAssertFalse(panel.styleMask.contains(.resizable))
+    XCTAssertFalse(panel.allowsUserResize, "mini has no resize band")
     let start = panel.frame
     let point = NSPoint(x: 80, y: 4)
     XCTAssertTrue(panel.isWindowDragHit(at: point))
@@ -718,6 +851,8 @@ final class OverlayResizeHitTests: XCTestCase {
     XCTAssertTrue(OverlayResizeHit.cursorRects(in: panel.contentView!.bounds, mode: .mini).isEmpty)
 
     panel.setPresentationMode(.midi)
+    XCTAssertTrue(panel.allowsUserResize, "the bar resizes through its own side bands")
+    XCTAssertFalse(panel.styleMask.contains(.resizable))
     let initial = panel.frame
     XCTAssertTrue(panel.isWindowDragHit(at: NSPoint(x: 100, y: 4)))
     XCTAssertNil(
@@ -741,6 +876,44 @@ final class OverlayResizeHitTests: XCTestCase {
       XCTAssertEqual(
         OverlayResizeHit.edge(at: point, in: panel.contentView!.bounds, mode: .midi), .left)
     }
+  }
+
+  /// Founder, build 24: AppKit's native resize corner swallowed the close
+  /// dot's first points. The bar's side bands are 8 pt; the dot's hit circle
+  /// (7.5 pt past its 9 pt dot, 16 pt in) starts 8.5 pt from the left edge, so
+  /// every point of it belongs to the dot. The expanded canvas keeps 16 pt.
+  @MainActor
+  func testBarSideBandsAreEightPointsAndLeaveTheCloseDotItsHitCircle() {
+    XCTAssertEqual(OverlayResizeHit.midiBand, 8)
+    XCTAssertEqual(OverlayResizeHit.band(for: .midi), 8)
+    XCTAssertEqual(OverlayResizeHit.band(for: .expanded), OverlayResizeHit.band)
+    XCTAssertEqual(OverlayResizeHit.band, 16)
+    let closeHitStart: CGFloat = 16 + 9 / 2 - (9 / 2 + 7.5)
+    XCTAssertEqual(closeHitStart, 8.5)
+    XCTAssertLessThan(OverlayResizeHit.midiBand, closeHitStart)
+    for height in [DictationOverlayWindow.collapsedHeight, 51, 70] {
+      let bar = NSRect(x: 0, y: 0, width: 520, height: height)
+      for y in stride(from: CGFloat(0.5), to: height, by: 1) {
+        XCTAssertEqual(
+          OverlayResizeHit.edge(at: NSPoint(x: 7.9, y: y), in: bar, mode: .midi), .left)
+        XCTAssertNil(OverlayResizeHit.edge(at: NSPoint(x: 8.5, y: y), in: bar, mode: .midi))
+        XCTAssertNil(OverlayResizeHit.edge(at: NSPoint(x: 511.5, y: y), in: bar, mode: .midi))
+        XCTAssertEqual(
+          OverlayResizeHit.edge(at: NSPoint(x: 512.1, y: y), in: bar, mode: .midi), .right)
+      }
+      for (rect, _) in OverlayResizeHit.cursorRects(in: bar, mode: .midi) {
+        XCTAssertEqual(rect.width, OverlayResizeHit.midiBand, "\(height): cursor band")
+      }
+      let pad = OverlayResizeHit.grabPadRects(in: bar, mode: .midi)
+      XCTAssertEqual(pad.count, 2)
+      for rect in pad {
+        XCTAssertEqual(rect.width, OverlayResizeHit.midiBand, "\(height): grab pad")
+      }
+    }
+    // The expanded canvas's left band still reaches 16 pt.
+    let canvas = NSRect(origin: .zero, size: DictationOverlayWindow.defaultSize)
+    XCTAssertEqual(
+      OverlayResizeHit.edge(at: NSPoint(x: 15.5, y: canvas.midY), in: canvas), .left)
   }
 
   @MainActor
@@ -1139,15 +1312,29 @@ final class OverlayResizeHitTests: XCTestCase {
     let fold = try XCTUnwrap(recorder.frames.preview)
     let micX = panel.frame.minX + mic.midX
     let foldX = panel.frame.minX + fold.midX
+    let pinX = panel.frame.maxX
     state.setPresentationMode(.midi)
     XCTAssertLessThanOrEqual(panel.frame.width, 420, "midi remains a compact control strip")
     host.layoutSubtreeIfNeeded()
     RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    // Mini sets the Agents button between the microphone and the chevron
+    // (bus brief 2026-11-04 §3); the bar keeps them side by side. The chevron
+    // closes both rows at the shared upper-right pin; the microphone stays on
+    // screen inside the strip.
+    let midiMic = try XCTUnwrap(recorder.frames.stop)
+    XCTAssertGreaterThan(panel.frame.minX + midiMic.midX, micX, "the mic moves toward the chevron")
+    XCTAssertGreaterThanOrEqual(midiMic.minX, 0)
+    XCTAssertLessThanOrEqual(midiMic.maxX, panel.frame.width)
+    // The panel's right edge stays in the pin. Mini hugs its controls with
+    // `miniInset` (7 pt) and the bar pads 16 pt per side (half of
+    // `midiOuterPadding`), so the bar's chevron stands that difference, 9 pt,
+    // further left than mini's.
+    XCTAssertEqual(panel.frame.maxX, pinX, accuracy: 0.5, "the upper-right pin holds")
+    let insetDelta = DictationOverlayWindow.midiOuterPadding / 2 - DictationOverlayWindow.miniInset
     XCTAssertEqual(
-      panel.frame.minX + (try XCTUnwrap(recorder.frames.stop)).midX, micX, accuracy: 0.5)
-    XCTAssertEqual(
-      panel.frame.minX + (try XCTUnwrap(recorder.frames.preview)).midX, foldX, accuracy: 0.5)
-    XCTAssertEqual(try XCTUnwrap(recorder.frames.stop).size, mic.size)
+      panel.frame.minX + (try XCTUnwrap(recorder.frames.preview)).midX, foldX - insetDelta,
+      accuracy: 0.5)
+    XCTAssertEqual(midiMic.size, mic.size)
     XCTAssertEqual(try XCTUnwrap(recorder.frames.preview).size, fold.size)
   }
 

@@ -71,6 +71,49 @@ enum CalibrationRefusalCopy {
   }
 }
 
+/// Interface-language sentence for a license key the core refused.
+/// `core/licensing/mod.rs` sends each failure class as one stable English
+/// reason string (its `Display`), not a code; until the bridge carries a code
+/// (docs/LOCALIZATION.md §5) Swift recognises the six reasons here and owns
+/// the sentence. Founder, 2026-11-04: "license signature verification failed"
+/// reached Settings › User in English under "Details" in the Polish interface.
+/// An unknown reason stays verbatim: it is still the most useful detail.
+enum LicenseReasonCopy {
+  static func sentence(_ reason: String) -> String {
+    switch reason {
+    case "license key must have three dot-separated parts":
+      return String(
+        localized: "The license key must have three dot-separated parts.",
+        comment: "License details: the key's shape is wrong")
+    case "unsupported license key prefix":
+      return String(
+        localized: "The license key has an unsupported prefix.",
+        comment: "License details: the key does not start with a known prefix")
+    case "license payload is not valid base64url":
+      return String(
+        localized: "The license payload is not valid base64url.",
+        comment: "License details: the key's middle part is not decodable")
+    case "license signature is not a valid Ed25519 signature":
+      return String(
+        localized: "The license signature is not a valid Ed25519 signature.",
+        comment: "License details: the key's last part is not a signature")
+    case "license signature verification failed":
+      return String(
+        localized: "The license signature could not be verified.",
+        comment: "License details: the signature does not match the payload")
+    default:
+      let schemaPrefix = "invalid license payload: "
+      if reason.hasPrefix(schemaPrefix) {
+        let detail = String(reason.dropFirst(schemaPrefix.count))
+        return String(
+          localized: "Invalid license payload: \(detail)",
+          comment: "License details. The placeholder is the core's reason, in English")
+      }
+      return reason
+    }
+  }
+}
+
 extension Error {
   /// `CsError` payload when the error crossed the bridge; the system
   /// description otherwise.

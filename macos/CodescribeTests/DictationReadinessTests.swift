@@ -20,6 +20,7 @@ final class DictationReadinessTests: XCTestCase {
     var permissions = PermissionSnapshot.allGranted
     permissions.screenRecording = .denied
     permissions.fullDiskAccess = .notDetermined
+    permissions.spotifyAutomation = .denied
     let verdict = evaluateDictationReadiness(
       lane: .appleOnly, permissions: permissions, localModel: .notInstalled,
       admission: .sampleGranted, admissionError: nil)
@@ -36,7 +37,8 @@ final class DictationReadinessTests: XCTestCase {
         case .accessibility: permissions.accessibility = state
         case .inputMonitoring: permissions.inputMonitoring = state
         case .speechRecognition: permissions.speechRecognition = state
-        case .screenRecording, .fullDiskAccess: XCTFail("optional scope entered required matrix")
+        case .screenRecording, .fullDiskAccess, .spotifyAutomation:
+          XCTFail("optional scope entered required matrix")
         }
         let verdict = evaluateDictationReadiness(
           lane: .appleOnly, permissions: permissions, localModel: .notInstalled,

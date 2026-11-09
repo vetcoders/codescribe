@@ -324,9 +324,9 @@ fn route_hotkey_event<F, G>(
     }
 }
 
-/// Deliver the armed "Paste Here" transcript and always tell the user what
-/// happened — a silent no-op on an explicit user gesture reads as a broken
-/// hotkey, so nothing-to-insert and expiry both surface a notification.
+/// Request paste of the retained "Paste Here" transcript. A silent no-op on an
+/// explicit user gesture reads as a broken hotkey, so an empty slot or failed
+/// request surfaces a notification. Posting is not recipient acceptance.
 fn deliver_deferred_insert_and_notify() {
     // The hotkey tap holds no controller; the runtime snapshot carries the same
     // clipboard restore settings the controller passes on its own paste path.
@@ -350,19 +350,18 @@ fn deliver_deferred_insert_and_notify() {
             }
         };
     match clipboard::deliver_deferred_insert(restore_clipboard, restore_clipboard_delay_ms) {
-        Ok(clipboard::DeferredInsertDelivery::Delivered) => {
+        Ok(clipboard::DeferredInsertDelivery::PasteRequested) => {
             tracing::info!(
                 restore_clipboard,
                 restore_clipboard_delay_ms,
-                "Deferred transcript delivered"
+                "Deferred transcript paste requested"
             );
         }
-        Ok(
-            clipboard::DeferredInsertDelivery::NothingToInsert
-            | clipboard::DeferredInsertDelivery::Expired,
-        ) => notifications::notify("Codescribe", "Nothing to insert"),
+        Ok(clipboard::DeferredInsertDelivery::NothingToInsert) => {
+            notifications::notify("Codescribe", "Nothing to insert");
+        }
         Err(error) => {
-            tracing::warn!(%error, "Deferred transcript delivery failed");
+            tracing::warn!(%error, "Deferred transcript paste request failed");
             notifications::notify("Codescribe", "Couldn't insert the armed transcript");
         }
     }
@@ -874,6 +873,16 @@ static PREPARING_PENDING: AtomicBool = AtomicBool::new(false);
 /// Arms [`PREPARING_PENDING`] first so the terminal half of the contract holds
 /// even when the dispatch that follows never transitions state.
 async fn optimistically_show_overlay(event: &HotkeyEvent) {
+    if matches!(
+        event,
+        HotkeyEvent::Hold {
+            action: HoldAction::Down,
+            mode: HoldMode::Raw,
+        }
+    ) && codescribe::os::hotkeys::composer_caret_owned()
+    {
+        return;
+    }
     let starts_redesign_overlay = matches!(
         event,
         HotkeyEvent::ToggleNormal
@@ -1877,6 +1886,11 @@ pub struct CsChannelRosterState {
     /// overlay's "alive but not reading" layer: a process heartbeat proves
     /// the reader, not the conversation behind it.
     pub unread_since_unix_ms: Option<i64>,
+    /// Milliseconds since the Unix epoch of the last heartbeat of a
+    /// follower that is no longer alive: when the agent was last there.
+    /// `None` = a live follower, no lease, or no claim.
+    #[uniffi(default = None)]
+    pub last_heartbeat_unix_ms: Option<i64>,
 }
 
 /// Frozen owner and verified helper paths supplied by the app's archive action.
@@ -1978,6 +1992,11 @@ impl CodescribeHotkeys {
                     unread_since_unix_ms: state.unread_since.and_then(|since| {
                         since
                             .duration_since(std::time::UNIX_EPOCH)
+                            .ok()
+                            .map(|epoch| epoch.as_millis() as i64)
+                    }),
+                    last_heartbeat_unix_ms: state.last_heartbeat.and_then(|beat| {
+                        beat.duration_since(std::time::UNIX_EPOCH)
                             .ok()
                             .map(|epoch| epoch.as_millis() as i64)
                     }),

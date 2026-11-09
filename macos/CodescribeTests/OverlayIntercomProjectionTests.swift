@@ -25,7 +25,7 @@ final class OverlayIntercomProjectionTests: XCTestCase {
     let owner = try XCTUnwrap(
       OverlayConversationOwner(row: [
         "provider": "codex", "provider_session_id": session,
-        "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session),
+        "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session)!,
         "channel": channel, "name": name,
       ]))
     return .init(id: owner.id, channel: channel, name: name, owner: owner, messages: [])
@@ -63,7 +63,10 @@ final class OverlayIntercomProjectionTests: XCTestCase {
       })
     XCTAssertEqual(state.channelMapLayoutModel.agents.map(\.digit), ["3", "4"])
     state.conversationDrafts = [agentConversation.id: "unfinished reply", "10": "private draft"]
-    state.publishConversationText = { _, _, _, _ in XCTFail("Hiding windows must not send") }
+    state.publishConversationText = { _, _, _, _ in
+      XCTFail("Hiding windows must not send")
+      return .empty
+    }
     var desktop = OverlayIntercomDesktopState()
     desktop.groupWidth = 600
     desktop.groupRowHeight = 240

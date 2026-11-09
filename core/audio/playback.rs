@@ -27,9 +27,14 @@ pub fn play_sound(name: &str) {
 
     let path = format!("/System/Library/Sounds/{}.aiff", name);
 
-    // Spawn afplay in background, don't wait for completion
+    // Spawn afplay in background and reap it when done so it never stays <defunct>.
     match Command::new("afplay").arg(&path).spawn() {
-        Ok(_) => debug!("Sound playback started: {}", name),
+        Ok(mut child) => {
+            debug!("Sound playback started: {}", name);
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
         Err(e) => debug!("Failed to play sound {}: {}", name, e),
     }
 }
@@ -64,14 +69,19 @@ pub fn play_sound_with_volume(name: &str, volume: f32) {
 
     let path = format!("/System/Library/Sounds/{}.aiff", name);
 
-    // Spawn afplay with volume in background, don't wait for completion
+    // Spawn afplay with volume in background and reap it when done so it never stays <defunct>.
     match Command::new("afplay")
         .arg("-v")
         .arg(volume.to_string())
         .arg(&path)
         .spawn()
     {
-        Ok(_) => debug!("Sound playback started: {} at volume {:.2}", name, volume),
+        Ok(mut child) => {
+            debug!("Sound playback started: {} at volume {:.2}", name, volume);
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
         Err(e) => debug!("Failed to play sound {}: {}", name, e),
     }
 }

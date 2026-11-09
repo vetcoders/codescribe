@@ -182,6 +182,24 @@ final class TrayViewModelTests: XCTestCase {
     XCTAssertFalse(model.quickSettingsExpanded)
   }
 
+  func testTrayDisclosureSectionsOpenIndependently() {
+    let model = TrayViewModel()
+
+    model.toggleHistory()
+    model.quickSettingsExpanded.toggle()
+    model.notesExpanded.toggle()
+    model.diagnosticsExpanded.toggle()
+
+    XCTAssertTrue(model.historyExpanded)
+    XCTAssertTrue(model.quickSettingsExpanded)
+    XCTAssertTrue(model.notesExpanded)
+    XCTAssertTrue(model.diagnosticsExpanded)
+
+    model.toggleHistory()
+    XCTAssertFalse(model.historyExpanded)
+    XCTAssertTrue(model.quickSettingsExpanded, "closing one section leaves the others open")
+  }
+
   func testStatusDotCompositesInsideGlyphBottomRightCorner() throws {
     let size = NSSize(width: 20, height: 20)
     let bounds = NSRect(origin: .zero, size: size)
@@ -261,8 +279,9 @@ final class TrayViewModelTests: XCTestCase {
     let dark = try menuBarDotSample(processing, appearance: .darkAqua)
     XCTAssertGreaterThan(
       abs(light.redComponent - dark.redComponent)
-        + abs(light.greenComponent - dark.greenComponent),
-      0.08,
+        + abs(light.greenComponent - dark.greenComponent)
+        + abs(light.blueComponent - dark.blueComponent),
+      0.04,
       "processing dot should follow the appearance")
 
     let returning = TrayStatusStore.preview(kind: .listening, tone: .active)

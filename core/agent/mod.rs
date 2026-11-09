@@ -17,6 +17,8 @@ pub mod approval;
 pub mod assets;
 /// Provider-neutral capability broker for canonical ops (`fs.read`, `repo.status`).
 pub mod capabilities;
+/// Context budget, overflow detection and tool-result pruning for long turns.
+pub mod compaction;
 /// Serialized Max consultation ownership over the existing Agent session.
 pub mod consultation;
 /// Shared query matching and read-only saved-conversation archive search.
