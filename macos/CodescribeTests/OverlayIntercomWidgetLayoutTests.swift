@@ -96,9 +96,10 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
   }
 
   @MainActor
-  func testFourDotHeaderAtCompactAndWideWidthsWithoutPresentingWindows() throws {
-    XCTAssertNotNil(
-      NSImage(systemSymbolName: "circle.grid.2x2.fill", accessibilityDescription: nil))
+  func testDotsHeaderAtCompactAndWideWidthsWithoutPresentingWindows() throws {
+    XCTAssertEqual(
+      OverlayIntercomDotsGlyph.columns * OverlayIntercomDotsGlyph.rows, 6,
+      "the Intercom mark is a two-by-three cell of dots (Maciej, 2026-11-07)")
     let keyBefore = NSApp.keyWindow
     let suite = "CodescribeTests.header.\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -126,7 +127,7 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
         host.cacheDisplay(in: host.bounds, to: bitmap)
         let attachment = XCTAttachment(
           image: NSImage(cgImage: try XCTUnwrap(bitmap.cgImage), size: host.bounds.size))
-        attachment.name = "four-dot-header-\(palette.appearance)-\(Int(width))"
+        attachment.name = "dots-header-\(palette.appearance)-\(Int(width))"
         attachment.lifetime = .keepAlways
         add(attachment)
       }
@@ -288,7 +289,10 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
           "right column",
           NSRect(x: window.maxX - 312, y: window.midY, width: 300, height: 44)
         ),
-        ("full width", NSRect(x: window.minX + 12, y: window.midY, width: window.width - 24, height: 44)),
+        (
+          "full width",
+          NSRect(x: window.minX + 12, y: window.midY, width: window.width - 24, height: 44)
+        ),
         ("bottom row", NSRect(x: window.minX + 12, y: window.minY + 8, width: 300, height: 44)),
         ("top row", NSRect(x: window.minX + 12, y: window.maxY - 52, width: 300, height: 44)),
         (
@@ -299,7 +303,8 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       for (name, row) in rows {
         let frame = OverlayHintPanel.frame(
           size: size, leading: row, parentFrame: window, within: screen)
-        XCTAssertTrue(window.contains(frame), "\(name) in \(window): card left the window, \(frame)")
+        XCTAssertTrue(
+          window.contains(frame), "\(name) in \(window): card left the window, \(frame)")
         XCTAssertFalse(frame.intersects(row), "\(name) in \(window): card covers its row, \(frame)")
       }
     }
@@ -752,6 +757,34 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
         XCTAssertLessThanOrEqual(used, width, "every shown control fits beside the shortest name")
       }
       XCTAssertEqual(previous, 3, "the speaker and focus return before the marks")
+    }
+  }
+
+  /// Maciej, 2026-11-07: "najważniejszy jest przycisk Voice … niech generalnie
+  /// pozostawia przycisk w tym samym rzędzie". A tall, narrow card keeps its
+  /// microphone on the name row; its height is spent on the preview alone,
+  /// never on a second audio row under the name.
+  func testNoCardHeightMovesTheMicrophoneUnderTheName() {
+    for scale in [CGFloat(0.8), 1, 1.6] {
+      let metrics = IntercomContentMetrics(
+        names: ["Lena", "Klaudiusz-div0", "ompforensics"], digits: ["2", "9", "6"], scale: scale)
+      let row = Layout.controlHeight(scale: scale)
+      let context = Layout.contextStripHeight(scale: scale)
+      for width in stride(from: metrics.minimumNameWidth, to: metrics.actionsWidth, by: 7) {
+        XCTAssertGreaterThanOrEqual(
+          metrics.rowControls(width: width).slots, 1,
+          "the name row keeps a microphone at \(width) pt")
+        for cardHeight in [metrics.iconSide, 2 * row + context, 3 * row + context, 6 * row] {
+          XCTAssertEqual(
+            metrics.tier(width: width, cardHeight: cardHeight), .name,
+            "height never changes the row's tier")
+          if let preview = metrics.compactPreviewLayout(width: width, cardHeight: cardHeight) {
+            XCTAssertEqual(
+              preview.height, cardHeight - row - context, accuracy: 0.001,
+              "the preview takes the whole height below the name row and context strip")
+          }
+        }
+      }
     }
   }
 

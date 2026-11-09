@@ -51,7 +51,7 @@ struct IntercomHeaderMetrics: Equatable {
 
   func width(showsCount: Bool, paging: Bool) -> CGFloat {
     let content = IntercomHeaderContent(showsCount: showsCount)
-    // One four-dot menu and audio; optional count and two pagers.
+    // One dots menu and audio; optional count and two pagers.
     let children = 2 + (showsCount ? 2 : 0) + (paging ? 2 : 0)
     return ceil(
       groupWidth + audioWidth + 2 * content.horizontalInset
@@ -179,23 +179,16 @@ struct IntercomContentMetrics: Equatable {
 
   /// The name truncates before a control drops; the marks drop first and
   /// return only when the whole name, the marks and all three controls fit.
+  /// The controls never leave the name row: the microphone is the row's
+  /// first slot at every width and height (Maciej, 2026-11-07: "najważniejszy
+  /// jest przycisk Voice … niech generalnie pozostawia przycisk w tym samym
+  /// rzędzie"), so no card height moves the audio pair under the name.
   func rowControls(width: CGFloat) -> IntercomRowControls {
     if width >= actionsWidth { return .all }
     let slot = OverlayIntercomWidgetLayout.controlHeight(scale: nameFontSize / 11)
     let free = width - (minimumNameWidth - marksWidth)
     return IntercomRowControls(
       slots: min(3, max(0, Int((free / slot).rounded(.down)))), marks: false)
-  }
-
-  /// A tall, narrow fiszka spends preview space on audio rather than hiding
-  /// its owner's name. Header-only rows keep their existing shared audio slot.
-  func audioFooterHeight(width: CGFloat, cardHeight: CGFloat) -> CGFloat {
-    let scale = nameFontSize / 11
-    let row = OverlayIntercomWidgetLayout.controlHeight(scale: scale)
-    guard tier(width: width, cardHeight: cardHeight) != .icon, width < actionsWidth,
-      cardHeight >= 2 * row + OverlayIntercomWidgetLayout.contextStripHeight(scale: scale)
-    else { return 0 }
-    return row
   }
 
   /// Align execution context with the name, after the grip, digit and status.
@@ -247,7 +240,6 @@ struct IntercomContentMetrics: Equatable {
     let available =
       cardHeight - OverlayIntercomWidgetLayout.controlHeight(scale: scale)
       - OverlayIntercomWidgetLayout.contextStripHeight(scale: scale)
-      - audioFooterHeight(width: width, cardHeight: cardHeight)
     let minimum =
       type.lineHeight + type.metadataLineHeight
       + 2 * OverlayIntercomWidgetLayout.compactPreviewVerticalPadding
