@@ -169,7 +169,9 @@ final class SettingsWindowChromeTests: XCTestCase {
 
   private func sidebarMaterial(in window: NSWindow) -> NSGlassEffectView? {
     guard let content = window.contentView else { return nil }
-    return first(in: content) { $0 is NSGlassEffectView } as? NSGlassEffectView
+    return first(in: content) {
+      $0 is NSGlassEffectView && $0.identifier?.rawValue != "codescribe-header-glass"
+    } as? NSGlassEffectView
   }
 
   /// Visible geometry stays 52 pt; the native optical rim bleeds below it.
