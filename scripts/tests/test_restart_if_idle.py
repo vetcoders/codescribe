@@ -26,15 +26,25 @@ class RestartIfIdleTests(unittest.TestCase):
         # main() resolves --app; /var/folders resolves under /private.
         self.root = Path(self.temporary.name).resolve()
         self.app = self.root / "X9bus.app"
+        # The bundle installs before X9bus.app left beside it.
+        self.retired = self.root / "Codescribe.app"
+        self.trash = self.root / "Trash"
         self.handshakes = self.root / "restart-if-idle"
         self.handshakes.mkdir()
-        self.main = self.app / "Contents/MacOS/Codescribe"
+        self.main = self.app / "Contents/MacOS/X9bus"
         self.ffi = self.app / "Contents/Frameworks/libcodescribe_ffi.dylib"
         for path in (self.main, self.ffi):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"fixture installed payload")
         with (self.app / "Contents/Info.plist").open("wb") as handle:
-            plistlib.dump({"CFBundleVersion": "fixture", "CSBuildCommit": "expected"}, handle)
+            plistlib.dump({
+                "CFBundleVersion": "fixture", "CSBuildCommit": "expected",
+                "CFBundleExecutable": "X9bus", "CFBundleIdentifier": "com.vetcoders.codescribe",
+            }, handle)
+        self.processes = []
+        trash = patch.object(restart, "TRASH", self.trash)
+        trash.start()
+        self.addCleanup(trash.stop)
         self.running = {123}
         self.calls = []
         self.outcome = "accepted"
@@ -45,11 +55,19 @@ class RestartIfIdleTests(unittest.TestCase):
         self.spoken = []
         self.publish_ready(123, "old-generation")
 
-    def publish_ready(self, pid, nonce):
+    def publish_ready(self, pid, nonce, bundle=None):
         (self.handshakes / f"{pid}.ready.json").write_text(json.dumps({
             "schema": "codescribe.restart-if-idle.ready.v1", "pid": pid,
-            "nonce": nonce, "bundle": str(self.app), "commit": "expected",
+            "nonce": nonce, "bundle": str(bundle or self.app), "commit": "expected",
         }))
+
+    def install_retired_bundle(self, identifier="com.vetcoders.codescribe"):
+        main = self.retired / "Contents/MacOS/Codescribe"
+        main.parent.mkdir(parents=True)
+        main.write_bytes(b"fixture retired payload")
+        with (self.retired / "Contents/Info.plist").open("wb") as handle:
+            plistlib.dump({"CFBundleExecutable": "Codescribe", "CFBundleIdentifier": identifier}, handle)
+        return main
 
     def run_command(self, arguments):
         self.calls.append(arguments)
@@ -64,6 +82,10 @@ class RestartIfIdleTests(unittest.TestCase):
         elif executable == "cs-say":
             self.spoken.append(arguments[1])
         elif executable == "codesign":
+            pass
+        elif executable == "ps":
+            output = "\n".join(self.processes)
+        elif executable == "lsregister":
             pass
         elif executable == "open" and "-a" in arguments:
             url = arguments[-1]
@@ -211,6 +233,61 @@ class RestartIfIdleTests(unittest.TestCase):
 
     def dispatches(self):
         return [call for call in self.calls if Path(call[0]).name == "open" and "-a" in call]
+
+    def test_process_lookup_covers_the_installed_and_the_retired_executable(self):
+        self.invoke()
+        pgrep = [call for call in self.calls if Path(call[0]).name == "pgrep"][0]
+        self.assertEqual(pgrep[1:], ["-x", "Codescribe|X9bus"])
+
+    def test_process_from_the_retired_bundle_moves_to_the_installed_one(self):
+        self.install_retired_bundle()
+        (self.handshakes / "123.ready.json").unlink()
+        self.publish_ready(123, "old-generation", bundle=self.retired)
+        self.stale_pids = {123}
+        with patch.object(restart, "run", self.run_command):
+            result = restart.restart(self.app, self.handshakes, 0.01, False, newer_only=True)
+        self.assertEqual(result["status"], "restarted")
+        self.assertEqual((result["old_bundle"], result["bundle"]), (str(self.retired), str(self.app)))
+        opens = [call for call in self.calls if Path(call[0]).name == "open"]
+        # The request reaches the process through its own (retired) bundle; the
+        # new generation starts from the installed one.
+        self.assertEqual(opens[0][:4], ["/usr/bin/open", "-g", "-a", str(self.retired)])
+        self.assertEqual(opens[1][-1], str(self.app))
+
+    def test_retired_bundle_goes_to_the_trash_after_a_verified_restart(self):
+        self.install_retired_bundle()
+        (self.handshakes / "123.ready.json").unlink()
+        self.publish_ready(123, "old-generation", bundle=self.retired)
+        self.stale_pids = {123}
+        code, result, _ = self.invoke_main("--newer-only")
+        self.assertEqual((code, result["status"]), (0, "restarted"))
+        self.assertEqual(result["retired"], [{
+            "bundle": str(self.retired), "status": "retired", "trash": str(self.trash / "Codescribe.app"),
+        }])
+        self.assertFalse(self.retired.exists())
+        self.assertTrue((self.trash / "Codescribe.app/Contents/MacOS/Codescribe").is_file())
+        self.assertTrue(self.app.is_dir())
+
+    def test_retired_bundle_stays_while_one_of_its_executables_runs(self):
+        main = self.install_retired_bundle()
+        self.processes = [str(main.parent / "codescribe-stt-bridge")]
+        code, result, _ = self.invoke_main("--newer-only")
+        self.assertEqual((code, result["status"]), (0, "current"))
+        self.assertEqual(result["retired"], [
+            {"bundle": str(self.retired), "status": "kept", "reason": "bundle_in_use"},
+        ])
+        self.assertTrue(main.is_file())
+
+    def test_retired_bundle_with_another_identifier_is_never_moved(self):
+        main = self.install_retired_bundle(identifier="com.example.other")
+        self.running = set()
+        code, result, _ = self.invoke_main("--newer-only")
+        self.assertEqual((code, result["status"]), (0, "not_running"))
+        self.assertEqual(result["retired"], [
+            {"bundle": str(self.retired), "status": "kept", "reason": "different_bundle_identifier"},
+        ])
+        self.assertTrue(main.is_file())
+        self.assertFalse(self.trash.exists())
 
     def test_newer_only_leaves_a_current_process_alone(self):
         with patch.object(restart, "run", self.run_command):

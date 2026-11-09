@@ -29,6 +29,10 @@ from urllib.parse import urlparse
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_APP = Path("/Applications/X9bus.app")
+# Executables a running app answers to: the installed X9bus, and Codescribe for
+# a process still started from the Codescribe.app bundle installed before
+# 2026-11-09 (scripts/restart-if-idle moves it to X9bus.app when idle).
+APP_EXECUTABLE_NAMES = ("X9bus", "Codescribe")
 DEFAULT_RESTART_ROOT = Path.home() / ".codescribe/agent-bridge/runtime/restart-if-idle"
 
 SURFACES: dict[str, dict[str, str]] = {
@@ -105,15 +109,28 @@ def run_cmd(argv: list[str], cwd: Path = REPO_ROOT) -> tuple[int, str]:
 
 
 def running_codescribe_pids() -> set[int]:
-    rc, out = run_cmd(["/usr/bin/pgrep", "-x", "Codescribe"])
+    rc, out = run_cmd(["/usr/bin/pgrep", "-x", "|".join(APP_EXECUTABLE_NAMES)])
     if rc not in (0, 1):
         return set()
     return {int(val) for val in out.split() if val.isdecimal()}
 
 
+def app_executable(app: Path) -> Path:
+    """The bundle's main executable: CFBundleExecutable, else the bundle's stem."""
+    name = app.stem
+    try:
+        with (app / "Contents/Info.plist").open("rb") as fh:
+            value = plistlib.load(fh).get("CFBundleExecutable")
+        if isinstance(value, str) and value and "/" not in value:
+            name = value
+    except (OSError, ValueError, AttributeError):
+        pass
+    return app / "Contents/MacOS" / name
+
+
 def loaded_inodes_match(pid: int, app: Path) -> bool | None:
     required = [
-        app / "Contents/MacOS/Codescribe",
+        app_executable(app),
         app / "Contents/Frameworks/libcodescribe_ffi.dylib",
     ]
     rc, out = run_cmd(["/usr/sbin/lsof", "-a", "-p", str(pid), "-d", "txt", "-Ffin"])

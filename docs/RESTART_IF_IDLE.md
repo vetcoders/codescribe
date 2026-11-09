@@ -73,6 +73,26 @@ request is sent. Installing a newer bundle does not give an already running
 older process a capability. The Founder must close that older process at a
 chosen idle moment once, then open the newly installed version.
 
+## From Codescribe.app to X9bus.app
+
+The installed bundle is `/Applications/X9bus.app` (executable `X9bus`).
+Installs before 2026-11-09 left `/Applications/Codescribe.app` with the same
+bundle identifier and the executable `Codescribe`, and a process started from
+it keeps running from that bundle after `X9bus.app` is installed. The waiter
+looks up both executable names and accepts a capability file whose bundle is
+`Codescribe.app` beside the installed one. It sends the restart request
+through that bundle and launches `X9bus.app` after the old process exits; the
+receipt names both as `old_bundle` and `bundle`.
+
+After every outcome that leaves no process to restart (`restarted`, `current`,
+unattended `not_running`), the waiter retires `Codescribe.app`: it unregisters
+the bundle from LaunchServices and moves it to `~/.Trash`. Only a real
+directory with the installed bundle's identifier is moved, never while any
+executable inside it runs (the app spawns its STT helpers from
+`Contents/MacOS`). The JSON receipt lists each bundle under `retired` as
+`retired` with its Trash path or `kept` with the reason. `--quit-only` never
+retires.
+
 Options:
 
 - `--newer-only` restarts only a process that did not load the installed

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Restart Codescribe only after its live controller atomically reserves idle shutdown."""
+"""Restart X9bus only after its live controller atomically reserves idle shutdown."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -36,12 +37,50 @@ RETRYABLE = frozenset({
 })
 
 
+#: The installed bundle: productName in macos/project.yml.
+DEFAULT_APP = Path("/Applications/X9bus.app")
+#: Bundles that installs before 2026-11-09 left beside it, with the same bundle
+#: identifier. A process started from one keeps its executable name
+#: (Codescribe) until an idle restart moves it to the installed bundle; after
+#: that the bundle goes to the Trash so LaunchServices sees one owner.
+RETIRED_BUNDLE_NAMES = ("Codescribe.app",)
+TRASH = Path.home() / ".Trash"
+LSREGISTER = Path(
+    "/System/Library/Frameworks/CoreServices.framework/Frameworks/"
+    "LaunchServices.framework/Support/lsregister"
+)
+
+
 def run(arguments: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(arguments, capture_output=True, text=True, timeout=15, check=False)
 
 
-def pids() -> set[int]:
-    result = run(["/usr/bin/pgrep", "-x", "Codescribe"])
+def info(bundle: Path) -> dict:
+    try:
+        with (bundle / "Contents/Info.plist").open("rb") as handle:
+            value = plistlib.load(handle)
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def executable(bundle: Path) -> Path:
+    """The bundle's main executable: CFBundleExecutable, else the bundle's stem."""
+    name = info(bundle).get("CFBundleExecutable")
+    if not isinstance(name, str) or not name or "/" in name:
+        name = bundle.stem
+    return bundle / "Contents/MacOS" / name
+
+
+def retired_bundles(app: Path) -> list[Path]:
+    return [app.parent / name for name in RETIRED_BUNDLE_NAMES if app.parent / name != app]
+
+
+def pids(app: Path, launch: Path | None = None) -> set[int]:
+    """Processes running the installed executable or one from a retired bundle."""
+    bundles = [app, *([launch] if launch else []), *retired_bundles(app)]
+    names = sorted({executable(bundle).name for bundle in bundles})
+    result = run(["/usr/bin/pgrep", "-x", "|".join(re.escape(name) for name in names)])
     if result.returncode not in (0, 1):
         raise Refusal("process_identity_unavailable")
     return {int(value) for value in result.stdout.split() if value.isdecimal()}
@@ -57,6 +96,8 @@ def read_json(path: Path) -> dict:
 
 
 def supported(root: Path, app: Path, running: set[int]) -> list[dict]:
+    """Ready handshakes of running processes started from `app` or a retired bundle."""
+    bundles = {str(app), *(str(bundle) for bundle in retired_bundles(app))}
     result = []
     for pid in sorted(running):
         path = root / f"{pid}.ready.json"
@@ -66,7 +107,7 @@ def supported(root: Path, app: Path, running: set[int]) -> list[dict]:
         if (
             ready.get("schema") == "codescribe.restart-if-idle.ready.v1"
             and ready.get("pid") == pid
-            and ready.get("bundle") == str(app)
+            and ready.get("bundle") in bundles
             and isinstance(ready.get("nonce"), str)
         ):
             result.append(ready)
@@ -80,7 +121,7 @@ def loaded_matches(pid: int, app: Path) -> bool:
 def loaded_state(pid: int, app: Path) -> bool | None:
     """Whether the process runs the installed main and FFI binaries; None if unreadable."""
     required = [
-        app / "Contents/MacOS/Codescribe",
+        executable(app),
         app / "Contents/Frameworks/libcodescribe_ffi.dylib",
     ]
     result = run(["/usr/sbin/lsof", "-a", "-p", str(pid), "-d", "txt", "-Ffin"])
@@ -137,19 +178,13 @@ def restart(
     newer_only: bool = False,
 ) -> dict:
     launch = launch_app or app
-    running = pids()
+    running = pids(app, launch)
     if not running:
         raise Refusal("application_not_running")
     candidates = supported(root, app, running)
-    # During the physical bundle rename, the old process still owns the idle
-    # protocol at its original path. Only a live, owned handshake may select it;
-    # the mere presence of an old bundle never changes the launch destination.
-    if app.name == "X9bus.app":
-        candidates += supported(root, app.with_name("Codescribe.app"), running)
     if len(candidates) != 1:
         raise Refusal("running_process_does_not_support_atomic_restart_or_is_ambiguous")
     ready = candidates[0]
-    running_app = Path(ready["bundle"])
     old_pid = ready["pid"]
     if newer_only:
         # An install replaces the bundle's files, so the running process keeps
@@ -177,8 +212,10 @@ def restart(
         json.dump(request, output)
     receipt_path = root / f"{request_id}.receipt.json"
     # LaunchServices delivers a request to the application; it never sends Quit.
+    # The request goes to the bundle the process runs from, which is a retired
+    # bundle until the first restart moves the process to the installed one.
     dispatched = run(
-        ["/usr/bin/open", "-g", "-a", str(running_app), f"codescribe://restart-if-idle?request={request_id}"]
+        ["/usr/bin/open", "-g", "-a", ready["bundle"], f"codescribe://restart-if-idle?request={request_id}"]
     )
     if dispatched.returncode != 0:
         raise Refusal("restart_request_not_delivered")
@@ -204,7 +241,7 @@ def restart(
     receipt = wait_until(final_receipt, deadline)
     # After acceptance the application is going down; a timeout from here on
     # is a failed transition, never a busy owner to retry.
-    wait_until(lambda: old_pid not in pids(), deadline, "old_generation_did_not_exit")
+    wait_until(lambda: old_pid not in pids(app, launch), deadline, "old_generation_did_not_exit")
     if quit_only:
         return {"status": "quit_idle", "old_pid": old_pid, "native_receipt": receipt}
     carried = carried_environment()
@@ -213,7 +250,7 @@ def restart(
         raise Refusal("new_generation_launch_failed")
 
     def new_generation():
-        for candidate in supported(root, launch, pids() - {old_pid}):
+        for candidate in supported(root, launch, pids(app, launch) - {old_pid}):
             if candidate["nonce"] != ready["nonce"] and loaded_matches(candidate["pid"], launch):
                 return candidate
         return None
@@ -224,6 +261,8 @@ def restart(
     return {
         "status": "restarted",
         "old_pid": old_pid,
+        "old_bundle": ready["bundle"],
+        "bundle": str(launch),
         "old_commit": ready.get("commit") or None,
         "new_pid": new["pid"],
         "version": info.get("CFBundleShortVersionString"),
@@ -237,9 +276,62 @@ def restart(
     }
 
 
+def bundle_in_use(bundle: Path) -> bool | None:
+    """Whether any process runs an executable inside `bundle`; None if unreadable."""
+    try:
+        result = run(["/bin/ps", "-axww", "-o", "comm="])
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    prefix = str(bundle) + "/"
+    return any(line.strip().startswith(prefix) for line in result.stdout.splitlines())
+
+
+def retire(app: Path, trash: Path | None = None) -> list[dict]:
+    """Move retired bundles beside `app` to the Trash once nothing runs from them.
+
+    Only a real directory with the installed bundle's identifier is moved, never
+    the installed bundle itself, and never while one of its executables runs: a
+    running app keeps spawning its helpers from Contents/MacOS. The Trash keeps
+    it restorable.
+    """
+    trash = trash or TRASH
+    identifier = info(app).get("CFBundleIdentifier")
+    outcomes = []
+    for bundle in retired_bundles(app):
+        if not bundle.exists() and not bundle.is_symlink():
+            continue
+        outcome = {"bundle": str(bundle)}
+        in_use = None
+        if bundle.is_symlink() or not bundle.is_dir():
+            reason = "not_a_bundle_directory"
+        elif not identifier or info(bundle).get("CFBundleIdentifier") != identifier:
+            reason = "different_bundle_identifier"
+        else:
+            in_use = bundle_in_use(bundle)
+            reason = "bundle_identity_unavailable" if in_use is None else "bundle_in_use" if in_use else None
+        if reason:
+            outcomes.append({**outcome, "status": "kept", "reason": reason})
+            continue
+        destination = trash / bundle.name
+        if destination.exists() or destination.is_symlink():
+            destination = trash / f"{bundle.stem} {time.strftime('%Y-%m-%d %H.%M.%S')}{bundle.suffix}"
+        try:
+            if LSREGISTER.is_file():
+                run([str(LSREGISTER), "-u", str(bundle)])
+            trash.mkdir(exist_ok=True)
+            shutil.move(str(bundle), str(destination))
+        except (OSError, subprocess.SubprocessError) as error:
+            outcomes.append({**outcome, "status": "kept", "reason": f"move_failed: {error}"})
+            continue
+        outcomes.append({**outcome, "status": "retired", "trash": str(destination)})
+    return outcomes
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--app", type=Path, default=Path("/Applications/X9bus.app"))
+    parser.add_argument("--app", type=Path, default=DEFAULT_APP)
     parser.add_argument(
         "--launch-app",
         type=Path,
@@ -329,6 +421,8 @@ def main() -> int:
                 print(json.dumps({"status": "waiting", "reason": str(refusal), "at": stamp()}),
                       file=sys.stderr, flush=True)
                 time.sleep(arguments.interval)
+        if not arguments.quit_only:
+            result["retired"] = retire(installed(arguments))
         print(json.dumps({**result, "at": stamp()}, ensure_ascii=False), flush=True)
         if arguments.announce:
             announce(result)
@@ -336,7 +430,8 @@ def main() -> int:
     except (Refusal, OSError, ValueError, subprocess.SubprocessError) as error:
         if unattended and str(error) == "application_not_running":
             # Nothing to restart: the Founder closed the application.
-            print(json.dumps({"status": "not_running", "at": stamp()}, ensure_ascii=False), flush=True)
+            print(json.dumps({"status": "not_running", "retired": retire(installed(arguments)),
+                              "at": stamp()}, ensure_ascii=False), flush=True)
             return 0
         refused = {"status": "refused", "reason": str(error)}
         print(json.dumps({**refused, "at": stamp()}, ensure_ascii=False), flush=True)
@@ -348,6 +443,10 @@ def main() -> int:
         # keeps holding it through its own inherited descriptor.
         if waiter is not None:
             os.close(waiter)
+
+
+def installed(arguments: argparse.Namespace) -> Path:
+    return (arguments.launch_app or arguments.app).resolve()
 
 
 def attempt(root: Path, arguments: argparse.Namespace) -> dict:

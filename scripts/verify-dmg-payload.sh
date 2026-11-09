@@ -62,6 +62,8 @@ readonly MARKER_MINILM='paraphrase-multilingual-MiniLM'
 readonly MARKER_SILERO='silero'
 
 DMG=""
+APP_NAME="${CODESCRIBE_APP_NAME:-X9bus}"
+BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-com.vetcoders.codescribe}"
 VARIANT=""
 VERSION=""
 EXPECTED_CHANNEL="stable"
@@ -76,9 +78,9 @@ usage() {
   cat <<EOF
 Usage: $0 <dmg> --variant slim|full --version X.Y.Z [--skip-notary] [--unsigned]
 
-Fail-closed payload gate for Codescribe release DMGs.
+Fail-closed payload gate for X9bus release DMGs.
 
-  <dmg>               Path to Codescribe_*.dmg
+  <dmg>               Path to a release DMG; the payload must contain $APP_NAME.app
   --variant slim|full slim = Silero embedded; full = +Whisper embedded
   --version X.Y.Z     Expected CFBundleShortVersionString
   --channel stable|nightly  Expected build channel (default: stable)
@@ -210,7 +212,7 @@ if [[ "$DMG" != /* ]]; then
 fi
 
 echo "═══════════════════════════════════════════════════════════"
-echo "  Codescribe DMG payload gate (fail-closed)"
+echo "  X9bus DMG payload gate (fail-closed)"
 echo "═══════════════════════════════════════════════════════════"
 echo "  DMG:     $DMG"
 echo "  Variant: $VARIANT"
@@ -300,6 +302,11 @@ else
 fi
 
 # ── 5. Mount + inspect bundle ────────────────────────────────────────────────
+find_expected_app_bundle() {
+  local mount_point="$1"
+  find "$mount_point" -maxdepth 2 -name "$APP_NAME.app" -type d -print -quit 2>/dev/null
+}
+
 echo ""
 echo "▶ mount + inspect payload"
 ATTACH_OUT=""
@@ -323,9 +330,9 @@ if [[ -z "$MOUNT_POINT" || ! -d "$MOUNT_POINT" ]]; then
 fi
 ok "mounted at $MOUNT_POINT"
 
-APP_PATH="$MOUNT_POINT/X9bus.app"
+APP_PATH=$(find_expected_app_bundle "$MOUNT_POINT" || true)
 if [[ -z "$APP_PATH" || ! -d "$APP_PATH" ]]; then
-  fail "X9bus.app missing from DMG root"
+  fail "expected $APP_NAME.app bundle not found inside DMG"
 else
   ok "app: $(basename "$APP_PATH")"
 fi
@@ -336,20 +343,22 @@ if [[ -n "${APP_PATH:-}" ]]; then
   if [[ ! -f "$PLIST" ]]; then
     fail "Info.plist missing at $PLIST"
   else
-    for KEY in CFBundleName CFBundleDisplayName; do
-      NAME=$(/usr/libexec/PlistBuddy -c "Print :$KEY" "$PLIST" 2>/dev/null || true)
-      if [[ "$NAME" != "X9bus" ]]; then
-        fail "$KEY='$NAME' must be X9bus"
+    BUNDLE_IDENTIFIER=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST" 2>/dev/null || true)
+    if [[ "$BUNDLE_IDENTIFIER" != "$BUNDLE_ID" ]]; then
+      fail "CFBundleIdentifier '$BUNDLE_IDENTIFIER' does not match protected identity '$BUNDLE_ID'"
+    else
+      ok "CFBundleIdentifier preserves $BUNDLE_ID"
+    fi
+
+    for name_key in CFBundleName CFBundleDisplayName; do
+      bundle_name=$(/usr/libexec/PlistBuddy -c "Print :$name_key" "$PLIST" 2>/dev/null || true)
+      if [[ "$bundle_name" != "$APP_NAME" ]]; then
+        fail "$name_key '$bundle_name' does not match $APP_NAME"
       else
-        ok "$KEY == X9bus"
+        ok "$name_key == $APP_NAME"
       fi
     done
-    ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST" 2>/dev/null || true)
-    if [[ "$ID" != "com.vetcoders.codescribe" ]]; then
-      fail "CFBundleIdentifier='$ID' must preserve com.vetcoders.codescribe"
-    else
-      ok "CFBundleIdentifier preserves com.vetcoders.codescribe"
-    fi
+
     BUNDLE_VER=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST" 2>/dev/null || true)
     if [[ -z "$BUNDLE_VER" ]]; then
       fail "CFBundleShortVersionString unreadable"

@@ -204,7 +204,7 @@ owner or execute historical requests automatically.
 Confirm the app is running and inspect the installed helper:
 
 ```bash
-pgrep -x Codescribe
+pgrep -x 'X9bus|Codescribe'  # Codescribe: still started from the pre-X9bus.app bundle
 cs-bus --help
 cs-bus --print-bus-path
 cs-bus --active-names
