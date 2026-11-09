@@ -10,10 +10,16 @@ alternative arrangements; this document does not select one as the final UI.
 ### Resize feedback and performance boundary (2026-11-08)
 
 Expanded resize keeps the source window's frame fixed until release. The
-lightweight `OverlayResizePreview` captures header and content once, then paints
-only those images while the pointer moves. The content bitmap stays at its
-original pixel size, anchored top-left below the header, clipped when smaller;
-extra space shows the canvas until the final layout. Finish commits once;
+lightweight `OverlayResizePreview` captures header and foreground content once.
+`OverlayCanvasBackdropView` owns both the system material and the reading veil;
+capture temporarily hides that owner and restores its original visibility, so
+the bitmap cannot retain an old-sized canvas and its rounded corners. A separate
+instance of the same backdrop follows the preview's current bounds, including
+newly exposed space, with the source's appearance, tint and accessibility policy.
+The foreground bitmap stays at its original pixel size, anchored top-left below
+the header and clipped when smaller. No text stretches and no Markdown layout
+runs at pointer frequency. Each buffered foreground repaint clears its dirty
+region before compositing, preventing old frames from accumulating. Finish commits once;
 cancel restores the original frame, alpha and input policy. Grouped detached
 cards retain their header-only feedback. Divider gestures still move only a
 guide and commit width at release.
