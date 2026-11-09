@@ -33,24 +33,8 @@ keywords = ["speech-to-text", "whisper", "macos", "dictation", "audio"]
 categories = ["multimedia::audio", "accessibility", "os::macos-apis"]
 
 [[bin]]
-name = "qube-report"
-path = "bin/qube_report.rs"
-
-[[bin]]
-name = "qube-daemon"
-path = "bin/qube_daemon.rs"
-
-[[bin]]
 name = "codescribe"
 path = "bin/codescribe.rs"
-
-[[bin]]
-name = "codescribe-teacher"
-path = "bin/codescribe-teacher.rs"
-
-[[bin]]
-name = "codescribe-corpus"
-path = "bin/codescribe-corpus.rs"
 
 [[test]]
 name = "hold_badge_native"

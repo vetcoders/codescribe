@@ -1230,7 +1230,7 @@ extension RealAgentBridgeInstaller {
     }
     let deadline = Date().addingTimeInterval(1.0)
     while process.isRunning, Date() < deadline {
-      Thread.sleep(forTimeInterval: 0.01)
+      Thread.sleep(forTimeInterval: 0.02)
     }
     if process.isRunning {
       process.terminate()
@@ -1297,7 +1297,7 @@ extension RealAgentBridgeInstaller {
     }
     let deadline = Date().addingTimeInterval(2.0)
     while process.isRunning, Date() < deadline {
-      Thread.sleep(forTimeInterval: 0.01)
+      Thread.sleep(forTimeInterval: 0.02)
     }
     if process.isRunning {
       process.terminate()
@@ -1315,11 +1315,9 @@ extension RealAgentBridgeInstaller {
   }
 
   /// True when a public `vc-frame` supporting `action focus-pane-id` is installed.
-  /// Positive results are memoized by executable and wrapper-target file stamps
-  /// so periodic HUD polls do not re-spawn `vc-frame` unless the binary, symlink
-  /// target, or referenced wrapper dependency changes on disk. Negative results
-  /// are never cached, allowing repaired dependencies to take effect on the next
-  /// poll without restarting Codescribe.
+  /// Positive results are memoized by executable and wrapper-target file stamps.
+  /// Negative results are cached with a 30s TTL so periodic HUD polls do not
+  /// re-spawn `vc-frame` unless the binary/wrapper changes on disk or cooldown expires.
   @MainActor
   static func supportsAgentPanelFocus(
     installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller(),
@@ -1338,21 +1336,17 @@ extension RealAgentBridgeInstaller {
       else {
         return false
       }
-      if let cached = await AgentPanelFocusCapabilityCache.shared.value(for: stamp), cached {
-        return true
+      if let cached = await AgentPanelFocusCapabilityCache.shared.value(for: stamp, now: now) {
+        return cached
       }
       let supported = probeVcFramePanelFocusCapability(
         executableURL: executableURL,
         environment: environment
       )
-      if supported {
-        await AgentPanelFocusCapabilityCache.shared.store(true, for: stamp)
-        if let postProbeStamp = VcFrameExecutableStamp(url: executableURL), postProbeStamp != stamp
-        {
-          await AgentPanelFocusCapabilityCache.shared.store(true, for: postProbeStamp)
-        }
-      } else {
-        await AgentPanelFocusCapabilityCache.shared.remove(for: stamp)
+      await AgentPanelFocusCapabilityCache.shared.store(supported, for: stamp, at: now)
+      if let postProbeStamp = VcFrameExecutableStamp(url: executableURL), postProbeStamp != stamp
+      {
+        await AgentPanelFocusCapabilityCache.shared.store(supported, for: postProbeStamp, at: now)
       }
       return supported
     }.value
@@ -1543,17 +1537,32 @@ private struct VcFrameExecutableStamp: Hashable, Sendable {
 
 private actor AgentPanelFocusCapabilityCache {
   static let shared = AgentPanelFocusCapabilityCache()
-  private var entries: [VcFrameExecutableStamp: Bool] = [:]
 
-  func value(for stamp: VcFrameExecutableStamp) -> Bool? {
-    entries[stamp]
+  private struct Entry {
+    let supported: Bool
+    let recordedAt: Date
   }
 
-  func store(_ supported: Bool, for stamp: VcFrameExecutableStamp) {
+  private var entries: [VcFrameExecutableStamp: Entry] = [:]
+  static let negativeTTL: TimeInterval = 30.0
+
+  func value(for stamp: VcFrameExecutableStamp, now: Date = Date()) -> Bool? {
+    guard let entry = entries[stamp] else { return nil }
+    if entry.supported {
+      return true
+    }
+    if now.timeIntervalSince(entry.recordedAt) < Self.negativeTTL {
+      return false
+    }
+    entries.removeValue(forKey: stamp)
+    return nil
+  }
+
+  func store(_ supported: Bool, for stamp: VcFrameExecutableStamp, at now: Date = Date()) {
     if entries.count >= 64 {
       entries.removeAll(keepingCapacity: true)
     }
-    entries[stamp] = supported
+    entries[stamp] = Entry(supported: supported, recordedAt: now)
   }
 
   func remove(for stamp: VcFrameExecutableStamp) {

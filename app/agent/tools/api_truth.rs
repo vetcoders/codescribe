@@ -19,8 +19,10 @@ pub fn responses_api_prompt_section() -> String {
      stored response id IS durable conversation memory and can be resumed \
      hours later. Three measured sharp edges: (1) sending `instructions` \
      together with `previous_response_id` is HTTP 400 on OpenAI; (2) \
-     instructions are NOT carried across chained turns — a chained turn must \
-     re-carry the system prompt as a leading `developer` input item; (3) \
+     instructions are NOT carried across chained turns — the first chained \
+     turn seeds the system prompt once as a leading `developer` input item, \
+     which the stored chain then carries across subsequent turns without \
+     repeating it; (3) \
      response ids are key/org-scoped — after a key rotation the old id \
      answers `previous_response_not_found`, so drop it and continue \
      unchained. Some Responses backends (LibraxisAI) also mint a \
