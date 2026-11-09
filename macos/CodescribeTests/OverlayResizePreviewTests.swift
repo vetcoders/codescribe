@@ -159,6 +159,8 @@ final class OverlayResizePreviewTests: XCTestCase {
       contentRect: NSRect(x: 80, y: 80, width: 240, height: 200),
       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
+    window.isOpaque = false
+    window.backgroundColor = .clear
     window.contentView = source
     source.layoutSubtreeIfNeeded()
     let preview = OverlayResizePreview(
@@ -185,6 +187,8 @@ final class OverlayResizePreviewTests: XCTestCase {
       contentRect: NSRect(x: 80, y: 80, width: 400, height: 300),
       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
+    window.isOpaque = false
+    window.backgroundColor = .clear
     window.contentView = SourceView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
     let original = window.frame
     let preview = OverlayResizePreview(
