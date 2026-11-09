@@ -171,7 +171,6 @@ struct AgentWidthModeButton: View {
   }
 }
 
-
 /// "Context": opens and closes the context card, in the pin toggle's style
 /// (accent fill and stroke while on). A click on it while the card is open
 /// closes the card; the outside-click rule leaves this button to its action.
@@ -246,7 +245,9 @@ final class AgentContextCardPresenter: ObservableObject {
 
   deinit {
     if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
-    windowObservers.forEach { NotificationCenter.default.removeObserver($0) }
+    for observer in windowObservers {
+      NotificationCenter.default.removeObserver(observer)
+    }
   }
 
   func toggle() {
@@ -301,7 +302,9 @@ final class AgentContextCardPresenter: ObservableObject {
 
   private func attach(to newWindow: NSWindow?) {
     guard let newWindow, newWindow !== window else { return }
-    windowObservers.forEach { NotificationCenter.default.removeObserver($0) }
+    for observer in windowObservers {
+      NotificationCenter.default.removeObserver(observer)
+    }
     window = newWindow
     let center = NotificationCenter.default
     let closeOnHide: @Sendable (Notification) -> Void = { [weak self] _ in
@@ -441,7 +444,8 @@ struct AgentContextCard: View {
     // The overlay canvas's floating-surface shadow, so both floating sheets
     // sit at the same height above their content.
     .shadow(
-      color: .black.opacity(colorScheme == .dark ? 0.20 : 0.16), radius: 20, x: 0, y: 9)
+      color: .black.opacity(colorScheme == .dark ? 0.20 : 0.16), radius: 20, x: 0, y: 9
+    )
     .background(AgentContextHitAnchor { presenter.registerCard($0) })
     .accessibilityElement(children: .contain)
     .accessibilityLabel(AgentContextPanelCopy.contextButton)
@@ -526,7 +530,8 @@ struct AgentContextCard: View {
     .buttonStyle(.borderless)
     .conversationActionHover(
       restingColor: Color.primary, hoverColor: Color.primary,
-      hoverBackground: Color.primary.opacity(CSAlpha.fill))
+      hoverBackground: Color.primary.opacity(CSAlpha.fill)
+    )
     .padding(.horizontal, -CSSpace.sm)
     .help(AgentContextPanelCopy.toolSettingsHelp)
     .accessibilityIdentifier("agent-context-tool-settings")
@@ -558,7 +563,8 @@ struct AgentContextCardLayer: View {
         .padding(.top, inset)
         .padding(.trailing, inset)
         .frame(
-          width: geometry.size.width, height: geometry.size.height, alignment: .topTrailing)
+          width: geometry.size.width, height: geometry.size.height, alignment: .topTrailing
+        )
         .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .topTrailing)))
       }
     }

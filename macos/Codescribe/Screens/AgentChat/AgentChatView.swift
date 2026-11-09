@@ -33,10 +33,10 @@ struct AgentChatView: View {
       ThreadRail(store: store)
     } detail: {
       ThreadDetail(store: store, maxPermissions: maxPermissions, contextCard: contextCard)
-      // Sized so the expanded columns fit the window floor exactly; the
-      // floor itself belongs to the window. A minimum on the whole split
-      // view makes an opening sidebar slide to half its width and jump.
-      .frame(minWidth: AgentWindowMetrics.detailMinWidth)
+        // Sized so the expanded columns fit the window floor exactly; the
+        // floor itself belongs to the window. A minimum on the whole split
+        // view makes an opening sidebar slide to half its width and jump.
+        .frame(minWidth: AgentWindowMetrics.detailMinWidth)
     }
     .csSidebarToggle(expanded: $sidebarExpanded)
     .modifier(
