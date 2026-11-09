@@ -214,7 +214,7 @@ final class CSSidebarMaterialTests: XCTestCase {
       await nextMainQueueTurn()
       host.view.layoutSubtreeIfNeeded()
     }
-    let owners = window.titlebarAccessoryViewControllers.filter { $0.layoutAttribute == .top }
+    let owners = window.titlebarAccessoryViewControllers.filter { $0.layoutAttribute == .right }
     XCTAssertEqual(owners.count, 1, "one header band shared with Agent")
     let owner = try XCTUnwrap(owners.first)
     let glass = try XCTUnwrap(findView(of: NSGlassEffectView.self, in: owner.view))
