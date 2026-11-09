@@ -155,14 +155,13 @@ enum AgentWindowChrome {
     window.titlebarSeparatorStyle = .none
     // AppKit ignores contentMinSize with Auto Layout. The production host
     // disables automatic SwiftUI sizing to prevent a display-cycle crash, so
-    // this owner must provide the native minimum constraints itself. Use the
-    // layout guide: its height excludes the current native titlebar band.
-    guard let guide = window.contentLayoutGuide as? NSLayoutGuide,
-      let owner = guide.owningView
-    else { return }
+    // this owner must provide the native minimum constraints itself. Constrain
+    // the hosting view, whose minimum is the SwiftUI root's existing floor;
+    // the system's content-layout guide is an output, not a sizing input.
+    guard let owner = window.contentView else { return }
     let dimensions: [(String, NSLayoutDimension, CGFloat)] = [
-      ("codescribe-agent-floor-width", guide.widthAnchor, AgentWindowMetrics.minWidth),
-      ("codescribe-agent-floor-height", guide.heightAnchor, AgentWindowMetrics.minHeight),
+      ("codescribe-agent-floor-width", owner.widthAnchor, AgentWindowMetrics.minWidth),
+      ("codescribe-agent-floor-height", owner.heightAnchor, AgentWindowMetrics.minHeight),
     ]
     for (identifier, dimension, minimum) in dimensions {
       if let constraint = owner.constraints.first(where: { $0.identifier == identifier }) {

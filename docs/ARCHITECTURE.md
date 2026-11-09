@@ -375,12 +375,13 @@ column beside the 216 pt rail, Settings 880 × 620 with its 664 pt detail
 column.
 
 `AgentWindowChrome` owns the Agent floor through two required minimum
-constraints on the window's public `contentLayoutGuide`. AppKit ignores
+constraints on its app-owned hosting content view. AppKit ignores
 `minSize` / `contentMinSize` when Auto Layout owns sizing. The production
 `NSHostingController` deliberately keeps `sizingOptions = []` to prevent an
 AppKit display-cycle crash; that protection must not be removed to obtain a
-minimum-size pass. The explicit guide constraints preserve it and account for
-the native titlebar height without a fixed frame-size compensation. Reapplying
+minimum-size pass. The explicit constraints use the same root floor as the
+SwiftUI layout; native titlebar allocation stays with AppKit. The system's
+content-layout guide reports that allocation and is not a sizing input. Reapplying
 chrome updates the same identified constraints rather than adding more owners.
 
 ### The Settings scale
