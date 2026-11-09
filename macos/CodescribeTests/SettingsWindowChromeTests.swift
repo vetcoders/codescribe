@@ -71,12 +71,19 @@ final class SettingsWindowChromeTests: XCTestCase {
             (splitView(in: window)?.delegate as? NSSplitViewController)?.splitViewItems.first)
           XCTAssertEqual(rect.minX, frame(sidebar.viewController.view).maxX, accuracy: 1)
         }
+        let content = try XCTUnwrap(
+          first(in: root) {
+            $0.identifier?.rawValue == "codescribe-header-content"
+          })
+        if !expanded { XCTAssertEqual(rect.minX, 0, accuracy: 1) }
         for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
           let control = try XCTUnwrap(window.standardWindowButton(type))
-          XCTAssertFalse(rect.intersects(frame(control)))
+          XCTAssertFalse(frame(content).intersects(frame(control)))
         }
-        let content = try XCTUnwrap(glass.contentView)
-        XCTAssertNotNil(content.hitTest(NSPoint(x: rect.width / 2, y: rect.height / 2)))
+        let contentRect = frame(content)
+        let point = try XCTUnwrap(content.superview).convert(
+          NSPoint(x: contentRect.midX, y: contentRect.midY), from: nil)
+        XCTAssertNotNil(content.hitTest(point))
       }
     }
   }

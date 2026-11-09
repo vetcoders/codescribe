@@ -120,13 +120,18 @@ final class AgentWindowChromeTests: XCTestCase {
     XCTAssertEqual(frame(glass).maxX, frame(viewport).maxX, accuracy: 0.5)
     XCTAssertEqual(frame(glass).maxY, frame(viewport).maxY, accuracy: 0.5)
     let controls = try XCTUnwrap(
-      first(in: glass) { $0.identifier?.rawValue == "codescribe-header-content" })
+      first(in: try XCTUnwrap(window.contentView?.superview)) {
+        $0.identifier?.rawValue == "codescribe-header-content"
+      })
     XCTAssertEqual(frame(controls).minY, rect.minY, accuracy: 0.5)
     XCTAssertEqual(frame(controls).maxY, rect.maxY, accuracy: 0.5)
     XCTAssertEqual(frame(controls).minX, rect.minX, accuracy: 0.5)
     XCTAssertEqual(frame(controls).maxX, rect.maxX, accuracy: 0.5)
     XCTAssertEqual(window.titlebarSeparatorStyle, .none)
-    XCTAssertNotNil(glass.contentView, "the real information and actions belong inside glass")
+    XCTAssertTrue(controls.isDescendant(of: owner.view), "foreground stays in the native accessory")
+    XCTAssertNil(
+      first(in: glass) { $0.identifier?.rawValue == "codescribe-header-content" },
+      "passive material must not duplicate the real header")
     XCTAssertEqual(lights.count, 3)
     XCTAssertTrue(lights.allSatisfy { !$0.isHiddenOrHasHiddenAncestor })
   }
@@ -167,9 +172,14 @@ final class AgentWindowChromeTests: XCTestCase {
         XCTAssertEqual(rect.minY, window.contentLayoutRect.maxY, accuracy: 1)
         XCTAssertEqual(rect.height, 52, accuracy: 1)
         XCTAssertEqual(glass.cornerRadius, 0)
+        let controls = try XCTUnwrap(
+          first(in: try XCTUnwrap(window.contentView?.superview)) {
+            $0.identifier?.rawValue == "codescribe-header-content"
+          })
+        if !expanded { XCTAssertEqual(rect.minX, 0, accuracy: 1) }
         for light in trafficLights(in: window) {
           XCTAssertFalse(
-            rect.intersects(frame(light)), "detail glass covers a native window button")
+            frame(controls).intersects(frame(light)), "foreground covers a native window button")
         }
       }
     }
@@ -177,7 +187,9 @@ final class AgentWindowChromeTests: XCTestCase {
 
   private func nativeSidebarGlass(in window: NSWindow) -> NSGlassEffectView? {
     guard let content = window.contentView else { return nil }
-    return first(in: content) { $0 is NSGlassEffectView } as? NSGlassEffectView
+    return first(in: content) {
+      $0 is NSGlassEffectView && $0.identifier?.rawValue != "codescribe-header-glass"
+    } as? NSGlassEffectView
   }
 
   private func rectangularHeaderGlass(in window: NSWindow) -> NSGlassEffectView? {
@@ -248,15 +260,20 @@ final class AgentWindowChromeTests: XCTestCase {
         }
 
         let glass = try XCTUnwrap(rectangularHeaderGlass(in: window))
-        let content = try XCTUnwrap(glass.contentView)
+        let content = try XCTUnwrap(
+          first(in: try XCTUnwrap(theme)) {
+            $0.identifier?.rawValue == "codescribe-header-content"
+          })
         let rect = visibleHeaderFrame(glass)
         XCTAssertEqual(rect.maxX, window.frame.width, accuracy: 1)
         XCTAssertEqual(rect.midY, window.frame.height - 26, accuracy: 1)
         XCTAssertEqual(rect.height, 52, accuracy: 1)
         for light in trafficLights(in: window) {
-          XCTAssertFalse(rect.intersects(frame(light)), "header overlaps native window controls")
+          XCTAssertFalse(frame(content).intersects(frame(light)), "header overlaps native controls")
         }
-        let point = glass.convert(NSPoint(x: rect.midX, y: rect.midY), from: nil)
+        let contentRect = frame(content)
+        let point = try XCTUnwrap(content.superview).convert(
+          NSPoint(x: contentRect.midX, y: contentRect.midY), from: nil)
         XCTAssertNotNil(content.hitTest(point), "real header content must receive pointer events")
         let toggle = window.toolbar?.items.first {
           $0.itemIdentifier.rawValue.localizedCaseInsensitiveContains("sidebar")
