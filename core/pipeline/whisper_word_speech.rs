@@ -14,18 +14,21 @@
 use super::acoustic_ledger::{RefuseReason, SilenceUnderSpan};
 use super::engine_tuning::EngineTuning;
 
-/// Historical tuning default retained by the existing settings surface.
-/// Word admission does not infer occurrence identity from syllable duration.
-pub const WHISPER_REPEAT_MIN_MS_PER_SYLLABLE: u64 = 100;
+/// Default minimum voiced span, in milliseconds per syllable, for an adjacent
+/// identical Whisper repeat (`EngineTuning::DEFAULT`, slider position `0`).
+/// Moves to `100` ms at `-100` (strict) and `40` ms at `+100` (loose).
+pub const WHISPER_REPEAT_MIN_MS_PER_SYLLABLE: u64 = 60;
 
-/// Radius retained for distance diagnostics and the existing tuning surface.
-/// It does not grant admission to a word without its own Silero intersection.
+/// Default near-speech onset/tail bridge radius (`EngineTuning::DEFAULT`,
+/// slider position `0`). Moves to `500` ms at `-100` (strict) and `2_000` ms
+/// at `+100` (loose).
 ///
 /// Archived Div0 evidence from 15–17 October contains 689 words without
-/// Silero speech under their spans; 303 lie within 500 ms of speech. That
-/// proximity was previously an admission path. It remains useful to diagnose
-/// timestamp jitter, but cannot establish a spoken occurrence.
-pub const WHISPER_WORD_SPEECH_NEAR_MS: u64 = 500;
+/// Silero speech under their spans; 303 lie within 500 ms of speech and 352
+/// within 1_000 ms. A voiced word (`energy_above_floor == Some(true)`) whose
+/// span falls just outside Silero's island bridges to a Silero-confirmed
+/// neighbour within this radius.
+pub const WHISPER_WORD_SPEECH_NEAR_MS: u64 = 1_000;
 
 /// Receipt label when required evidence was not measured. The word may stay
 /// visible, but this verdict never grants document admission.
@@ -122,26 +125,43 @@ pub fn judge_whisper_words(words: &[WhisperWordSpeech]) -> Vec<WhisperWordSpeech
     judge_whisper_words_tuned(words, &EngineTuning::DEFAULT)
 }
 
-/// The tuning remains available for the existing take configuration; neither
-/// duration nor nearness grants word admission.
+/// [`judge_whisper_words`] with the take's near-speech bridge and fast-repeat
+/// stutter thresholds applied from `tuning`.
 pub fn judge_whisper_words_tuned(
     words: &[WhisperWordSpeech],
-    _tuning: &EngineTuning,
+    tuning: &EngineTuning,
 ) -> Vec<WhisperWordSpeechDecision> {
     words
         .iter()
-        .map(|word| WhisperWordSpeechDecision {
-            verdict: judge_one(word),
+        .enumerate()
+        .map(|(index, word)| WhisperWordSpeechDecision {
+            verdict: judge_one(words, index, word, tuning),
         })
         .collect()
 }
 
-fn judge_one(word: &WhisperWordSpeech) -> WhisperWordSpeechVerdict {
+fn judge_one(
+    words: &[WhisperWordSpeech],
+    index: usize,
+    word: &WhisperWordSpeech,
+    tuning: &EngineTuning,
+) -> WhisperWordSpeechVerdict {
     // Silero is the speech witness: its island decides, and energy cannot
-    // promote room noise it rejected to speech. A word on an island keeps its
-    // place even where its own pin covers a pause. Energy decides only where
-    // Silero has not observed the span yet.
+    // promote room noise it rejected to speech on its own. A voiced word whose
+    // pin lands just ahead of or behind a Silero-confirmed word in the same
+    // window bridges across `tuning.whisper_word_speech_near_ms`. Energy
+    // decides alone only where Silero has not observed the span yet.
     match (word.silero_speech, word.energy_above_floor) {
+        (Some(false), Some(true))
+            if matches!(
+                word.silero_speech_distance,
+                SileroSpeechDistance::Unmeasured
+            ) && has_voiced_speech_neighbour(
+                words,
+                index,
+                word,
+                tuning.whisper_word_speech_near_ms,
+            ) => {}
         (Some(false), _) => {
             return WhisperWordSpeechVerdict::Refuse(RefuseReason::SpanWithoutOwnSpeech);
         }
@@ -151,7 +171,66 @@ fn judge_one(word: &WhisperWordSpeech) -> WhisperWordSpeechVerdict {
         (None, None) => return WhisperWordSpeechVerdict::Unmeasured,
         _ => {}
     }
-    WhisperWordSpeechVerdict::Admit
+    if !is_identical_repeat(words, index) {
+        return WhisperWordSpeechVerdict::Admit;
+    }
+    match span_meets_syllable_floor(word, tuning.whisper_repeat_min_ms_per_syllable) {
+        Some(true) => WhisperWordSpeechVerdict::Admit,
+        Some(false) => {
+            if separated_gap_meets_syllable_floor(
+                &words[index - 1],
+                word,
+                tuning.whisper_repeat_min_ms_per_syllable,
+            ) {
+                WhisperWordSpeechVerdict::Admit
+            } else {
+                WhisperWordSpeechVerdict::Refuse(
+                    RefuseReason::IdenticalRepeatWithoutOwnVoicedSegment,
+                )
+            }
+        }
+        None => WhisperWordSpeechVerdict::Unmeasured,
+    }
+}
+
+fn has_voiced_speech_neighbour(
+    words: &[WhisperWordSpeech],
+    index: usize,
+    word: &WhisperWordSpeech,
+    near_ms: u64,
+) -> bool {
+    if near_ms == 0 || word.sample_rate == 0 || word.sample_end <= word.sample_start {
+        return false;
+    }
+    let rate = u64::from(word.sample_rate);
+    words.iter().enumerate().any(|(other_index, other)| {
+        if other_index == index
+            || other.silero_speech != Some(true)
+            || other.energy_above_floor == Some(false)
+            || other.sample_end <= other.sample_start
+        {
+            return false;
+        }
+        let gap_samples = word
+            .sample_start
+            .saturating_sub(other.sample_end)
+            .max(other.sample_start.saturating_sub(word.sample_end));
+        let gap_ms = gap_samples.saturating_mul(1_000) / rate;
+        gap_ms <= near_ms
+    })
+}
+
+fn is_identical_repeat(words: &[WhisperWordSpeech], index: usize) -> bool {
+    let Some(key) = normalized_repeat_key(&words[index].text) else {
+        return false;
+    };
+    index > 0 && normalized_repeat_key(&words[index - 1].text).as_deref() == Some(key.as_str())
+}
+
+fn normalized_repeat_key(text: &str) -> Option<String> {
+    let raw = repeat_key(text)?;
+    let normalized = raw.trim_matches(|ch: char| !ch.is_alphanumeric());
+    (!normalized.is_empty()).then(|| normalized.to_string())
 }
 
 /// One whitespace token, compared case-insensitively. A phrase is not a run.
@@ -194,6 +273,65 @@ pub(crate) fn window_has_silero_dip(
     mut speech_ranges: impl Iterator<Item = (u64, u64)>,
 ) -> bool {
     !speech_ranges.any(|(start, end)| start <= window.0 && window.1 <= end)
+}
+
+/// `Some` when the sample rate can turn the span into milliseconds.
+fn span_meets_syllable_floor(word: &WhisperWordSpeech, min_ms_per_syllable: u64) -> Option<bool> {
+    if word.sample_rate == 0 || word.sample_end <= word.sample_start {
+        return None;
+    }
+    let syllables = u64::from(syllable_groups(&word.text).max(1));
+    let milliseconds =
+        word.sample_end.saturating_sub(word.sample_start) * 1_000 / u64::from(word.sample_rate);
+    Some(milliseconds >= min_ms_per_syllable.saturating_mul(syllables))
+}
+
+fn separated_gap_meets_syllable_floor(
+    previous: &WhisperWordSpeech,
+    word: &WhisperWordSpeech,
+    min_ms_per_syllable: u64,
+) -> bool {
+    if word.separated_from_previous != Some(true) || word.sample_rate == 0 {
+        return false;
+    }
+    let syllables = u64::from(syllable_groups(&word.text).max(1));
+    let gap_ms = word
+        .sample_start
+        .saturating_sub(previous.sample_end)
+        .saturating_mul(1_000)
+        / u64::from(word.sample_rate);
+    gap_ms >= min_ms_per_syllable.saturating_mul(syllables)
+}
+
+/// Vowel groups in lowercase. Polish `i`/`y` immediately before another vowel
+/// is a glide and does not open a syllable: "nie" is 1, "Iwo" is 2,
+/// "dziękuję" is 3.
+fn syllable_groups(text: &str) -> u32 {
+    let chars: Vec<char> = text.chars().flat_map(|c| c.to_lowercase()).collect();
+    let mut count = 0u32;
+    let mut index = 0;
+    while index < chars.len() {
+        if !is_vowel(chars[index]) {
+            index += 1;
+            continue;
+        }
+        let glide = matches!(chars[index], 'i' | 'y')
+            && chars.get(index + 1).is_some_and(|next| is_vowel(*next));
+        if glide {
+            index += 1;
+            continue;
+        }
+        count += 1;
+        index += 1;
+        while index < chars.len() && is_vowel(chars[index]) {
+            index += 1;
+        }
+    }
+    count
+}
+
+fn is_vowel(c: char) -> bool {
+    matches!(c, 'a' | 'e' | 'i' | 'o' | 'u' | 'y' | 'ą' | 'ę' | 'ó')
 }
 
 #[cfg(test)]
@@ -626,6 +764,76 @@ mod tests {
             separation_window((0, 12_000), (0, 12_000)),
             None,
             "a word that does not start after the previous one has no window"
+        );
+    }
+
+    #[test]
+    fn judge_whisper_words_tuned_respects_ledger_sensitivity_for_near_onset_and_stutter_repeats() {
+        let strict = EngineTuning::with_ledger_sensitivity(-100);
+        let default = EngineTuning::with_ledger_sensitivity(0);
+        let loose = EngineTuning::with_ledger_sensitivity(100);
+
+        // Near-speech onset bridge: "Przede" (0..14_400, 300 ms) has voiced energy
+        // above the floor while Silero speech starts on "wszystkim".
+        // Gap of 750 ms (36_000 samples at 48 kHz): outside strict (500 ms),
+        // inside default (1_000 ms) and loose (2_000 ms).
+        let onset_750ms = [
+            word("Przede", 0, 14_400, Some(false), Some(true), None),
+            word("wszystkim", 50_400, 84_000, Some(true), Some(true), None),
+        ];
+        assert_eq!(
+            judge_whisper_words_tuned(&onset_750ms, &strict)[0].verdict,
+            WhisperWordSpeechVerdict::Refuse(RefuseReason::SpanWithoutOwnSpeech)
+        );
+        assert!(judge_whisper_words_tuned(&onset_750ms, &default)[0].admits());
+        assert!(judge_whisper_words_tuned(&onset_750ms, &loose)[0].admits());
+
+        // Gap of 1_500 ms (72_000 samples at 48 kHz): outside default (1_000 ms),
+        // inside loose (2_000 ms).
+        let onset_1500ms = [
+            word("Przede", 0, 14_400, Some(false), Some(true), None),
+            word("wszystkim", 86_400, 120_000, Some(true), Some(true), None),
+        ];
+        assert_eq!(
+            judge_whisper_words_tuned(&onset_1500ms, &default)[0].verdict,
+            WhisperWordSpeechVerdict::Refuse(RefuseReason::SpanWithoutOwnSpeech)
+        );
+        assert!(judge_whisper_words_tuned(&onset_1500ms, &loose)[0].admits());
+
+        // Fast-repeat stutter filter on adjacent identical tokens:
+        // 80 ms (3_840 samples at 48 kHz): below strict (100 ms/syllable),
+        // above default (60 ms/syllable) and loose (40 ms/syllable).
+        let repeat_80ms = [
+            word("nie", 0, 3_840, Some(true), Some(true), None),
+            word("nie,", 3_840, 7_680, Some(true), Some(true), Some(false)),
+        ];
+        assert_eq!(
+            judge_whisper_words_tuned(&repeat_80ms, &strict)[1].verdict,
+            WhisperWordSpeechVerdict::Refuse(RefuseReason::IdenticalRepeatWithoutOwnVoicedSegment)
+        );
+        assert!(judge_whisper_words_tuned(&repeat_80ms, &default)[1].admits());
+        assert!(judge_whisper_words_tuned(&repeat_80ms, &loose)[1].admits());
+
+        // 50 ms (2_400 samples at 48 kHz): below default (60 ms/syllable),
+        // above loose (40 ms/syllable).
+        let repeat_50ms = [
+            word("nie", 0, 2_400, Some(true), Some(true), None),
+            word("nie", 2_400, 4_800, Some(true), Some(true), Some(false)),
+        ];
+        assert_eq!(
+            judge_whisper_words_tuned(&repeat_50ms, &default)[1].verdict,
+            WhisperWordSpeechVerdict::Refuse(RefuseReason::IdenticalRepeatWithoutOwnVoicedSegment)
+        );
+        assert!(judge_whisper_words_tuned(&repeat_50ms, &loose)[1].admits());
+
+        // 30 ms (1_440 samples at 48 kHz): below even the loose 40 ms/syllable floor.
+        let repeat_30ms = [
+            word("nie", 0, 1_440, Some(true), Some(true), None),
+            word("nie", 1_440, 2_880, Some(true), Some(true), Some(false)),
+        ];
+        assert_eq!(
+            judge_whisper_words_tuned(&repeat_30ms, &loose)[1].verdict,
+            WhisperWordSpeechVerdict::Refuse(RefuseReason::IdenticalRepeatWithoutOwnVoicedSegment)
         );
     }
 }

@@ -99,7 +99,7 @@ impl EngineTuning {
             "whisper_repeat_min_ms_per_syllable",
             "ms",
             WHISPER_REPEAT_MIN_MS_PER_SYLLABLE as f64,
-            50.0,
+            40.0,
             200.0,
             TuningAxis::WordOverSilence,
         ),
@@ -151,11 +151,11 @@ pub const LEDGER_SENSITIVITY_MAX: i32 = 100;
 /// Word-admission knobs at the strict end of the ledger slider: an identical
 /// repeat needs more voiced time per syllable, and a word finds speech only
 /// within a narrower radius. Fewer repeated and stray words, more cut words.
-const LEDGER_STRICT_REPEAT_MS_PER_SYLLABLE: u64 = 160;
-const LEDGER_STRICT_NEAR_MS: u64 = 250;
+const LEDGER_STRICT_REPEAT_MS_PER_SYLLABLE: u64 = 100;
+const LEDGER_STRICT_NEAR_MS: u64 = 500;
 /// The loose end: more repeats and words far from speech stay.
-const LEDGER_LOOSE_REPEAT_MS_PER_SYLLABLE: u64 = 60;
-const LEDGER_LOOSE_NEAR_MS: u64 = 1_000;
+const LEDGER_LOOSE_REPEAT_MS_PER_SYLLABLE: u64 = 40;
+const LEDGER_LOOSE_NEAR_MS: u64 = 2_000;
 
 impl EngineTuning {
     /// Today's engine with the ledger slider applied. 0 is [`Self::DEFAULT`];
@@ -249,8 +249,8 @@ mod tests {
         let tuning = EngineTuning::default();
         assert_eq!((tuning.live_window_sec, tuning.live_step_sec), (9, 3));
         assert!(tuning.live_step_sec <= tuning.live_window_sec);
-        assert_eq!(tuning.whisper_word_speech_near_ms, 500);
-        assert_eq!(tuning.whisper_repeat_min_ms_per_syllable, 100);
+        assert_eq!(tuning.whisper_word_speech_near_ms, 1_000);
+        assert_eq!(tuning.whisper_repeat_min_ms_per_syllable, 60);
     }
 
     #[test]
@@ -266,14 +266,14 @@ mod tests {
                 strict.whisper_repeat_min_ms_per_syllable,
                 strict.whisper_word_speech_near_ms
             ),
-            (160, 250)
+            (100, 500)
         );
         assert_eq!(
             (
                 loose.whisper_repeat_min_ms_per_syllable,
                 loose.whisper_word_speech_near_ms
             ),
-            (60, 1_000)
+            (40, 2_000)
         );
         assert_eq!(EngineTuning::with_ledger_sensitivity(-500), strict);
         assert_eq!(EngineTuning::with_ledger_sensitivity(500), loose);
@@ -283,7 +283,15 @@ mod tests {
                 half_left.whisper_repeat_min_ms_per_syllable,
                 half_left.whisper_word_speech_near_ms
             ),
-            (130, 375)
+            (80, 750)
+        );
+        let half_right = EngineTuning::with_ledger_sensitivity(50);
+        assert_eq!(
+            (
+                half_right.whisper_repeat_min_ms_per_syllable,
+                half_right.whisper_word_speech_near_ms
+            ),
+            (50, 1_500)
         );
         for position in [-100, -37, 0, 41, 100] {
             let tuning = EngineTuning::with_ledger_sensitivity(position);

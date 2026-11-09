@@ -8031,14 +8031,15 @@ fn silence_under_span(state: &AppleSealState, start: u64, end: u64) -> SilenceUn
     }
 }
 
-/// Maximum continuous voiced onset before a Silero speech range that Silero's
-/// RNN warm-up can miss at the start of an utterance (`2 * SPEECH_ISLAND_GAP_MS`).
+/// Fallback continuous voiced onset before a Silero speech range when no tuning
+/// override is active (`2 * SPEECH_ISLAND_GAP_MS`).
 const SILERO_VOICED_ONSET_MAX_MS: u64 = 2 * crate::pipeline::speech_islands::SPEECH_ISLAND_GAP_MS;
 
 fn extend_silero_start_to_voiced_onset(
     anchors: &[SpeechAnchor],
     anchor_cursor: &mut usize,
     sample_rate: u32,
+    max_onset_ms: u64,
     start: u64,
     previous_end: u64,
 ) -> u64 {
@@ -8055,8 +8056,12 @@ fn extend_silero_start_to_voiced_onset(
     {
         *anchor_cursor += 1;
     }
-    let max_onset_samples =
-        u64::from(sample_rate.max(1)).saturating_mul(SILERO_VOICED_ONSET_MAX_MS) / 1_000;
+    let onset_ms = if max_onset_ms > 0 {
+        max_onset_ms
+    } else {
+        SILERO_VOICED_ONSET_MAX_MS
+    };
+    let max_onset_samples = u64::from(sample_rate.max(1)).saturating_mul(onset_ms) / 1_000;
     anchors
         .get(*anchor_cursor)
         .filter(|anchor| {
@@ -8079,6 +8084,7 @@ fn ledger_with_voiced_onsets<'a>(
     if anchors.is_empty() {
         return std::borrow::Cow::Borrowed(ledger);
     }
+    let max_onset_ms = state.engine_tuning.whisper_word_speech_near_ms;
     let mut previous_end = 0u64;
     let mut anchor_cursor = 0usize;
     let mut any_changed = false;
@@ -8087,6 +8093,7 @@ fn ledger_with_voiced_onsets<'a>(
             &anchors,
             &mut anchor_cursor,
             state.sample_rate,
+            max_onset_ms,
             utterance.range.sample_start,
             previous_end,
         );
@@ -8107,6 +8114,7 @@ fn ledger_with_voiced_onsets<'a>(
             &anchors,
             &mut anchor_cursor,
             state.sample_rate,
+            max_onset_ms,
             utterance.range.sample_start,
             previous_end,
         );
@@ -8121,6 +8129,7 @@ fn voiced_onset_silero_ranges(
 ) -> Vec<(u64, u64)> {
     let anchors = state.voiced_onset_anchors();
     let anchors = anchors.as_deref().unwrap_or(&[]);
+    let max_onset_ms = state.engine_tuning.whisper_word_speech_near_ms;
     let mut previous_end = 0u64;
     let mut anchor_cursor = 0usize;
     evidence
@@ -8131,6 +8140,7 @@ fn voiced_onset_silero_ranges(
                 anchors,
                 &mut anchor_cursor,
                 state.sample_rate,
+                max_onset_ms,
                 range.sample_start,
                 previous_end,
             );
