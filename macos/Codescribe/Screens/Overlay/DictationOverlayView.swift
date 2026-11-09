@@ -1403,11 +1403,7 @@ struct DictationOverlayView: View {
       // Mini and MIDI are the header itself: the canvas already supplies their
       // glass. Raising a second sheet here draws an inset rim and shadow.
       // Keep one header identity through morphs; only its material changes.
-      .modifier(
-        OverlayControlGlass(
-          cornerRadius: CSRadius.window, isEnabled: state.presentationMode == .expanded,
-          role: .chrome)
-      )
+      .modifier(OverlayControlGlass.header(for: state.presentationMode))
       // The cached panel survives orderOut. Observe its window beside the header
       // row so the visibility probe is installed exactly once.
       .background {

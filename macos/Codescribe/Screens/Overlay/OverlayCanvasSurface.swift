@@ -236,9 +236,17 @@ struct OverlayControlGlass: ViewModifier {
   var showsBorder = true
   var glassPreferences = ChromeGlassPreferences()
 
+  static func header(for mode: OverlayPresentationMode) -> Self {
+    Self(cornerRadius: CSRadius.window, isEnabled: mode == .expanded, role: .chrome)
+  }
+
+  var surfaceShape: RoundedRectangle {
+    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+  }
+
   @ViewBuilder
   func body(content: Content) -> some View {
-    let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+    let shape = surfaceShape
     let tint = glassPreferences.tint(for: .busHeader)
     // Surface glass stays still under the pointer; controls own interaction.
     let base = Glass.regular
