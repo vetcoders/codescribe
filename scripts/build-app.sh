@@ -481,7 +481,7 @@ run_app_xcodebuild() {
   xcodebuild -project macos/Codescribe.xcodeproj \
     -scheme "$SCHEME" -configuration "$CONFIG" \
     -derivedDataPath "$DERIVED" \
-    PRODUCT_NAME="$APP_BUNDLE_NAME" \
+    CS_APP_PRODUCT_NAME="$APP_BUNDLE_NAME" \
     ONLY_ACTIVE_ARCH=YES \
     LIBRARY_SEARCH_PATHS="\"$TARGET_DIR\"" \
     CODE_SIGNING_ALLOWED="${CODE_SIGNING_ALLOWED:-NO}" \

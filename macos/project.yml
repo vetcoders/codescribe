@@ -85,7 +85,8 @@ targets:
         NSScreenCaptureUsageDescription: "x9bus captures the screen when you ask the assistant to look at what is currently on screen."
     settings:
       base:
-        PRODUCT_NAME: X9bus
+        CS_APP_PRODUCT_NAME: X9bus
+        PRODUCT_NAME: $(CS_APP_PRODUCT_NAME)
         PRODUCT_MODULE_NAME: Codescribe
         # Dock/app icon — AppIcon.appiconset in Codescribe/Assets.xcassets.
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
