@@ -267,7 +267,12 @@ final class OverlayResizePreviewTests: XCTestCase {
     XCTAssertTrue(
       resizedBacking.configuration.opaque, "Respect the source override, not desktop defaults")
     let bitmap = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: root.bounds))
-    root.cacheDisplay(in: root.bounds, to: bitmap)
+    let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
+    root.displayIfNeeded()
+    // Composite the native layers as the window does. Recursive cacheDisplay
+    // flattens a transparent child's clear into its siblings' drawing context.
+    let layer = try XCTUnwrap(root.layer)
+    layer.render(in: context.cgContext)
     let addedArea = try XCTUnwrap(
       bitmap.colorAt(
         x: bitmap.pixelsWide * 4 / 5, y: bitmap.pixelsHigh / 2))

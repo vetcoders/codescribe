@@ -165,6 +165,7 @@ private final class OverlayResizePreviewContainer: NSView {
     self.drawing = drawing
     self.backdrop = backdrop
     super.init(frame: .zero)
+    wantsLayer = true
     addSubview(backdrop)
     addSubview(drawing)
   }
@@ -211,6 +212,8 @@ final class OverlayResizePreviewView: NSView {
     self.cornerRadius = cornerRadius
     self.paintsCanvas = paintsCanvas
     super.init(frame: .zero)
+    // Clear only this foreground backing store, never the material below it.
+    wantsLayer = true
   }
   required init?(coder: NSCoder) { return nil }
   override var isOpaque: Bool { false }
