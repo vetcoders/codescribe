@@ -17,6 +17,7 @@ struct OverlayCanvasSurface<Content: View>: View {
   @Environment(\.csContrastOverride) private var contrastOverride
   let palette: OverlayAppearancePalette
   var glassRole: OverlayGlassRole = .readingCanvas
+  var readingTopInset: CGFloat = 0
   @ViewBuilder let content: Content
 
   var body: some View {
@@ -26,7 +27,8 @@ struct OverlayCanvasSurface<Content: View>: View {
           palette: palette,
           reduceTransparency: reduceTransparencyOverride ?? reduceTransparency,
           increasedContrast: (contrastOverride ?? contrast) == .increased,
-          role: glassRole, showsBorder: glassRole == .readingCanvas)
+          role: glassRole, showsBorder: glassRole == .readingCanvas,
+          topInset: glassRole == .readingCanvas ? readingTopInset : 0)
       }
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.window, style: .continuous))
       .shadow(
@@ -49,6 +51,7 @@ struct OverlayCanvasBackdrop: View {
   var cornerRadius: CGFloat = CSRadius.window
   var role: OverlayGlassRole = .readingCanvas
   var showsBorder = false
+  var topInset: CGFloat = 0
   var tuningSurface: ChromeGlassSurface = .compactOverlay
   var glassPreferences = ChromeGlassPreferences()
 
@@ -61,7 +64,7 @@ struct OverlayCanvasBackdrop: View {
         tintColor: role == .chrome && glassPreferences.tint(for: tuningSurface) > 0
           ? palette.desktopBackground.nsColor.withAlphaComponent(
             glassPreferences.tint(for: tuningSurface))
-          : nil, showsBorder: showsBorder))
+          : nil, showsBorder: showsBorder, topInset: topInset))
   }
 
   /// The shared sheet colour over the native glass: near-black on ink,
@@ -107,6 +110,7 @@ final class OverlayCanvasBackdropView: NSView {
     let opaque: Bool
     let tintColor: NSColor?
     var showsBorder = false
+    var topInset: CGFloat = 0
   }
 
   private(set) var configuration: Configuration
@@ -136,7 +140,12 @@ final class OverlayCanvasBackdropView: NSView {
     let value = configuration
     appearance = NSAppearance(named: value.palette.appearance == .dark ? .darkAqua : .aqua)
     layer?.cornerRadius = value.cornerRadius
+    layer?.cornerCurve = .continuous
     layer?.masksToBounds = true
+    // Keep the existing window perimeter, without drawing a new border along
+    // the reading/header boundary when the reading layers start below it.
+    layer?.borderWidth = value.showsBorder ? 1 : 0
+    layer?.borderColor = value.palette.border.nsColor.cgColor
     if value.opaque {
       // Opaque accessibility must remove desktop sampling, not just hide it.
       material?.removeFromSuperview()
@@ -157,14 +166,8 @@ final class OverlayCanvasBackdropView: NSView {
       (value.opaque
       ? value.palette.desktopBackground.nsColor
       : OverlayCanvasBackdrop.glassVeil(value.palette)).cgColor
-    // The perimeter belongs to the current-size backdrop, not the frozen image.
-    veil.layer?.cornerCurve = .continuous
-    veil.layer?.cornerRadius = value.cornerRadius
-    veil.layer?.borderWidth = value.showsBorder ? 1 : 0
-    veil.layer?.borderColor = value.palette.border.nsColor.cgColor
     if #available(macOS 26, *), let glass = material as? OverlayDesktopGlassView {
       glass.style = .regular
-      glass.cornerRadius = value.cornerRadius
       glass.tintColor = value.tintColor
     } else if let effect = material as? OverlayDesktopEffectView {
       effect.material = .hudWindow
@@ -185,8 +188,20 @@ final class OverlayCanvasBackdropView: NSView {
   }
 
   private func sizeLayers() {
-    material?.frame = bounds
-    veil.frame = bounds
+    let inset = min(bounds.height, max(0, configuration.topInset))
+    let readingBounds = NSRect(
+      x: bounds.minX, y: bounds.minY + (isFlipped ? inset : 0),
+      width: bounds.width, height: bounds.height - inset)
+    material?.frame = readingBounds
+    veil.frame = readingBounds
+    // The window clip owns the lower corners. Rounding the new top edge
+    // would cut notches into the join beneath the independently owned header.
+    let radius = inset > 0 ? 0 : configuration.cornerRadius
+    veil.layer?.cornerCurve = .continuous
+    veil.layer?.cornerRadius = radius
+    if #available(macOS 26, *), let glass = material as? OverlayDesktopGlassView {
+      glass.cornerRadius = radius
+    }
   }
 
   static func all(in view: NSView) -> [OverlayCanvasBackdropView] {

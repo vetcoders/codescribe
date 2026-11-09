@@ -68,18 +68,18 @@ strips and hard panel boundaries need evidence about their actual owner.
 
 ### G3 — One owner per surface and role
 
-| Surface / responsibility | Owner and boundary |
-| --- | --- |
-| Agent/Settings navigation material | `NavigationSplitView`; `CSSidebarColumn` owns sidebar content/style, not a second material behind it. |
-| Shared Agent/Settings header | `CSWindowTopHeader`; one passive native-glass host in the app background and one trailing AppKit accessory for the real foreground content. Material coverage and control exclusion are distinct bounds. |
-| Window buttons and native sidebar toggle | AppKit; never replace them with lookalikes or modify private system views. |
-| Agent conversation / Settings detail | Their reading canvas below the header, respecting leading and top safe areas. |
-| Agent Context | A compact, neutral opaque card over the conversation; no full-height trailing material or decorative glass owner. |
-| Onboarding window, navigation and actions | `OnboardingWindowController` owns the native host; `OnboardingView` owns header/progress and footer navigation, composing its root through the existing `OverlayCanvasBackdrop` owner with `.chrome` and the onboarding tint scope. |
-| Onboarding reading content | `OnboardingView` owns `stepHeading` and the scrollable reading column; `OnboardingSteps.swift` owns the step bodies and their controls. Their reading role does not become chrome merely because the current root supplies glass behind them; see the boundary below. |
-| Overlay canvas material and reading veil | `OverlayCanvasBackdropView` in `OverlayCanvasSurface.swift`; `.chrome` and `.readingCanvas` are distinct roles. |
-| Expanded overlay header material | `OverlayControlGlass` composed by `DictationOverlayView`; mini/MIDI already use their root chrome material and do not add another header sheet. |
-| Overlay resize feedback | `OverlayResizePreview`; temporary frozen foreground plus a live backdrop using the canvas owner's policy. |
+| Surface / responsibility                  | Owner and boundary                                                                                                                                                                                                                                                    |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Agent/Settings navigation material        | `NavigationSplitView`; `CSSidebarColumn` owns sidebar content/style, not a second material behind it.                                                                                                                                                                 |
+| Shared Agent/Settings header              | `CSWindowTopHeader`; one passive native-glass host in the app background and one trailing AppKit accessory for the real foreground content. Material coverage and control exclusion are distinct bounds.                                                              |
+| Window buttons and native sidebar toggle  | AppKit; never replace them with lookalikes or modify private system views.                                                                                                                                                                                            |
+| Agent conversation / Settings detail      | Their reading canvas below the header, respecting leading and top safe areas.                                                                                                                                                                                         |
+| Agent Context                             | A compact, neutral opaque card over the conversation; no full-height trailing material or decorative glass owner.                                                                                                                                                     |
+| Onboarding window, navigation and actions | `OnboardingWindowController` owns the native host; `OnboardingView` owns header/progress and footer navigation, composing its root through the existing `OverlayCanvasBackdrop` owner with `.chrome` and the onboarding tint scope.                                   |
+| Onboarding reading content                | `OnboardingView` owns `stepHeading` and the scrollable reading column; `OnboardingSteps.swift` owns the step bodies and their controls. Their reading role does not become chrome merely because the current root supplies glass behind them; see the boundary below. |
+| Overlay canvas material and reading veil  | `OverlayCanvasBackdropView` in `OverlayCanvasSurface.swift`; `.chrome` and `.readingCanvas` are distinct roles.                                                                                                                                                       |
+| Expanded overlay header material          | `OverlayControlGlass` composed by `DictationOverlayView`; mini/MIDI already use their root chrome material and do not add another header sheet.                                                                                                                       |
+| Overlay resize feedback                   | `OverlayResizePreview`; temporary frozen foreground plus a live backdrop using the canvas owner's policy.                                                                                                                                                             |
 
 Paths in the table are under `macos/Codescribe/DesignSystem/` or
 `macos/Codescribe/Screens/Overlay/`, except the Agent/Settings screen owners
@@ -251,14 +251,14 @@ For a glass/layout repair, retain a reviewable receipt containing:
 4. Compositor images and motion evidence for the affected cases below, with
    unavailable cases and remaining failures stated explicitly.
 
-| Check | Required evidence for the affected surface |
-| --- | --- |
+| Check                   | Required evidence for the affected surface                                                                                                                                                                                     |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Material and foreground | Light/Dark and active/inactive on neutral/dark and contrasting colour/text backdrops; rendered foreground contrast, supported Accessibility Inspector checks, keyboard-only and VoiceOver operation for changed elements (G6). |
-| Scroll interaction | Real content moving beneath the header; inspect the whole window and both horizontal and vertical joins. |
-| Geometry | Minimum/normal widths, sidebar expanded/collapsed, Context open/closed where affected; native controls remain reachable. |
-| Mode continuity | Mini → expanded → MIDI at unchanged settings, recording the scene and activation; inspect transition and settled result. |
-| Resize | Actual drag, growth/shrink, release/cancel and consecutive gestures; inspect new space, clipping, restoration and latency. |
-| Accessibility / OS | Standard, Reduce Transparency, Increase Contrast and Reduce Motion; check affected transitions with policies set before opening and changed while open, restoration, supported API branches and untested versions. |
+| Scroll interaction      | Real content moving beneath the header; inspect the whole window and both horizontal and vertical joins.                                                                                                                       |
+| Geometry                | Minimum/normal widths, sidebar expanded/collapsed, Context open/closed where affected; native controls remain reachable.                                                                                                       |
+| Mode continuity         | Mini → expanded → MIDI at unchanged settings, recording the scene and activation; inspect transition and settled result.                                                                                                       |
+| Resize                  | Actual drag, growth/shrink, release/cancel and consecutive gestures; inspect new space, clipping, restoration and latency.                                                                                                     |
+| Accessibility / OS      | Standard, Reduce Transparency, Increase Contrast and Reduce Motion; check affected transitions with policies set before opening and changed while open, restoration, supported API branches and untested versions.             |
 
 Run the relevant changed cases, not an unrelated screenshot campaign. Existing
 checks include `AgentWindowChromeTests`, `SettingsWindowChromeTests`,
@@ -334,6 +334,27 @@ The trailing context column and its material, extended 8 pt above the panel,
 were removed on 2026-11-09 with the Context card. The obsolete trailing-column
 join no longer exists. This does not establish acceptance of the remaining
 header, collapsed-sidebar region or any other glass boundary.
+
+### Overlay mode backing boundary
+
+`DictationOverlayView` supplies its measured `headerHeight` to
+`OverlayCanvasSurface`. In expanded mode, `OverlayCanvasBackdropView` restricts
+both the native reading material and its veil to the region below that header.
+The expanded header retains its existing `OverlayControlGlass` owner, without
+another material or the reading veil behind it. Mini and MIDI keep their
+full-window `.chrome` backdrop. This repairs the overlapping backing chain;
+it does not select a new palette, increase veil opacity or tune away a mismatch.
+
+The shared backdrop configuration retains the measured top inset during frozen
+resize. Its existing window perimeter and outer clip stay full-size; the inset
+reading layers have a square top edge so they introduce neither an extra join
+border nor rounded holes. Other backdrop consumers retain the zero-inset default.
+
+Native tests exercise repeated mini → expanded → MIDI transitions in both
+appearances and verify reading/header separation. Resize coverage checks that
+the preview retains the source's inset and accessibility policy. These are
+geometry and ownership checks; compositor tone continuity, the join and actual
+resize motion still require the G5–G7 optical/performance evidence.
 
 ## Why
 

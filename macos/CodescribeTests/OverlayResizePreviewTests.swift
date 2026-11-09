@@ -309,7 +309,7 @@ final class OverlayResizePreviewTests: XCTestCase {
     let palette = OverlayAppearancePalette.resolve(ColorScheme.light)
     let source = NSHostingView(
       rootView:
-        OverlayCanvasSurface(palette: palette) { Color.clear }
+        OverlayCanvasSurface(palette: palette, readingTopInset: 40) { Color.clear }
         .environment(\.csReduceTransparencyOverride, true))
     source.sizingOptions = []
     let window = NSPanel(
@@ -336,6 +336,10 @@ final class OverlayResizePreviewTests: XCTestCase {
     let root = try XCTUnwrap(drawing.window?.contentView)
     let resizedBacking = try XCTUnwrap(OverlayCanvasBackdropView.all(in: root).first)
     XCTAssertEqual(resizedBacking.configuration, backing.configuration)
+    XCTAssertEqual(resizedBacking.configuration.topInset, 40)
+    let veil = try XCTUnwrap(resizedBacking.subviews.first)
+    XCTAssertEqual(veil.frame.height, resizedBacking.bounds.height - 40)
+    XCTAssertEqual(veil.frame.maxY, resizedBacking.bounds.maxY - 40)
     XCTAssertTrue(
       resizedBacking.configuration.opaque, "Respect the source override, not desktop defaults")
     if #available(macOS 26, *) {

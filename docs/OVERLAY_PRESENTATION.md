@@ -26,6 +26,12 @@ capture temporarily hides that owner and restores its original visibility, so
 the bitmap cannot retain an old-sized canvas and its rounded corners. A separate
 instance of the same backdrop follows the preview's current bounds, including
 newly exposed space, with the source's appearance, tint and accessibility policy.
+In the expanded overlay the reading material and veil start below the measured
+live header. Their shared native configuration carries this top inset into the
+resize preview; neither reading layer may back the independently owned header
+glass. Mini and MIDI retain full-window chrome. The window perimeter stays on
+the outer backdrop, so the inset creates no new border or rounded notch at the
+header/content join. Reading veil opacity and developer tint values are unchanged.
 Reduce Transparency and Increase Contrast remove the native sampling view;
 the opaque veil remains, rather than leaving a hidden material in the hierarchy.
 The foreground bitmap stays at its original pixel size, anchored top-left below
