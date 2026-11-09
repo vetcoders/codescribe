@@ -2394,6 +2394,12 @@
               "signature_contains": "pub async fn finish(&mut self)"
             },
             {
+              "symbol": "finish_shared_document",
+              "file": "core/audio/streaming_recorder.rs",
+              "required_code": [],
+              "ast_contract": "finish_shared_document"
+            },
+            {
               "symbol": "copy_stop_error",
               "file": "core/audio/streaming_recorder.rs",
               "required_code": [],
@@ -2604,6 +2610,20 @@
               "caller": "finish",
               "caller_file": "core/audio/streaming_recorder.rs",
               "callee": "prepare_terminal_audio",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "finish",
+              "caller_file": "core/audio/streaming_recorder.rs",
+              "callee": "finish_shared_document",
+              "callee_file": "core/audio/streaming_recorder.rs",
+              "minimum_count": 1
+            },
+            {
+              "caller": "finish_shared_document",
+              "caller_file": "core/audio/streaming_recorder.rs",
+              "callee": "copy_stop_error",
               "callee_file": "core/audio/streaming_recorder.rs",
               "minimum_count": 1
             },

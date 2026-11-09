@@ -2211,6 +2211,64 @@ class NeutralAstTests(unittest.TestCase):
                 self.assertFalse(contract["accepted"], evidence)
                 self.assertFalse(evidence["accepted"])
 
+    def test_shared_take_keeps_participation_and_pending_settlement_ownership(self):
+        self.assertTrue(self.run_payload(self.payload)["accepted"])
+        cases = [
+            ("foreign_participant", "close_capture", "self.close_channel_session(participation.id)",
+             "self.close_channel_session(ChannelSessionId(999))"),
+            ("close_result_forged", "close_capture", "let was_active = closed.last;",
+             "let was_active = true;"),
+            ("shared_close_discarded", "close_capture",
+             "self.closed_dictation_participation = Some(closed);",
+             "self.closed_dictation_participation = None;"),
+            ("failed_join_closes_common_capture", "close_capture",
+             "if self.dictation_participation_requested {", "if false {"),
+            ("shared_take_detaches_physical_archive", "detach_closed_take",
+             "if self.dictation_participation_requested {", "if false {"),
+            ("shared_close_not_transferred", "detach_take_state",
+             "self.closed_dictation_participation.take()", "None"),
+            ("common_archive_claimed_as_document", "detach_take_state",
+             "demux.intervals().len() == 1", "true"),
+            ("participation_not_consumed", "detach_take_state",
+             "self.dictation_participation_requested = false;", ""),
+            ("pending_close_ignored", "is_settled", "self.shared_close.is_none()", "true"),
+            ("pending_worker_ignored", "is_settled",
+             "&& self.shared_close_worker.is_none()", ""),
+            ("shared_tail_bypassed", "finish", "return self.finish_shared_document().await;",
+             "return Ok((String::new(), None));"),
+        ]
+        for name, symbol, old, new in cases:
+            with self.subTest(mutation=name):
+                evidence = self.run_payload(self.mutate(symbol, old, new))
+                self.assertFalse(evidence["accepted"], name)
+                contract = next(row for row in evidence["contracts"] if row["symbol"] == symbol)
+                self.assertFalse(contract["accepted"], name)
+
+    def test_shared_document_fences_publication_and_keeps_common_audio_separate(self):
+        self.assertTrue(self.run_payload(self.payload)["accepted"])
+        cases = [
+            ("worker_taken_before_await", "self.shared_close_worker.as_mut()",
+             "self.shared_close_worker.take()"),
+            ("participation_close_removed", "sink.close_participation(session, self.capture_epoch)?;", ""),
+            ("foreign_epoch", "sink.wait_presentation_published(session, self.capture_epoch)",
+             "sink.wait_presentation_published(session, 0)"),
+            ("sink_taken_before_publication", "self.event_sink.as_ref()", "self.event_sink.take()"),
+            ("publication_timeout_ignored", '.context("shared document publication timed out")??;',
+             ".unwrap_or(Ok(()))?;"),
+            ("common_audio_given_to_document", "if self.shared_archive_is_document {", "if true {"),
+            ("common_audio_lost", "self.shared_capture_archive = path.clone();", ""),
+            ("capture_identity_lost", "session_id: self.authority_session_id.clone(),",
+             "session_id: None,"),
+            ("archive_failure_discarded", "cause: copy_stop_error(error),",
+             'cause: anyhow!("discarded shared failure"),'),
+        ]
+        for name, old, new in cases:
+            with self.subTest(mutation=name):
+                evidence = self.run_payload(self.mutate("finish_shared_document", old, new))
+                self.assertFalse(evidence["accepted"], name)
+                for row in evidence["contracts"]:
+                    self.assertEqual(row["accepted"], row["symbol"] != "finish_shared_document", name)
+
     def test_terminal_publication_acknowledgement_cannot_be_forged(self):
         positive = self.run_payload(self.payload)
         self.assertTrue(positive["accepted"], "negative evidence needs an accepted control")

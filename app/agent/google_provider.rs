@@ -2711,7 +2711,7 @@ mod tests {
         // The synchronous fixture owns the process environment lease. Only the
         // provider work enters the runtime; no mutex guard crosses an await.
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
-        for legacy in [false, true] {
+        for v1_history in [false, true] {
             let mut server = mockito::Server::new_async().await;
             let path = "/v1beta/models/gemini-test:streamGenerateContent?alt=sse";
             let endpoint = format!("{}/v1beta", server.url());
@@ -2734,7 +2734,7 @@ mod tests {
                 .with_body(sse(json!({"candidates":[{"content":{"parts":[{"text":"seen one","thoughtSignature":"signature-one"}]},"finishReason":"STOP"}]})))
                 .create_async().await;
             let image = format!(
-                "screenshot-{}-{legacy}",
+                "screenshot-{}-{v1_history}",
                 chrono::Utc::now().timestamp_nanos_opt().unwrap()
             )
             .into_bytes();
@@ -2755,7 +2755,7 @@ mod tests {
             first.assert_async().await;
             let mut messages = session.messages().to_vec();
             // Historical composer image loading used canonical MIME types.
-            if legacy {
+            if v1_history {
                 if let ContentBlock::Image { media_type, .. } = &mut messages[0].content[1] {
                     *media_type = "image/png".into();
                 }
@@ -2785,7 +2785,7 @@ mod tests {
                 .send(
                     "another screenshot".into(),
                     vec![ImageAttachment {
-                        data: format!("another-screenshot-{legacy}").into_bytes(),
+                        data: format!("another-screenshot-{v1_history}").into_bytes(),
                         media_type: "image/png".into(),
                     }],
                     &StreamOptions::default(),
@@ -2794,7 +2794,7 @@ mod tests {
                 .unwrap();
             second.assert_async().await;
             let mut messages = resumed.messages().to_vec();
-            if legacy {
+            if v1_history {
                 mark_last_response_as_v1(&mut messages);
             }
             let restored = screenshot_history_roundtrip(&messages);

@@ -1,4 +1,4 @@
-/// C13/C13A lifecycle falsifiers kept active without reviving the stale legacy
+/// C13/C13A lifecycle falsifiers kept active independently of the retired
 /// Apple test canvas below.
 use super::*;
 

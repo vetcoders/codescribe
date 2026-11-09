@@ -5,6 +5,21 @@ use syn::{Block, parse_quote};
 
 pub(super) fn close_capture(g: &mut Grammar, body: &Block) {
     let expected: Block = parse_quote!({
+        if let Some(participation) = self.dictation_participation.take() {
+            let closed = self.close_channel_session(participation.id).await;
+            let was_active = closed.last;
+            self.closed_dictation_participation = Some(closed);
+            self.closed_capture_was_active = Some(was_active);
+            return was_active;
+        }
+        if self.dictation_participation_requested {
+            if let Some(closed) = self.closed_dictation_participation.as_ref() {
+                return closed.last;
+            }
+            self.event_sink = None;
+            self.closed_capture_was_active = Some(false);
+            return false;
+        }
         let was_active = match self.release_take_pcm_feed() {
             TakeFeedRelease::LastSubscriber | TakeFeedRelease::NoTakeFeed => {
                 self.recorder.close_capture().await
@@ -90,6 +105,9 @@ pub(super) fn detach_closed_take(g: &mut Grammar, body: &Block) {
         if let Some(take) = self.terminal_take.take() {
             return take;
         }
+        if self.dictation_participation_requested {
+            return self.detach_take_state(None, None, None);
+        }
         let archive = self.take_archive.take();
         let physical_archive = if was_active {
             self.recorder.detach_closed_spill()
@@ -111,7 +129,28 @@ pub(super) fn detach_closed_take(g: &mut Grammar, body: &Block) {
 
 pub(super) fn detach_take_state(g: &mut Grammar, body: &Block) {
     let expected: Block = parse_quote!({
+        let shared_close = self.closed_dictation_participation.take();
+        let shared_document = self.dictation_participation_requested;
+        let shared_archive_is_document = shared_close
+            .as_ref()
+            .and_then(|closed| closed.participant.as_ref())
+            .is_some_and(|(demux, _)| demux.intervals().len() == 1);
+        let shared_stream_released = shared_close
+            .as_ref()
+            .is_some_and(ClosedChannel::released_stream);
+        let stopped = if shared_document && shared_close.is_none() {
+            Some(Ok(None))
+        } else {
+            stopped
+        };
+        self.dictation_participation_requested = false;
         ClosedTake {
+            shared_document,
+            shared_close,
+            shared_close_worker: None,
+            shared_archive_is_document,
+            shared_stream_released,
+            shared_capture_archive: None,
             stopped,
             archive,
             physical_archive,
@@ -147,7 +186,9 @@ pub(super) fn detach_take_state(g: &mut Grammar, body: &Block) {
 
 pub(super) fn is_settled(g: &mut Grammar, body: &Block) {
     let expected: Block = parse_quote!({
-        self.archive.is_none()
+        self.shared_close.is_none()
+            && self.shared_close_worker.is_none()
+            && self.archive.is_none()
             && self.physical_archive.is_none()
             && self.archive_worker.is_none()
             && self.transcription_handle.is_none()
@@ -253,8 +294,68 @@ pub(super) fn prepare_terminal_audio(g: &mut Grammar, body: &Block) {
     }
 }
 
+pub(super) fn finish_shared_document(g: &mut Grammar, body: &Block) {
+    let expected: Block = parse_quote!({
+        if let Some(closed) = self.shared_close.take() {
+            self.shared_close_worker = Some(tokio::spawn(closed.finish()));
+        }
+        if let Some(worker) = self.shared_close_worker.as_mut() {
+            self.stopped = Some(match worker.await {
+                Ok(result) => result.map(|(_, path)| path),
+                Err(error) => Err(anyhow!("shared document settlement worker failed: {error}")),
+            });
+            self.shared_close_worker = None;
+        }
+        let session = self
+            .authority_session_id
+            .as_deref()
+            .context("shared document capture identity unavailable")?;
+        if let Some(sink) = self.event_sink.as_ref() {
+            sink.close_participation(session, self.capture_epoch)?;
+            tokio::time::timeout(
+                Duration::from_secs(3),
+                sink.wait_presentation_published(session, self.capture_epoch),
+            )
+            .await
+            .context("shared document publication timed out")??;
+            self.event_sink = None;
+        }
+        let text = self.transcript_buffer.lock().await.clone();
+        let archive = self
+            .stopped
+            .as_ref()
+            .context("shared document has no participation settlement")?;
+        match archive {
+            Ok(path) => {
+                if self.shared_archive_is_document {
+                    Ok((text, path.clone()))
+                } else {
+                    self.shared_capture_archive = path.clone();
+                    Ok((text, None))
+                }
+            }
+            Err(error) => Err(anyhow::Error::new(CaptureStopFailure {
+                session_id: self.authority_session_id.clone(),
+                capture_epoch: self.capture_epoch,
+                audio_path: error
+                    .downcast_ref::<CaptureStopFailure>()
+                    .and_then(|failure| failure.audio_path.clone()),
+                cause: copy_stop_error(error),
+                task_failure: None,
+            })),
+        }
+    });
+    g.require(body == &expected, "BOUNDARY: unsupported retain and borrow shared settlement worker across cancellation; fence publication with the original session and epoch; retain sink on refusal and keep common capture audio separate from a narrower document");
+    if body == &expected {
+        g.events.push("retain shared settlement worker; acknowledge original participation publication before releasing its sink; preserve capture archive ownership and typed failures".into());
+    }
+}
+
 pub(super) fn finish(g: &mut Grammar, body: &Block) {
     let expected: Block = parse_quote!({
+        if self.shared_document {
+            return self.finish_shared_document().await;
+        }
         self.prepare_terminal_audio().await;
         self.lifecycle_handle = None;
 

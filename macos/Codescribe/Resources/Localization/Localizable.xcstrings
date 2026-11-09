@@ -4764,6 +4764,17 @@
         }
       }
     },
+    "Cards" : {
+      "comment" : "Intercom cards router button",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fiszki"
+          }
+        }
+      }
+    },
     "Cards (beta)" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -9896,17 +9907,6 @@
         }
       }
     },
-    "In channel 0" : {
-      "comment" : "Channel chip hover card: a receipt confirms broadcasts reach this agent",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "W kanale 0"
-          }
-        }
-      }
-    },
     "In reply to: %@" : {
       "comment" : "Excerpt of the explicitly associated addressed utterance",
       "localizations" : {
@@ -12698,7 +12698,7 @@
       }
     },
     "No conversation on this channel" : {
-      "comment" : "Disabled compact channel button",
+      "comment" : "Disabled mini-rail channel pill",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -13331,17 +13331,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nie przyznano"
-          }
-        }
-      }
-    },
-    "Not in channel 0" : {
-      "comment" : "Channel chip hover card: a receipt confirms the agent left channel 0",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Poza kanałem 0"
           }
         }
       }
@@ -14291,7 +14280,7 @@
       }
     },
     "Optional" : {
-      "comment" : "Optional scope skipped in setup\nScreen Recording and Full Disk Access never block setup completion\nStatus chip",
+      "comment" : "Optional feature permissions never block setup completion\nOptional scope skipped in setup\nStatus chip",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -15341,6 +15330,7 @@
       }
     },
     "Queued" : {
+      "comment" : "Context panel fact: accepted turns waiting to run",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -15782,17 +15772,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Ostatnie nagrania"
-          }
-        }
-      }
-    },
-    "Reception policy unknown" : {
-      "comment" : "Agents list: no reception receipt has been read for this agent yet",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Polityka odbioru nieznana"
           }
         }
       }
