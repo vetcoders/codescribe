@@ -274,7 +274,8 @@ or a synthetic screenshot is not a substitute for the running user path.
 
 ## Current construction and geometry assumptions
 
-This section describes the local integration at `9e6b6fdc1` (2026-11-09).
+This section describes the 2026-11-09 routing repair after the `0a3aaaa90`
+preview. Native and optical acceptance of that repair are separate below.
 Dimensions and hierarchy assumptions may change through an evidenced repair;
 G1–G7 remain the acceptance criteria.
 
@@ -282,10 +283,16 @@ Continue the AppKit header implementation on `codex/window-chrome-e2e` as the
 single development direction (Founder, 2026-11-08). The parallel SwiftUI header
 experiment remains a reference, not a second runtime path.
 
-`NavigationSplitView` owns sidebar glass. `CSWindowTopHeader` owns one 52 pt
-top titlebar accessory containing one rectangular `NSGlassEffectView`; the
-actual header is hosted inside its `contentView`. AppKit owns window controls and the native
-sidebar toggle. Agent and Settings set `titlebarSeparatorStyle = .none` to avoid
+`NavigationSplitView` owns sidebar glass. `CSWindowTopHeader` owns one trailing
+(`.right`) titlebar accessory containing one rectangular `NSGlassEffectView`;
+the actual header is hosted inside its `contentView`. The standard unified
+allocation is 52 pt high; AppKit controls its allocated height. AppKit owns
+window controls, the native sidebar toggle and their leading event region.
+The earlier `.top` accessory container covered the toggle even though the
+custom host returned nil outside its content. A native attach/remove/restore
+A/B in both windows isolated that obstruction; a trailing slot leaves the
+system control region outside the accessory container. No private container
+is modified, and no replacement button or click-forwarding layer is added. Agent and Settings set `titlebarSeparatorStyle = .none` to avoid
 an additional system separator; this does not remove the glass optical edge.
 The Agent window has no trailing column: since 2026-11-09 its context is an
 opaque card floating over the conversation, which owns no glass. The
@@ -298,7 +305,8 @@ header sampled desktop colours and letters. Remove that opaque top extension
 in Agent and Settings; keep the reading canvas below it and preserve bottom
 coverage. Desktop comparison remains the optical acceptance gate.
 
-The accessory has an explicit 52 pt clipping viewport. The native material
+The accessory has an explicit clipping viewport matching its allocated band
+(52 pt in the current unified composition). The native material
 extends 8 pt below and to its leading side, placing the joined optical rims
 outside the visible band;
 the real controls retain the original 52 pt frame. No opaque masking stripe is
@@ -327,13 +335,16 @@ The header locates the native `NSSplitViewController` through the public
 `NSSplitView.delegate` and its two items, with the first marked `.sidebar`.
 It converts that sidebar's boundary into the accessory's coordinate system.
 When collapsed, native window buttons and toolbar item views establish the
-leading exclusion. These APIs are public, but SwiftUI's hierarchy and accessory
+leading exclusion. Frames are converted through screen coordinates so a
+fullscreen reveal moving system toolbar views to another window cannot mix
+unrelated local coordinate systems. The accessory width follows that exclusion;
+its content origin is converted independently from its actual hosting window. These APIs are public, but SwiftUI's hierarchy and accessory
 allocation are implementation assumptions, not an Apple layout guarantee.
 
 An early attachment without `.fullSizeContentView` is deferred, with a debug
 diagnostic; Settings establishes its window on the same run-loop turn and the
-marker retries. An occupied top accessory slot is logged as an error and is
-never replaced. Resize observation is scoped to that split view and removed
+marker retries. An occupied top or trailing accessory header region is logged as an error and
+is never replaced. Resize observation is scoped to that split view and removed
 on detach. Window update notifications reapply the separator policy after
 SwiftUI toolbar adoption. Detach uses AppKit's indexed accessory removal,
 not mutation of the returned accessory array. No assertion is raised for an
@@ -369,8 +380,9 @@ regression path. The next optical comparison must distinguish the native
 sidebar/titlebar junction from the separately clipped custom glass edge.
 
 Agent/Settings window tests cover the accessory count, native control exclusion,
-52 pt allocation, sidebar boundary, minimum/normal widths and collapsed/expanded
-states. Attachment lifecycle tests cover deferral, a competing owner, retry,
+the unified allocation, sidebar boundary, minimum/normal widths and
+collapsed/expanded states. Native toolbar route checks include an accessory
+removal control; a hit-test receipt is not a completed physical click cycle. Attachment lifecycle tests cover deferral, a competing owner, retry,
 idempotence and detach. These tests do not prove visual integration, refraction,
 foreground contrast or frame pacing. Review active/inactive windows, Light/Dark,
 contrasting desktop backgrounds and scrolling content separately.
@@ -386,6 +398,12 @@ resolved from a property assertion alone.
 These are observed issues or evidence gaps, not additional approved designs or
 settled root causes:
 
+- On November 9 the Founder confirmed that the sidebar button fails in Agent
+  and Settings while Control-Command-S still opens it. The native A/B identifies
+  top-accessory container obstruction; the trailing-slot repair needs the same
+  native tests and real pointer acceptance. Fullscreen moving/overlapping
+  branding, intermittent traffic-light reachability and banding also require
+  a live reveal/exit comparison; coordinate conversion alone does not certify it.
 - The 2026-11-09 capture investigation reported a rectangular transparent region
   around native controls and a lower header band with the sidebar closed,
   including transparency predating the Context card. Its live compositor

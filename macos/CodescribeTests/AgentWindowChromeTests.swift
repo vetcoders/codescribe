@@ -50,7 +50,7 @@ final class AgentWindowChromeTests: XCTestCase {
 
   /// The approved shape is one rectangular real-content glass view across
   /// the entire upper detail region, with the native window controls intact.
-  func testTopTitlebarOwnerKeepsOneBandAndNativeWindowButtons() throws {
+  func testTrailingTitlebarOwnerKeepsOneBandAndNativeWindowButtons() throws {
     let previousSidebar = UserDefaults.standard.object(forKey: sidebarKey)
     UserDefaults.standard.set(true, forKey: sidebarKey)
     defer {
@@ -68,7 +68,7 @@ final class AgentWindowChromeTests: XCTestCase {
           < 1
         && abs(self.visibleHeaderFrame(glass).maxX - window.frame.width) < 1
     }
-    let owners = window.titlebarAccessoryViewControllers.filter { $0.layoutAttribute == .top }
+    let owners = window.titlebarAccessoryViewControllers.filter { $0.layoutAttribute == .right }
     XCTAssertEqual(owners.count, 1)
     let owner = try XCTUnwrap(owners.first)
     if #available(macOS 26.1, *) {
@@ -162,7 +162,7 @@ final class AgentWindowChromeTests: XCTestCase {
         attachment.lifetime = .keepAlways
         add(attachment)
         XCTAssertEqual(
-          window.titlebarAccessoryViewControllers.filter { $0.layoutAttribute == .top }.count, 1)
+          window.titlebarAccessoryViewControllers.filter { $0.layoutAttribute == .right }.count, 1)
         XCTAssertEqual(rect.maxX, window.frame.width, accuracy: 1)
         XCTAssertEqual(rect.minY, window.contentLayoutRect.maxY, accuracy: 1)
         XCTAssertEqual(rect.height, 52, accuracy: 1)
@@ -470,7 +470,8 @@ final class AgentWindowChromeTests: XCTestCase {
 
     var cardFrame = try open()
     XCTAssertTrue(
-      card.handle(.init(windowNumber: number, kind: .click(NSPoint(x: cardFrame.midX, y: cardFrame.midY)))))
+      card.handle(
+        .init(windowNumber: number, kind: .click(NSPoint(x: cardFrame.midX, y: cardFrame.midY)))))
     XCTAssertTrue(card.isOpen, "a click on the card keeps it")
     XCTAssertTrue(card.handle(.init(windowNumber: number + 1, kind: .escape)))
     XCTAssertTrue(card.isOpen, "another window's Escape is not ours")

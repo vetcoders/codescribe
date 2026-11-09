@@ -55,14 +55,14 @@ final class SettingsWindowChromeTests: XCTestCase {
           } as? NSGlassEffectView)
         let rect = visibleHeaderFrame(glass)
         XCTAssertEqual(
-          window.titlebarAccessoryViewControllers.filter { $0.layoutAttribute == .top }.count, 1)
+          window.titlebarAccessoryViewControllers.filter { $0.layoutAttribute == .right }.count, 1)
         XCTAssertEqual(rect.maxX, window.frame.width, accuracy: 1)
         XCTAssertEqual(rect.maxY, window.frame.height, accuracy: 1)
         XCTAssertEqual(rect.height, 52, accuracy: 1)
         XCTAssertEqual(window.titlebarSeparatorStyle, .none)
         if #available(macOS 26.1, *) {
           let owner = try XCTUnwrap(
-            window.titlebarAccessoryViewControllers.first { $0.layoutAttribute == .top })
+            window.titlebarAccessoryViewControllers.first { $0.layoutAttribute == .right })
           XCTAssertEqual(owner.preferredScrollEdgeEffectStyle, .soft)
         }
         XCTAssertEqual(rect.minY, window.contentLayoutRect.maxY, accuracy: 1)

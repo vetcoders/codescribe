@@ -45,9 +45,8 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
   }
 
-  /// A titlebar accessory's allocated frame excludes the native traffic-light
-  /// margin. Convert the split boundary into this coordinate system instead
-  /// of counting that margin twice. The detail glass reaches the window edge.
+  /// The trailing accessory leaves AppKit's leading toolbar controls in their
+  /// own event region. Its material and real content share the allocated band.
   final class HeaderHost: NSView {
     /// Native glass rims belong outside the joined sidebar and content seams.
     /// This is material bleed, not a painted line or an opaque cover.
@@ -115,7 +114,10 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
     init(header: Header) {
       host = HeaderHost(header: header)
       super.init()
-      accessory.layoutAttribute = .top
+      // A top accessory container spans the native sidebar toggle even when
+      // HeaderHost returns nil there. A trailing slot gives that region back
+      // to AppKit instead of forwarding clicks or changing private views.
+      accessory.layoutAttribute = .right
       // Glass sampling and scroll-edge legibility are separate system effects.
       // Keep scrolled document content on the native soft edge, without adding
       // a custom opacity strip or changing the desktop-sampling material.
@@ -139,12 +141,16 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
       if window !== target {
         detach()
         guard
-          !target.titlebarAccessoryViewControllers.contains(where: { $0.layoutAttribute == .top })
+          !target.titlebarAccessoryViewControllers.contains(where: {
+            $0.layoutAttribute == .top || $0.layoutAttribute == .right
+          })
         else {
-          reportAttachmentIssue("Another top titlebar accessory owns the header slot", error: true)
+          reportAttachmentIssue("Another titlebar accessory owns the header region", error: true)
           return
         }
-        host.frame = NSRect(x: 0, y: 0, width: target.frame.width, height: 52)
+        host.frame = NSRect(
+          x: 0, y: 0, width: max(0, target.frame.width - CSSidebarWidth.navigation.ideal),
+          height: 52)
         target.toolbar?.isVisible = true
         target.addTitlebarAccessoryViewController(accessory)
         window = target
@@ -189,21 +195,32 @@ struct CSWindowTopHeader<Header: View>: NSViewRepresentable {
             object: split.splitView)
         }
       }
+      // Fullscreen reveal can place native toolbar views in a separate
+      // window. Compare screen-converted frames, never unrelated local spaces.
+      func frameInWindow(_ view: NSView) -> NSRect? {
+        guard let source = view.window else { return nil }
+        return window.convertFromScreen(source.convertToScreen(view.convert(view.bounds, to: nil)))
+      }
       let leading: CGFloat
-      if let sidebar = split?.splitViewItems.first, !sidebar.isCollapsed {
-        let view = sidebar.viewController.view
-        leading = view.convert(view.bounds, to: nil).maxX
+      if let sidebar = split?.splitViewItems.first, !sidebar.isCollapsed,
+        let frame = frameInWindow(sidebar.viewController.view)
+      {
+        leading = frame.maxX
       } else {
         let lights = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
           .compactMap { window.standardWindowButton($0) }
         let controls = lights + (window.toolbar?.items.compactMap(\.view) ?? [])
-        leading =
-          (controls.filter { $0.window === window }
-            .map { $0.convert($0.bounds, to: nil).maxX }.max() ?? 0) + CSSpace.sm
+        leading = (controls.compactMap(frameInWindow).map(\.maxX).max() ?? 0) + CSSpace.sm
       }
-      let origin = host.convert(NSPoint.zero, to: nil)
+      let width = max(0, window.frame.width - leading)
+      if abs(host.frame.width - width) > 0.5 {
+        host.setFrameSize(NSSize(width: width, height: host.frame.height))
+      }
+      guard let source = host.window else { return }
+      let origin = window.convertPoint(
+        fromScreen: source.convertPoint(toScreen: host.convert(NSPoint.zero, to: nil)))
       let rect = NSRect(
-        x: leading - origin.x, y: 0, width: max(0, window.frame.width - leading), height: 52)
+        x: leading - origin.x, y: 0, width: width, height: host.bounds.height)
       host.setVisibleFrame(rect)
     }
 
