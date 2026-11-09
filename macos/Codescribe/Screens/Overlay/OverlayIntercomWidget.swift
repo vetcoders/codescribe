@@ -213,6 +213,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   func setVisible(_ visible: Bool, relativeTo anchor: NSWindow?) {
     guard !invalidated else { return }
     self.visible = visible
+    state.setIntercomVisible(visible)
     guard visible else {
       finishInteractiveResize(cancelled: true)
       groupedIdleClock?.forget()

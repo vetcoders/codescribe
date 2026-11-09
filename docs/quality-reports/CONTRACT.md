@@ -4,7 +4,7 @@ Source of truth: `core/quality/engine_contract.rs`.
 Visual gold: [`seal-atlas.take01.html`](seal-atlas.take01.html)
 (take 01 „no to dobra” — the Claude artifact, locked).
 
-`codescribe-corpus` writes these HTML files. Voice Lab only lists what
+`codescribe corpus` writes these HTML files. Voice Lab only lists what
 passes this handshake. A WER table is a footnote, never the throne.
 
 ## Identity

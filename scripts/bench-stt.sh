@@ -337,7 +337,7 @@ run_qube_report() {
   (
     cd "$repo_root"
     CODESCRIBE_DISABLE_KEYCHAIN=1 CODESCRIBE_NO_EMBED=1 CODESCRIBE_MODEL_PATH="$model_path" \
-      cargo run --quiet --bin qube-report -- \
+      cargo run --quiet --bin codescribe -- report \
         --input "$stage_root" \
         --out "$qube_out" \
         --limit 0 \
