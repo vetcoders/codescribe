@@ -77,6 +77,8 @@ EVIDENCE_SCHEMA = "codescribe.transcript-evidence.v1"
 #: The bridge reads them only as flush boundaries for the coverage-refused
 #: safety net below; it never turns them into transcript envelopes.
 CHANNEL_SESSION_SCHEMA = "codescribe.channel-session.v1"
+#: Per-segment recipient ownership and seat role (`primary` vs `projection`).
+CHANNEL_RECIPIENTS_SCHEMA = "codescribe.channel-recipients.v1"
 #: Capture-owned publication refusal. It retires a channel document before
 #: lifecycle boundaries can invoke the coverage-refused delivery net.
 PUBLICATION_SCHEMA = "codescribe.transcript-publication.v1"
@@ -1022,7 +1024,8 @@ def slim(
         "state_change_allowed": status == SEALED
         and event.get("coverage") != COVERAGE_REFUSED,
     }
-    for key in ("recipients", "broadcast_id", "channel", "origin_channel", "provider", "provider_session_id", "lease_id"):
+    for key in ("recipients", "broadcast_id", "channel", "origin_channel", "provider", "provider_session_id", "lease_id",
+                "delivery_seat", "capture_session_id", "participation"):
         if key in event:
             payload[key] = event[key]
     # Which other channels were open beside this one: context for the reader,
@@ -1130,6 +1133,7 @@ def parse_line(raw: str) -> dict[str, Any] | None:
         CLEAN_SCHEMA,
         EVIDENCE_SCHEMA,
         CHANNEL_SESSION_SCHEMA,
+        CHANNEL_RECIPIENTS_SCHEMA,
         PUBLICATION_SCHEMA,
         AGENT_USER_MESSAGE_SCHEMA,
         CAPTURE_ATTACHMENT_SCHEMA,
@@ -1360,21 +1364,115 @@ def delivery_identity(lease_id: str, payload: dict[str, Any]) -> str:
                       payload.get("kind"), payload.get("audience")))
 
 
+def delivery_seat_of(value: Any) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    seat = value.get("delivery_seat")
+    if isinstance(seat, str) and seat.strip():
+        return seat.strip()
+    participation = value.get("participation")
+    if isinstance(participation, dict):
+        seat = participation.get("delivery_seat")
+        if isinstance(seat, str) and seat.strip():
+            return seat.strip()
+    return None
+
+
+def is_executable_delivery_seat(value: Any) -> bool:
+    """Only `primary` (or legacy rows without a seat) queues and wakes an agent."""
+    seat = delivery_seat_of(value)
+    return seat in (None, "primary")
+
+
+def recipient_matches_lease(
+    owner: Any,
+    *,
+    provider: str,
+    provider_session_id: str,
+    lease_id: str,
+    bus: str | None = None,
+    channel: str | None = None,
+    executable_only: bool = True,
+) -> bool:
+    if not isinstance(owner, dict):
+        return False
+    if executable_only and not is_executable_delivery_seat(owner):
+        return False
+    expected = {
+        "provider": provider,
+        "provider_session_id": provider_session_id,
+        "lease_id": lease_id,
+    }
+    if bus is not None:
+        expected["bus"] = bus
+    if any(owner.get(key) != value for key, value in expected.items()):
+        return False
+    if channel is not None and owner.get("channel") not in (None, channel):
+        return False
+    return True
+
+
+def event_has_executable_recipient(event: dict[str, Any], *, name: str | None = None) -> bool:
+    if not is_executable_delivery_seat(event):
+        return False
+    owner = event.get("delivery_owner")
+    if isinstance(owner, dict) and not is_executable_delivery_seat(owner):
+        return False
+    frozen = event.get("recipients")
+    if not isinstance(frozen, list) or not frozen:
+        return True
+    channel = event.get("channel") or channel_of_session(str(event.get("session_id") or ""))
+    candidates = [item for item in frozen if isinstance(item, dict)]
+    if not candidates:
+        return True
+    if channel not in (None, "0"):
+        channel_matches = [item for item in candidates if item.get("channel") == channel]
+        if channel_matches:
+            candidates = channel_matches
+    if name:
+        folded = name.casefold()
+        named = [
+            item for item in candidates
+            if any(isinstance(item.get(key), str) and item[key].casefold() == folded
+                   for key in ("name", "audience"))
+        ]
+        if named:
+            candidates = named
+    if any("delivery_seat" in item or isinstance(item.get("participation"), dict) for item in candidates):
+        return any(is_executable_delivery_seat(item) for item in candidates)
+    return True
+
+
 def channel_event_admitted(event: dict[str, Any], *, provider: str, provider_session_id: str,
                            lease_id: str, bus: str) -> bool:
-    """Whether a bus row is this lease owner's own copy.
+    """Whether a bus row is this lease owner's own actionable copy.
 
     A row with frozen `recipients` names its owners; a channel session's row
     names one owner at the top level; a row with neither is unaddressed and
     admitted to every reader of that bus. `SessionLease.admits_channel_event`
     and the receipts backfill ask the same question of the same fields.
+    Rows or recipient entries with `delivery_seat == "projection"` stay in bus
+    history and never become actionable mailbox deliveries or wakeups.
     """
+    if not is_executable_delivery_seat(event):
+        return False
     frozen = event.get("recipients")
+    channel = event.get("channel") or channel_of_session(str(event.get("session_id") or ""))
     expected = {"provider": provider, "provider_session_id": provider_session_id,
                 "lease_id": lease_id, "bus": bus}
     if isinstance(frozen, list):
-        return any(isinstance(owner, dict) and all(owner.get(key) == value
-                   for key, value in expected.items()) for owner in frozen)
+        return any(
+            recipient_matches_lease(
+                owner,
+                provider=provider,
+                provider_session_id=provider_session_id,
+                lease_id=lease_id,
+                bus=bus,
+                channel=str(channel) if channel not in (None, "0") else None,
+                executable_only=True,
+            )
+            for owner in frozen
+        )
     if channel_of_session(str(event.get("session_id") or "")) is not None:
         return all(event.get(key) == value for key, value in expected.items())
     return frozen is None
@@ -1463,6 +1561,7 @@ class EvidenceNormalizer:
         # Sessions whose channel rows declared ``publication: controller``,
         # oldest first. Their close never promotes an undecided draft.
         self._controller_sessions: dict[str, None] = {}
+        self._channel_recipients: dict[str, dict[str, Any]] = {}
         self._flushes: list[dict[str, Any]] = []
         self._publication_refusals: dict[str, dict[str, Any]] = {}
 
@@ -1502,6 +1601,7 @@ class EvidenceNormalizer:
         self._session_docs.pop(session, None)
         self._channel_open_times.pop(session, None)
         self._controller_sessions.pop(session, None)
+        self._channel_recipients.pop(session, None)
         self._settled_sessions.add(session)
         self._flushes = [event for event in self._flushes if event.get("session_id") != session]
         self._publication_refusals[session] = dict(receipt)
@@ -1520,19 +1620,36 @@ class EvidenceNormalizer:
         if event.get("schema") == PUBLICATION_SCHEMA:
             self._consume_publication_refusal(event)
             return None
+        if event.get("schema") == CHANNEL_RECIPIENTS_SCHEMA:
+            self._consume_channel_recipients(event)
+            return None
         if event.get("schema") == CHANNEL_SESSION_SCHEMA:
             self._consume_channel_row(event)
             return None
         if event.get("schema") != EVIDENCE_SCHEMA:
+            session = str(event.get("session_id") or "")
+            seat = delivery_seat_of(event)
+            if session and channel_of_session(session) is not None and seat is not None:
+                entry = dict(self._channel_recipients.get(session) or {})
+                entry["delivery_seat"] = seat
+                for key in ("capture_session_id", "participation"):
+                    if key in event:
+                        entry[key] = event[key]
+                self._channel_recipients[session] = entry
+                if session in self._session_docs:
+                    self._session_docs[session]["delivery_seat"] = seat
+                    for key in ("capture_session_id", "participation"):
+                        if key in event:
+                            self._session_docs[session][key] = event[key]
             if (event.get("schema") == CLEAN_SCHEMA and event.get("status") == SEALED
                     and event.get("terminal") is True
-                    and channel_of_session(str(event.get("session_id") or "")) is not None):
+                    and channel_of_session(session) is not None):
                 # Its evidence twin owns the joined document. The closing
                 # channel receipt flushes it once, including its hold deadline.
                 return None
             if event.get("status") == SESSION_ENDED:
                 self._flush_session(
-                    str(event.get("session_id") or ""), event.get("emitted_at"), event
+                    session, event.get("emitted_at"), event
                 )
             return event
         if event.get("reducer_action") == SESSION_ENDED:
@@ -1678,6 +1795,14 @@ class EvidenceNormalizer:
             for key in ("attachments", "capture_attachment_stages"):
                 if previous.get(key):
                     clean[key] = previous[key]
+            for key in ("delivery_seat", "capture_session_id", "participation"):
+                if key not in clean and key in previous:
+                    clean[key] = previous[key]
+        recipient_meta = self._channel_recipients.get(session)
+        if recipient_meta:
+            for key in ("delivery_seat", "capture_session_id", "participation"):
+                if key not in clean and key in recipient_meta:
+                    clean[key] = recipient_meta[key]
         if older_snapshot:
             previous["occurrences"] = clean["occurrences"]
             previous["capture_attachment_sources"] = clean["capture_attachment_sources"]
@@ -1705,20 +1830,62 @@ class EvidenceNormalizer:
             if rate is not None:
                 previous["sample_rate_hz"] = rate
             if event.get("status") == SEALED:
-                for key in ("hold_until", "utterance_id", "closing_decision"):
+                for key in ("hold_until", "utterance_id", "closing_decision",
+                            "delivery_seat", "capture_session_id", "participation"):
                     if key in event:
                         previous[key] = event[key]
+                seat = delivery_seat_of(event)
+                if seat is not None:
+                    previous["delivery_seat"] = seat
         else:
             self._session_docs[session] = clean
         while len(self._session_docs) > self.MAX_TRACKED_SESSIONS:
             self._session_docs.pop(next(iter(self._session_docs)))
         return not same_phase
 
+    def _consume_channel_recipients(self, row: dict[str, Any]) -> None:
+        channel = str(row.get("channel") or "")
+        session = str(row.get("session_id") or "")
+        if not session or channel_of_session(session) != channel:
+            return
+        seat = delivery_seat_of(row)
+        entry = dict(self._channel_recipients.get(session) or {})
+        if seat is not None:
+            entry["delivery_seat"] = seat
+        for key in ("capture_session_id", "participation", "provider", "provider_session_id", "lease_id", "audience"):
+            if key in row:
+                entry[key] = row[key]
+        if entry:
+            self._channel_recipients[session] = entry
+            while len(self._channel_recipients) > self.MAX_TRACKED_SESSIONS:
+                self._channel_recipients.pop(next(iter(self._channel_recipients)))
+        document = self._session_docs.get(session)
+        if document is not None:
+            for key in ("delivery_seat", "capture_session_id", "participation"):
+                if key in entry:
+                    document[key] = entry[key]
+
     def _consume_channel_row(self, row: dict[str, Any]) -> None:
         channel = str(row.get("channel") or "")
         session = str(row.get("session_id") or "")
         if not session or channel_of_session(session) != channel:
             return
+        seat = delivery_seat_of(row)
+        if seat is not None or "participation" in row or "capture_session_id" in row:
+            entry = dict(self._channel_recipients.get(session) or {})
+            if seat is not None:
+                entry["delivery_seat"] = seat
+            for key in ("capture_session_id", "participation"):
+                if key in row:
+                    entry[key] = row[key]
+            self._channel_recipients[session] = entry
+            while len(self._channel_recipients) > self.MAX_TRACKED_SESSIONS:
+                self._channel_recipients.pop(next(iter(self._channel_recipients)))
+            document = self._session_docs.get(session)
+            if document is not None:
+                for key in ("delivery_seat", "capture_session_id", "participation"):
+                    if key in entry:
+                        document[key] = entry[key]
         if row.get("publication") == CONTROLLER_PUBLICATION:
             self._controller_sessions[session] = None
             while len(self._controller_sessions) > self.MAX_TRACKED_SESSIONS:
@@ -1783,6 +1950,7 @@ class EvidenceNormalizer:
         self._channel_open_times.pop(session, None)
         controller = session in self._controller_sessions
         self._controller_sessions.pop(session, None)
+        recipient_meta = self._channel_recipients.pop(session, None)
         clean = self._session_docs.pop(session, None)
         if not clean or session in self._settled_sessions:
             return
@@ -1793,8 +1961,18 @@ class EvidenceNormalizer:
             return
         if not (clean.get("text") or "").strip():
             return
+        if recipient_meta:
+            for key in ("delivery_seat", "capture_session_id", "participation"):
+                if key not in clean and key in recipient_meta:
+                    clean[key] = recipient_meta[key]
         if source is not None:
             self._remember_co_audience(clean, source)
+            seat = delivery_seat_of(source)
+            if seat is not None:
+                clean["delivery_seat"] = seat
+            for key in ("capture_session_id", "participation"):
+                if key in source:
+                    clean[key] = source[key]
         final = dict(clean)
         final.pop("_co_audience_observation", None)
         final.pop("capture_attachment_sources", None)
@@ -1852,9 +2030,18 @@ class EvidenceNormalizer:
             clean.pop("utterance_id", None)
         for key in ("recipients", "broadcast_id", "channel", "provider", "provider_session_id", "lease_id",
                     "hold_until", "closing_decision", "co_audience", "co_audience_basis",
-                    "also_sent_to", "also_sent_to_basis"):
+                    "also_sent_to", "also_sent_to_basis", "delivery_seat", "capture_session_id", "participation"):
             if key in event:
                 clean[key] = event[key]
+        seat = delivery_seat_of(event)
+        if seat is not None:
+            clean["delivery_seat"] = seat
+        session = str(event.get("session_id") or "")
+        recipient_meta = self._channel_recipients.get(session)
+        if recipient_meta:
+            for key in ("delivery_seat", "capture_session_id", "participation"):
+                if key not in clean and key in recipient_meta:
+                    clean[key] = recipient_meta[key]
         return clean
 
 
@@ -1962,6 +2149,8 @@ def consider(
     debug: bool,
     recipients: set[str] | None = None,
 ) -> dict[str, Any] | None:
+    if not event_has_executable_recipient(event, name=name):
+        return None
     if event.get("schema") == AGENT_REPLY_SCHEMA:
         # Agent-to-agent text lane. Only a reply that explicitly names a peer
         # recipient is a delivery; ordinary spoken replies carry no `peer_to`
@@ -4186,6 +4375,8 @@ class SessionLease:
         }
 
     def queue_delivery(self, payload: dict[str, Any], *, draining_journal: bool = False) -> bool:
+        if not event_has_executable_recipient(payload, name=self.name) or not self.admits_channel_event(payload):
+            return False
         delivery_id = payload["delivery_id"]
         refusal = self.channel_publication_refusals.get(payload.get("session_id"))
         if (refusal is not None and self.admits_channel_event(refusal)
@@ -5006,6 +5197,7 @@ def conversation_envelope(payload: dict[str, Any]) -> dict[str, Any]:
         "state_change_allowed", "coverage", "sender", "peer_to", "association", "spoken",
         "reply_id", "reply_to", "reply_to_occurrence_id", "instructions", "attachments", "user_reply_to",
         "co_audience", "co_audience_basis", "also_sent_to", "also_sent_to_basis",
+        "delivery_seat", "capture_session_id", "participation",
     )
     view = {**{key: payload[key] for key in fields if key in payload},
             "addressed_to": delivery_address_label(payload)}
@@ -5058,7 +5250,7 @@ def unread_pending(args: argparse.Namespace, *, include_quiet: bool = False) -> 
 
     for row in pending:
         identity = row.get("delivery_id")
-        if row.get("kind") in DRAFT_KINDS:
+        if row.get("kind") in DRAFT_KINDS or not event_has_executable_recipient(row):
             continue
         if (not isinstance(identity, str) or not re.fullmatch(r"[0-9a-f]{24}", identity)
                 or row.get("lease_id") != lease_id or row.get("provider") != args.provider
@@ -5431,7 +5623,7 @@ class NativeQueueWakeup:
         self.executor.submit(self._withdraw, identity).add_done_callback(complete)
 
     def enqueue(self, payload: dict[str, Any], *, retry: bool = False) -> None:
-        if payload.get("kind") not in TERMINAL_KINDS:
+        if payload.get("kind") not in TERMINAL_KINDS or not event_has_executable_recipient(payload):
             return
         self.executor.submit(self._deliver, dict(payload), retry).add_done_callback(self._report_error)
 
@@ -9311,6 +9503,86 @@ def set_agent_muted(args: argparse.Namespace) -> int:
     return 0
 
 
+def reap_orphaned_reply_playback(root: Path) -> list[dict[str, Any]]:
+    """Close `waiting`/`playing` playback tickets whose holder process lost its flock."""
+    directory = root / "runtime" / "reply-playback"
+    if not directory.is_dir():
+        return []
+    reaped: list[dict[str, Any]] = []
+    for path in sorted(directory.glob("*.json")):
+        if path.name.endswith(".stop.json"):
+            continue
+        try:
+            row = read_reply_json(path, 65536)
+        except ValueError:
+            continue
+        if (row.get("schema") != REPLY_CONTROL_SCHEMA
+                or row.get("kind") != "agent_reply_playback"
+                or row.get("state") not in ("waiting", "playing")):
+            continue
+        reply_id = row.get("reply_id")
+        ticket = row.get("playback_ticket")
+        provider = row.get("provider")
+        provider_session_id = row.get("provider_session_id")
+        lease_id = row.get("lease_id")
+        bus_raw = row.get("bus")
+        if any(not isinstance(value, str) or not value
+               for value in (reply_id, ticket, provider, provider_session_id, lease_id, bus_raw)):
+            continue
+        lock_path = directory / f"{reply_id}.{ticket}.lock"
+        try:
+            descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError:
+            continue
+        try:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                continue
+            try:
+                current = read_reply_json(path, 65536)
+            except ValueError:
+                continue
+            if (current.get("schema") != REPLY_CONTROL_SCHEMA
+                    or current.get("state") not in ("waiting", "playing")
+                    or current.get("playback_ticket") != ticket
+                    or current.get("reply_id") != reply_id):
+                continue
+            emitted_at = utc_now()
+            event = {
+                "schema": AGENT_REPLY_PLAYBACK_SCHEMA,
+                "kind": "agent_reply_playback",
+                "emitted_at": emitted_at,
+                "reply_id": reply_id,
+                "provider": provider,
+                "provider_session_id": provider_session_id,
+                "lease_id": lease_id,
+                "playback_ticket": ticket,
+                "state": "stopped",
+                "spoken": False,
+                "reason": "stopped",
+                "tts_error": "playback stopped (orphaned process)",
+            }
+            publish_reply_event(Path(bus_raw), event, bridge_root=root)
+            ticket_row = {**current, **event, "schema": REPLY_CONTROL_SCHEMA, "bus": bus_raw}
+            atomic_json(path, ticket_row)
+            record_playback_receipt(
+                root,
+                current,
+                ticket,
+                "stopped",
+                reason="stopped",
+                at=emitted_at,
+            )
+            reaped.append(event)
+        finally:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+    return reaped
+
+
 class ReplyPlaybackControl:
     """One request ticket controls only its own child of the serialized player."""
     def __init__(self, args: argparse.Namespace, bus: Path, reply: dict[str, Any], ticket: str,
@@ -9327,6 +9599,7 @@ class ReplyPlaybackControl:
         self.path = self.root / "runtime" / "reply-playback" / f"{reply['reply_id']}.{ticket}.json"
         self.stop_path = self.path.with_suffix(".stop.json")
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        reap_orphaned_reply_playback(self.root)
         self.descriptor = os.open(self.path.with_suffix(".lock"), os.O_RDWR | os.O_CREAT, 0o600)
         try:
             fcntl.flock(self.descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -11648,6 +11921,8 @@ def watch_line(payload: Any, lease_id: str | None, *, peer_replies: bool = False
     """
     if not isinstance(payload, dict) or payload.get("schema") != EVENT_SCHEMA:
         return None
+    if not event_has_executable_recipient(payload):
+        return None
     if lease_id and payload.get("lease_id") not in (None, lease_id):
         return None
     if not (
@@ -11673,7 +11948,8 @@ def watch_line(payload: Any, lease_id: str | None, *, peer_replies: bool = False
     for key in ("lease_id", "provider", "provider_session_id", "audience", "channel",
                 "emitted_at", "source", "sender", "peer_to", "target", "association", "reply_id", "reply_to",
                 "routing_candidates", "instructions", "attachments", "user_reply_to",
-                "co_audience", "co_audience_basis", "also_sent_to", "also_sent_to_basis"):
+                "co_audience", "co_audience_basis", "also_sent_to", "also_sent_to_basis",
+                "delivery_seat", "capture_session_id", "participation"):
         if key in payload:
             line[key] = payload[key]
     reach = broadcast_reach(payload)

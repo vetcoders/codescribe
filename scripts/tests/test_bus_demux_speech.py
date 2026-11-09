@@ -2556,6 +2556,106 @@ class SpokenTextTests(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 5.0)
         self.assertTrue(result)
 
+    def test_orphaned_unlocked_playing_ticket_is_reaped_on_next_playback_control_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "bridge"
+            bus = Path(directory) / "transcript-events.jsonl"
+            playback_dir = root / "runtime" / "reply-playback"
+            playback_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+            orphan_reply_id = "1" * 24
+            orphan_ticket = "2" * 24
+            active_reply_id = "3" * 24
+            active_ticket = "4" * 24
+            next_reply_id = "5" * 24
+            next_ticket = "6" * 24
+            lease_id = DEMUX.lease_identifier("codex", "session-1")
+
+            orphan_json = playback_dir / f"{orphan_reply_id}.{orphan_ticket}.json"
+            orphan_lock = playback_dir / f"{orphan_reply_id}.{orphan_ticket}.lock"
+            orphan_lock.write_text("", encoding="utf-8")
+            DEMUX.atomic_json(
+                orphan_json,
+                {
+                    "schema": DEMUX.REPLY_CONTROL_SCHEMA,
+                    "kind": "agent_reply_playback",
+                    "emitted_at": "2026-10-26T12:00:00Z",
+                    "reply_id": orphan_reply_id,
+                    "provider": "codex",
+                    "provider_session_id": "session-1",
+                    "lease_id": lease_id,
+                    "playback_ticket": orphan_ticket,
+                    "state": "playing",
+                    "spoken": False,
+                    "bus": str(bus),
+                },
+            )
+
+            active_json = playback_dir / f"{active_reply_id}.{active_ticket}.json"
+            active_lock = playback_dir / f"{active_reply_id}.{active_ticket}.lock"
+            DEMUX.atomic_json(
+                active_json,
+                {
+                    "schema": DEMUX.REPLY_CONTROL_SCHEMA,
+                    "kind": "agent_reply_playback",
+                    "emitted_at": "2026-10-26T12:00:01Z",
+                    "reply_id": active_reply_id,
+                    "provider": "codex",
+                    "provider_session_id": "session-1",
+                    "lease_id": lease_id,
+                    "playback_ticket": active_ticket,
+                    "state": "playing",
+                    "spoken": False,
+                    "bus": str(bus),
+                },
+            )
+            held_fd = os.open(active_lock, os.O_RDWR | os.O_CREAT, 0o600)
+            fcntl.flock(held_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                args = unittest.mock.MagicMock(bridge_home=root)
+                next_reply = {
+                    "reply_id": next_reply_id,
+                    "provider": "codex",
+                    "provider_session_id": "session-1",
+                    "lease_id": lease_id,
+                }
+                with patch.object(DEMUX, "publish_reply_event", side_effect=fixture_publish):
+                    control = DEMUX.ReplyPlaybackControl(args, bus, next_reply, next_ticket)
+                    control.close()
+
+                reaped_ticket = json.loads(orphan_json.read_text(encoding="utf-8"))
+                self.assertEqual(reaped_ticket["state"], "stopped")
+                self.assertFalse(reaped_ticket["spoken"])
+                self.assertEqual(reaped_ticket["reason"], "stopped")
+                self.assertEqual(reaped_ticket["tts_error"], "playback stopped (orphaned process)")
+
+                still_playing = json.loads(active_json.read_text(encoding="utf-8"))
+                self.assertEqual(still_playing["state"], "playing")
+
+                bus_events = [
+                    json.loads(line)
+                    for line in bus.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                ]
+                self.assertEqual(len(bus_events), 1)
+                self.assertEqual(bus_events[0]["schema"], DEMUX.AGENT_REPLY_PLAYBACK_SCHEMA)
+                self.assertEqual(bus_events[0]["kind"], "agent_reply_playback")
+                self.assertEqual(bus_events[0]["reply_id"], orphan_reply_id)
+                self.assertEqual(bus_events[0]["playback_ticket"], orphan_ticket)
+                self.assertEqual(bus_events[0]["state"], "stopped")
+                self.assertFalse(bus_events[0]["spoken"])
+                self.assertEqual(bus_events[0]["reason"], "stopped")
+                self.assertEqual(bus_events[0]["tts_error"], "playback stopped (orphaned process)")
+
+                receipt_path = DEMUX.receipts_directory(root, orphan_reply_id) / f"playback.{orphan_ticket}.json"
+                self.assertTrue(receipt_path.exists())
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                self.assertEqual(receipt["state"], "stopped")
+                self.assertEqual(receipt["reason"], "stopped")
+                self.assertFalse(receipt["spoken"])
+            finally:
+                os.close(held_fd)
+
 
 if __name__ == "__main__":
     unittest.main()

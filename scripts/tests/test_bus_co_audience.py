@@ -1,9 +1,13 @@
 """Co-audience survives delivery projections without becoming routing authority."""
+import argparse
 import copy
 import importlib.util
+import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 SPEC = importlib.util.spec_from_file_location(
     "co_audience_demux_test", Path(__file__).resolve().parents[1] / "bus-demux.py")
@@ -188,6 +192,280 @@ class CoAudienceTests(unittest.TestCase):
         self.assertNotIn("\n", label)
         self.assertEqual(label.count("9 ("), 9)
         self.assertEqual(row, before)
+
+    def test_dual_channel_primary_and_projection_seats_wake_and_queue_only_once_while_preserving_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "bridge"
+            bus = (Path(tmp) / "transcript-events.jsonl").resolve(strict=False)
+            provider = "codex"
+            session = "roman-thread"
+            lease_id = DEMUX.lease_identifier(provider, session)
+
+            primary_session = "agent-channel-3-dual-seat-primary"
+            projection_session = "agent-channel-7-dual-seat-projection"
+            capture_session_id = "capture-shared-epoch-42"
+
+            recipients_both = [
+                {
+                    "channel": "3",
+                    "audience": "roman",
+                    "provider": provider,
+                    "provider_session_id": session,
+                    "lease_id": lease_id,
+                    "bus": str(bus),
+                    "delivery_seat": "primary",
+                },
+                {
+                    "channel": "7",
+                    "audience": "roman",
+                    "provider": provider,
+                    "provider_session_id": session,
+                    "lease_id": lease_id,
+                    "bus": str(bus),
+                    "delivery_seat": "projection",
+                },
+            ]
+
+            bus_rows = [
+                {
+                    "schema": DEMUX.CHANNEL_SESSION_SCHEMA,
+                    "channel": "3",
+                    "session_id": primary_session,
+                    "capture_session_id": capture_session_id,
+                    "audience": "roman",
+                    "provider": provider,
+                    "provider_session_id": session,
+                    "lease_id": lease_id,
+                    "state": "open",
+                    "publication": "controller",
+                    "opened_at": "2026-10-25T04:00:00Z",
+                    "emitted_at": "2026-10-25T04:00:00Z",
+                },
+                {
+                    "schema": DEMUX.CHANNEL_RECIPIENTS_SCHEMA,
+                    "channel": "3",
+                    "session_id": primary_session,
+                    "capture_session_id": capture_session_id,
+                    "delivery_seat": "primary",
+                    "audience": "roman",
+                    "provider": provider,
+                    "provider_session_id": session,
+                    "lease_id": lease_id,
+                    "recipients": recipients_both,
+                    "emitted_at": "2026-10-25T04:00:00Z",
+                },
+                {
+                    "schema": DEMUX.CHANNEL_SESSION_SCHEMA,
+                    "channel": "7",
+                    "session_id": projection_session,
+                    "capture_session_id": capture_session_id,
+                    "audience": "roman",
+                    "provider": provider,
+                    "provider_session_id": session,
+                    "lease_id": lease_id,
+                    "state": "open",
+                    "publication": "controller",
+                    "opened_at": "2026-10-25T04:00:00Z",
+                    "emitted_at": "2026-10-25T04:00:00Z",
+                },
+                {
+                    "schema": DEMUX.CHANNEL_RECIPIENTS_SCHEMA,
+                    "channel": "7",
+                    "session_id": projection_session,
+                    "capture_session_id": capture_session_id,
+                    "delivery_seat": "projection",
+                    "audience": "roman",
+                    "provider": provider,
+                    "provider_session_id": session,
+                    "lease_id": lease_id,
+                    "recipients": recipients_both,
+                    "emitted_at": "2026-10-25T04:00:00Z",
+                },
+                self.evidence(
+                    session_id=primary_session,
+                    channel="3",
+                    sequence=1,
+                    rendered_text="Tylko jedno wybudzenie dla Romana.",
+                    status=DEMUX.SEALED,
+                    closing_decision=DEMUX.CLOSING_PUBLISH,
+                    recipients=recipients_both,
+                ),
+                self.evidence(
+                    session_id=projection_session,
+                    channel="7",
+                    sequence=2,
+                    rendered_text="Tylko jedno wybudzenie dla Romana.",
+                    status=DEMUX.SEALED,
+                    closing_decision=DEMUX.CLOSING_PUBLISH,
+                    recipients=recipients_both,
+                ),
+                {
+                    "schema": DEMUX.CHANNEL_SESSION_SCHEMA,
+                    "channel": "3",
+                    "session_id": primary_session,
+                    "capture_session_id": capture_session_id,
+                    "audience": "roman",
+                    "provider": provider,
+                    "provider_session_id": session,
+                    "lease_id": lease_id,
+                    "state": "closed",
+                    "reason": "manual",
+                    "publication": "controller",
+                    "participation": {
+                        "capture_session_id": capture_session_id,
+                        "segment_session_id": primary_session,
+                        "channel": "3",
+                        "delivery_seat": "primary",
+                    },
+                    "opened_at": "2026-10-25T04:00:00Z",
+                    "closed_at": "2026-10-25T04:00:05Z",
+                    "emitted_at": "2026-10-25T04:00:05Z",
+                },
+                {
+                    "schema": DEMUX.CHANNEL_SESSION_SCHEMA,
+                    "channel": "7",
+                    "session_id": projection_session,
+                    "capture_session_id": capture_session_id,
+                    "audience": "roman",
+                    "provider": provider,
+                    "provider_session_id": session,
+                    "lease_id": lease_id,
+                    "state": "closed",
+                    "reason": "manual",
+                    "publication": "controller",
+                    "participation": {
+                        "capture_session_id": capture_session_id,
+                        "segment_session_id": projection_session,
+                        "channel": "7",
+                        "delivery_seat": "projection",
+                    },
+                    "opened_at": "2026-10-25T04:00:00Z",
+                    "closed_at": "2026-10-25T04:00:05Z",
+                    "emitted_at": "2026-10-25T04:00:05Z",
+                },
+            ]
+            bus.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in bus_rows), encoding="utf-8")
+
+            normalizer = DEMUX.EvidenceNormalizer()
+            flushed = []
+            for raw in bus.read_text(encoding="utf-8").splitlines():
+                parsed = DEMUX.parse_line(raw)
+                self.assertIsNotNone(parsed)
+                normalizer.normalize(parsed)
+                flushed.extend(normalizer.pop_flushes())
+
+            self.assertEqual(len(flushed), 2)
+            by_session = {row["session_id"]: row for row in flushed}
+            self.assertEqual(by_session[primary_session]["delivery_seat"], "primary")
+            self.assertEqual(by_session[projection_session]["delivery_seat"], "projection")
+
+            lease = DEMUX.SessionLease(
+                root=root,
+                provider=provider,
+                provider_session_id=session,
+                name="roman",
+                bus=bus,
+                requested_id=None,
+                ttl_seconds=90.0,
+                follow_from_end=False,
+                coalesce=True,
+            )
+            try:
+                woken = []
+                for event in flushed:
+                    self.assertEqual(
+                        lease.admits_channel_event(event),
+                        event["session_id"] == primary_session,
+                    )
+                    considered = DEMUX.consider(
+                        event,
+                        name="roman",
+                        hear_all=False,
+                        drafts=False,
+                        debug=False,
+                    )
+                    if event["session_id"] == projection_session:
+                        self.assertIsNone(considered)
+                        projection_payload = DEMUX.slim(event, "roman")
+                        projection_payload.update(
+                            status=DEMUX.SEALED,
+                            delivery_id="c" * 24,
+                            lease_id=lease_id,
+                            provider=provider,
+                            provider_session_id=session,
+                            bus=str(bus),
+                            delivery_owner=lease.owner_Metadata() if hasattr(lease, "owner_Metadata") else {
+                                "lease_id": lease_id,
+                                "provider": provider,
+                                "provider_session_id": session,
+                                "name": "roman",
+                                "channel": "7",
+                                "pid": 1234,
+                            },
+                        )
+                        self.assertFalse(lease.queue_delivery(projection_payload))
+                        self.assertIsNone(DEMUX.watch_line(projection_payload, lease_id))
+                    else:
+                        self.assertIsNotNone(considered)
+                        considered["delivery_id"] = DEMUX.delivery_identity(lease_id, considered)
+                        considered["lease_id"] = lease_id
+                        considered["provider"] = provider
+                        considered["provider_session_id"] = session
+                        considered["bus"] = str(bus)
+                        considered["delivery_owner"] = {
+                            "lease_id": lease_id,
+                            "provider": provider,
+                            "provider_session_id": session,
+                            "name": "roman",
+                            "channel": "3",
+                            "pid": 1234,
+                        }
+                        self.assertTrue(lease.queue_delivery(considered))
+                        watch = DEMUX.watch_line(considered, lease_id)
+                        self.assertIsNotNone(watch)
+                        woken.append(watch)
+
+                self.assertEqual(len(lease.pending), 1)
+                self.assertEqual(len(woken), 1)
+                only_pending = next(iter(lease.pending.values()))
+                self.assertEqual(only_pending["session_id"], primary_session)
+                self.assertEqual(only_pending["delivery_seat"], "primary")
+
+                read_args = argparse.Namespace(
+                    bridge_home=root,
+                    bus=bus,
+                    bus_overridden=True,
+                    provider=provider,
+                    session=session,
+                )
+                _, pending_rows = DEMUX.unread_pending(read_args, include_quiet=True)
+                self.assertEqual(len(pending_rows), 1)
+                self.assertEqual(pending_rows[0]["session_id"], primary_session)
+
+                (root / "buses").mkdir(mode=0o700, parents=True, exist_ok=True)
+                (root / "buses" / "channel-3.jsonl").write_text(
+                    "".join(
+                        json.dumps(row, ensure_ascii=False) + "\n"
+                        for row in bus_rows
+                        if row.get("channel") == "3"
+                    ),
+                    encoding="utf-8",
+                )
+                (root / "buses" / "channel-7.jsonl").write_text(
+                    "".join(
+                        json.dumps(row, ensure_ascii=False) + "\n"
+                        for row in bus_rows
+                        if row.get("channel") == "7"
+                    ),
+                    encoding="utf-8",
+                )
+                messages, _, skipped = DEMUX.history_messages(root)
+                self.assertEqual(skipped, [])
+                voice_rows = [row for row in messages if row.get("lane") == "voice"]
+                self.assertEqual(len(voice_rows), 2)
+                self.assertEqual({next(iter(row["channels"])) for row in voice_rows}, {"3", "7"})
+            finally:
+                lease._release_lock()
 
 
 if __name__ == "__main__":
