@@ -501,6 +501,8 @@ private struct OnboardingPermissionRow: View {
       VStack(alignment: .leading, spacing: 4) {
         HStack(spacing: 8) {
           Text(kind.displayName(locale: model.interfaceLocale)).font(CSFont.ui(13, .semibold))
+            // A long Polish scope name wraps instead of ending in an ellipsis.
+            .fixedSize(horizontal: false, vertical: true)
           if kind.isOptionalForSetup {
             Text(
               String(
