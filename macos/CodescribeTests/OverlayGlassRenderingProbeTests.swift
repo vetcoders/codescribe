@@ -141,90 +141,91 @@ final class OverlayGlassRenderingProbeTests: XCTestCase {
     }
   }
 
-  func testBackgroundUpdateAndLayoutMatrix() throws {
-    try runMatrix(visible: false)
-  }
+  func testBackgroundFixedShort() throws { try runWorkload(.fixedShort, visible: false) }
+  func testBackgroundFixedLong() throws { try runWorkload(.fixedLong, visible: false) }
+  func testBackgroundAppend() throws { try runWorkload(.append, visible: false) }
+  func testBackgroundPendingRevision() throws { try runWorkload(.pendingRevision, visible: false) }
 
-  func testVisibleCompositorMatrixRequiresIsolatedGUI() throws {
-    try BackgroundTestWindow.requireIsolatedGUI()
-    try runMatrix(visible: true)
-  }
+  func testVisibleFixedShort() throws { try runWorkload(.fixedShort, visible: true) }
+  func testVisibleFixedLong() throws { try runWorkload(.fixedLong, visible: true) }
+  func testVisibleAppend() throws { try runWorkload(.append, visible: true) }
+  func testVisiblePendingRevision() throws { try runWorkload(.pendingRevision, visible: true) }
 
-  private func runMatrix(visible: Bool) throws {
+  private func runWorkload(_ workload: Workload, visible: Bool) throws {
+    if visible { try BackgroundTestWindow.requireIsolatedGUI() }
     // A matched, deterministic text stream; never reads audio or user content.
     let corpus = String(
       repeating: "A recorded phrase grows without changing its earlier words. ", count: 150)
-    let ticks = 24
-    for workload in Workload.allCases {
-      // Reverse the order in alternate workloads to expose gross order effects.
-      let backings =
-        workload == .fixedLong || workload == .pendingRevision
-        ? Array(Backing.allCases.reversed()) : Backing.allCases
-      for backing in backings {
-        let initialLength = workload == .fixedLong ? 8000 : 400
-        let host = NSHostingView(
-          rootView: Subject(
-            backing: backing, text: String(corpus.prefix(initialLength)), pending: [], tick: 0))
-        host.sizingOptions = []
-        host.autoresizingMask = []
-        let panel = FloatingOverlayPanel(
-          contentRect: NSRect(x: 80, y: 80, width: 640, height: 500),
-          styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.isReleasedWhenClosed = false
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = false
-        panel.contentView = OverlayContentContainer(hosting: host)
-        BackgroundTestWindow.present(panel)
-        defer { panel.close() }
-        settle(panel)
-        RunLoop.main.run(until: Date().addingTimeInterval(0.15))
-        settle(panel)
+    // Three material cells must remain below the suite's 10 s per-test limit.
+    let ticks = 16
+    // Reverse the order in alternate workloads to expose gross order effects.
+    let backings =
+      workload == .fixedLong || workload == .pendingRevision
+      ? Array(Backing.allCases.reversed()) : Backing.allCases
+    for backing in backings {
+      let initialLength = workload == .fixedLong ? 8000 : 400
+      let host = NSHostingView(
+        rootView: Subject(
+          backing: backing, text: String(corpus.prefix(initialLength)), pending: [], tick: 0))
+      host.sizingOptions = []
+      host.autoresizingMask = []
+      let panel = FloatingOverlayPanel(
+        contentRect: NSRect(x: 80, y: 80, width: 640, height: 500),
+        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+      panel.isReleasedWhenClosed = false
+      panel.isOpaque = false
+      panel.backgroundColor = .clear
+      panel.hasShadow = false
+      panel.contentView = OverlayContentContainer(hosting: host)
+      BackgroundTestWindow.present(panel)
+      defer { panel.close() }
+      settle(panel)
+      RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+      settle(panel)
 
-        let before = cpuSeconds()
-        let started = CACurrentMediaTime()
-        var latencies: [Double] = []
-        var expected = ""
-        for tick in 0..<ticks {
-          let length: Int
-          switch workload {
-          case .fixedShort: length = 400
-          case .fixedLong: length = 8000
-          case .append, .pendingRevision: length = 400 + 7600 * (tick + 1) / ticks
-          }
-          expected = String(corpus.prefix(length))
-          let pending =
-            workload == .pendingRevision
-            ? [NSRange(location: max(0, length - 80), length: min(80, length))] : []
-          let updateStarted = CACurrentMediaTime()
-          host.rootView = Subject(
-            backing: backing, text: expected, pending: pending, tick: tick + 1)
-          settle(panel)
-          RunLoop.main.run(until: Date().addingTimeInterval(0.01))
-          settle(panel)
-          latencies.append((CACurrentMediaTime() - updateStarted) * 1000)
-          RunLoop.main.run(until: Date().addingTimeInterval(0.09))
+      let before = cpuSeconds()
+      let started = CACurrentMediaTime()
+      var latencies: [Double] = []
+      var expected = ""
+      for tick in 0..<ticks {
+        let length: Int
+        switch workload {
+        case .fixedShort: length = 400
+        case .fixedLong: length = 8000
+        case .append, .pendingRevision: length = 400 + 7600 * (tick + 1) / ticks
         }
-        let cpu = cpuSeconds() - before
-        let wall = CACurrentMediaTime() - started
-        XCTAssertTrue(cpu.isFinite && cpu >= 0, "Process CPU accounting must be available")
-        let text = try XCTUnwrap(firstText(in: host))
-        XCTAssertEqual(text.string, expected, "The workload must reach the real native text view")
-        XCTAssertEqual(panel.frame.size, NSSize(width: 640, height: 500))
-        let sorted = latencies.sorted()
-        let payload: [String: Any] = [
-          "schema": "codescribe.glass-rendering-probe.v1",
-          "scope": visible ? "visible-isolated-gui" : "background-update-layout-only",
-          "backing": backing.rawValue, "workload": workload.rawValue,
-          "ticks": ticks, "final_utf16": (text.string as NSString).length,
-          "cpu_seconds": cpu, "wall_seconds": wall,
-          "update_p50_ms": sorted[sorted.count / 2],
-          "update_p95_ms": sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.95))],
-          "compositor_power_measured": false,
-        ]
-        let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
-        print("GLASS_PROBE_RESULT \(String(decoding: data, as: UTF8.self))")
+        expected = String(corpus.prefix(length))
+        let pending =
+          workload == .pendingRevision
+          ? [NSRange(location: max(0, length - 80), length: min(80, length))] : []
+        let updateStarted = CACurrentMediaTime()
+        host.rootView = Subject(
+          backing: backing, text: expected, pending: pending, tick: tick + 1)
+        settle(panel)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        settle(panel)
+        latencies.append((CACurrentMediaTime() - updateStarted) * 1000)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.09))
       }
+      let cpu = cpuSeconds() - before
+      let wall = CACurrentMediaTime() - started
+      XCTAssertTrue(cpu.isFinite && cpu >= 0, "Process CPU accounting must be available")
+      let text = try XCTUnwrap(firstText(in: host))
+      XCTAssertEqual(text.string, expected, "The workload must reach the real native text view")
+      XCTAssertEqual(panel.frame.size, NSSize(width: 640, height: 500))
+      let sorted = latencies.sorted()
+      let payload: [String: Any] = [
+        "schema": "codescribe.glass-rendering-probe.v1",
+        "scope": visible ? "visible-isolated-gui" : "background-update-layout-only",
+        "backing": backing.rawValue, "workload": workload.rawValue,
+        "ticks": ticks, "final_utf16": (text.string as NSString).length,
+        "cpu_seconds": cpu, "wall_seconds": wall,
+        "update_p50_ms": sorted[sorted.count / 2],
+        "update_p95_ms": sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.95))],
+        "compositor_power_measured": false,
+      ]
+      let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+      print("GLASS_PROBE_RESULT \(String(decoding: data, as: UTF8.self))")
     }
   }
 
