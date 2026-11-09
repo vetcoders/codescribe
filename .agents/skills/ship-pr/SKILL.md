@@ -39,7 +39,7 @@ description: Shepherd a pull request to ready-for-merge or parked with npx
 5. Repeat step 2 until all checks and review threads are green and the loop
    parks for the maintainer (`autoMergeFor: []` — the human maintainer owns
    merge and auto-merge enablement).
-6. After merge and local installation (`make install-if-idle`), confirm the
+6. After merge and local installation (`make install-app`), confirm the
    running process SHA:
    ```sh
    bin/control-codescribe health --sha <merge-sha> --json

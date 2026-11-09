@@ -3228,6 +3228,40 @@
         }
       }
     },
+    "Allow Codescribe to control Spotify in Privacy & Security > Automation." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allow Codescribe to control Spotify in Privacy & Security > Automation."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pozwól Codescribe sterować Spotify w ustawieniach Prywatność i ochrona > Automatyzacja."
+          }
+        }
+      }
+    },
+    "Allow Spotify control" : {
+      "comment" : "Explicit action that asks macOS for Spotify Automation access without changing volume",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allow Spotify control"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zezwól na sterowanie Spotify"
+          }
+        }
+      }
+    },
     "Allow access" : {
       "comment" : "In-app permission repair chip; the row title already names the permission",
       "localizations" : {
@@ -3840,6 +3874,40 @@
         }
       }
     },
+    "Audio output in use" : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Audio output in use"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aktywne wyjścia audio"
+          }
+        }
+      }
+    },
+    "Audio playback status is unavailable." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Audio playback status is unavailable."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stan odtwarzania dźwięku jest niedostępny."
+          }
+        }
+      }
+    },
     "Audio retention" : {
       "localizations" : {
         "pl" : {
@@ -4238,6 +4306,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Zbudowano: %@"
+          }
+        }
+      }
+    },
+    "Bus header" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bus header"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Belka busa"
           }
         }
       }
@@ -4641,6 +4727,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Nagrywanie trwa, dopóki go nie zatrzymasz."
+          }
+        }
+      }
+    },
+    "Cards" : {
+      "comment" : "Intercom cards router button",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Fiszki"
           }
         }
       }
@@ -5750,6 +5847,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Menu Codescribe"
+          }
+        }
+      }
+    },
+    "Codescribe quit while this message was being sent. It may already have reached the agent; check before sending it again." : {
+      "comment" : "A held message returned to the composer after a crash during its handoff",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codescribe zamknął się w trakcie wysyłania tej wiadomości. Mogła już dotrzeć do agenta; sprawdź, zanim wyślesz ją ponownie."
           }
         }
       }
@@ -7678,6 +7786,24 @@
         }
       }
     },
+    "Developer preview only. Changes appear immediately." : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Developer preview only. Changes appear immediately."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tylko podgląd deweloperski. Zmiany widać od razu."
+          }
+        }
+      }
+    },
     "Device Control and Data Access" : {
       "comment" : "Privacy permission pane name on macOS 27 and later; formerly Accessibility",
       "localizations" : {
@@ -8871,17 +8997,6 @@
         }
       }
     },
-    "Fixed position" : {
-      "comment" : "Overlay placement menu: the overlay stays on its remembered place",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Stałe miejsce"
-          }
-        }
-      }
-    },
     "Fixed windows" : {
       "shouldTranslate" : false
     },
@@ -9390,6 +9505,42 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Token GitHub"
+          }
+        }
+      }
+    },
+    "Glass tint" : {
+      "comment" : "Developer Lab native glass tint control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Glass tint"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tonowanie szkła"
+          }
+        }
+      }
+    },
+    "Glass tuning" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Glass tuning"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Regulacja szkła"
           }
         }
       }
@@ -10581,6 +10732,41 @@
         }
       }
     },
+    "Less tint" : {
+      "comment" : "Developer Lab native glass tint control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Less tint"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mniej tonowania"
+          }
+        }
+      }
+    },
+    "Let Codescribe lower Spotify by 70 percent for the whole recording and restore it afterwards. Dictation works without this permission." : {
+      "comment" : "Optional Automation grant for Spotify volume control, without pausing playback",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Let Codescribe lower Spotify by 70 percent for the whole recording and restore it afterwards. Dictation works without this permission."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Codescribe ścisza Spotify o 70% na cały czas nagrania, a potem przywraca głośność. Dyktowanie działa także bez tego uprawnienia."
+          }
+        }
+      }
+    },
     "Libraxis API key" : {
       "comment" : "Libraxis is a company name",
       "localizations" : {
@@ -11547,6 +11733,24 @@
         }
       }
     },
+    "Mini and MIDI" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mini and MIDI"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mini i midi"
+          }
+        }
+      }
+    },
     "Minimize" : {
       "localizations" : {
         "pl" : {
@@ -11672,6 +11876,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Więcej działań"
+          }
+        }
+      }
+    },
+    "More tint" : {
+      "comment" : "Developer Lab native glass tint control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "More tint"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Więcej tonowania"
           }
         }
       }
@@ -12662,6 +12884,23 @@
         }
       }
     },
+    "No other application has an active audio output." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No other application has an active audio output."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Żadna inna aplikacja nie ma aktywnego wyjścia audio."
+          }
+        }
+      }
+    },
     "No preview window appears while recording." : {
       "localizations" : {
         "pl" : {
@@ -13519,6 +13758,24 @@
         }
       }
     },
+    "Onboarding" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Onboarding"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kreator"
+          }
+        }
+      }
+    },
     "One anonymous event with the app version and the macOS version. Never audio or text." : {
       "comment" : "User panel: opt-in switch subtitle",
       "localizations" : {
@@ -13643,6 +13900,23 @@
         }
       }
     },
+    "Open Automation settings" : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open Automation settings"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwórz ustawienia Automatyzacji"
+          }
+        }
+      }
+    },
     "Open Lab" : {
       "localizations" : {
         "pl" : {
@@ -13681,6 +13955,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Otwórz kreator…"
+          }
+        }
+      }
+    },
+    "Open Spotify, then allow Codescribe to lower its volume while recording. If access was denied, enable Spotify under Codescribe in Privacy & Security > Automation." : {
+      "comment" : "Optional Spotify control permission; Spotify must be running to ask macOS",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open Spotify, then allow Codescribe to lower its volume while recording. If access was denied, enable Spotify under Codescribe in Privacy & Security > Automation."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otwórz Spotify, a następnie zezwól Codescribe na ściszanie muzyki podczas nagrywania. Jeśli odmówiono dostępu, włącz Spotify dla Codescribe w Ustawieniach systemowych → Prywatność i ochrona → Automatyzacja."
           }
         }
       }
@@ -13934,7 +14225,7 @@
       }
     },
     "Optional" : {
-      "comment" : "Optional scope skipped in setup\nScreen Recording and Full Disk Access never block setup completion\nStatus chip",
+      "comment" : "Optional feature permissions never block setup completion\nOptional scope skipped in setup\nStatus chip",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -14443,17 +14734,6 @@
         }
       }
     },
-    "Place" : {
-      "comment" : "Overlay placement menu: submenu of the six places the overlay snaps to",
-      "localizations" : {
-        "pl" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "Miejsce"
-          }
-        }
-      }
-    },
     "Plan" : {
       "comment" : "License status row: the purchased plan",
       "extractionState" : "manual",
@@ -14502,6 +14782,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Odtwórz oryginalne nagranie dla tej poprawki"
+          }
+        }
+      }
+    },
+    "Playback during recording" : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Playback during recording"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odtwarzanie podczas nagrywania"
           }
         }
       }
@@ -14978,6 +15275,7 @@
       }
     },
     "Queued" : {
+      "comment" : "Context panel fact: accepted turns waiting to run",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
@@ -16430,6 +16728,24 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Resetowanie danych"
+          }
+        }
+      }
+    },
+    "Reset glass" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reset glass"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Resetuj szkło"
           }
         }
       }
@@ -19010,6 +19326,91 @@
         }
       }
     },
+    "Spotify control" : {
+      "comment" : "Optional target-specific Automation permission in General settings and setup",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify control"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sterowanie Spotify"
+          }
+        }
+      }
+    },
+    "Spotify is lowered by 70 percent for the whole recording and restored afterwards." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify is lowered by 70 percent for the whole recording and restored afterwards."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Głośność Spotify jest zmniejszana o 70 procent na cały czas nagrania, a potem przywracana."
+          }
+        }
+      }
+    },
+    "Spotify is quieter while the microphone is recording." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify is quieter while the microphone is recording."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify jest ściszone na czas nagrywania mikrofonu."
+          }
+        }
+      }
+    },
+    "Spotify keeps playing. Its volume changes only while recording." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify keeps playing. Its volume changes only while recording."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify odtwarza dalej. Jego głośność zmienia się tylko podczas nagrywania."
+          }
+        }
+      }
+    },
+    "Spotify volume could not be adjusted. Recording continues." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Spotify volume could not be adjusted. Recording continues."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nie udało się zmienić głośności Spotify. Nagrywanie trwa dalej."
+          }
+        }
+      }
+    },
     "Stale configuration entries — do not affect operation" : {
       "comment" : "About panel: several .env entries Codescribe does not read",
       "localizations" : {
@@ -19659,6 +20060,24 @@
         }
       }
     },
+    "Surface" : {
+      "comment" : "Developer Lab glass tuning control",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Surface"
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Powierzchnia"
+          }
+        }
+      }
+    },
     "Switch to Cloud" : {
       "comment" : "Cloud consent confirmation: button that grants consent and selects Cloud",
       "localizations" : {
@@ -20114,6 +20533,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "LOCAL_MODEL ma pierwszeństwo przed modelem wybranym w aplikacji."
+          }
+        }
+      }
+    },
+    "The accepted turn has no model configuration. Send it again." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The accepted turn has no model configuration. Send it again."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zaakceptowana tura nie ma zapisanej konfiguracji modelu. Wyślij ją ponownie."
           }
         }
       }
@@ -20804,6 +21239,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "To powiązanie nie pasuje już do agenta na tym kanale. Wiadomość do niego nie pójdzie."
+          }
+        }
+      }
+    },
+    "This message is already being sent." : {
+      "comment" : "Cancel/Edit came after the send hold ended",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ta wiadomość jest już wysyłana."
           }
         }
       }
@@ -22937,6 +23383,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Twoja licencja, wersja Codescribe, lokalne dane i prywatność."
+          }
+        }
+      }
+    },
+    "Your manual Spotify volume change takes priority." : {
+      "comment" : "Audio settings: recording-time Spotify volume and system output activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Your manual Spotify volume change takes priority."
+          }
+        },
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Twoja ręczna zmiana głośności Spotify ma pierwszeństwo."
           }
         }
       }

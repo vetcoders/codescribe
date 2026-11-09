@@ -194,24 +194,39 @@ struct OverlayRecordingControls: View {
   private var recordingButton: some View {
     Button(action: activateRecordingControl) {
       Group {
+        // Both loops run on the render server (`OverlayRenderServerMotion`):
+        // a 30 Hz timeline here committed the whole overlay window thirty
+        // times a second through every take (Instruments, 2026-11-07).
         if recordingLight?.spins == true {
           if animates && !reduceMotion {
-            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-              recordingGlyph.overlay {
-                processingArc(
-                  rotation: OverlayRecordingLight.arcRotation(
-                    at: timeline.date.timeIntervalSinceReferenceDate))
-              }
+            recordingGlyph.overlay {
+              OverlayRenderServerArc(
+                from: 0, to: OverlayRecordingLight.arcFraction,
+                lineWidth: Self.processingArcWidth, color: recordingTint,
+                period: OverlayRecordingLight.rotationPeriod,
+                phase: OverlayRecordingLight.arcRotation(
+                  at: Date().timeIntervalSinceReferenceDate)
+              )
+              .frame(
+                width: OverlayMicrophoneGlyph.diameter, height: OverlayMicrophoneGlyph.diameter
+              )
+              .accessibilityHidden(true)
             }
           } else {
             // Still motion: the open arc keeps the shape that tells it from red.
             recordingGlyph.overlay { processingArc(rotation: 0) }
           }
         } else if recordingLight?.pulses == true && animates && !reduceMotion {
-          TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-            recordingGlyph.opacity(
-              OverlayRecordingLight.pulseOpacity(at: timeline.date.timeIntervalSinceReferenceDate))
+          OverlayRenderServerPulse(
+            period: CSMotion.Tempo.lampPulse,
+            // The breath's floor from the same curve the clock-driven pulse drew.
+            floor: OverlayRecordingLight.pulseOpacity(at: CSMotion.Tempo.lampPulse / 2),
+            phase: Date().timeIntervalSinceReferenceDate
+              .truncatingRemainder(dividingBy: CSMotion.Tempo.lampPulse)
+          ) {
+            recordingGlyph
           }
+          .frame(width: OverlayMicrophoneGlyph.diameter, height: OverlayMicrophoneGlyph.diameter)
         } else {
           recordingGlyph
         }
@@ -670,6 +685,9 @@ struct DictationOverlayView: View {
   @AppStorage(OverlayAgentDrawerLayout.widthDefaultsKey) private var preferredAgentDrawerWidth =
     300.0
   @State private var overlayVisible = false
+  /// True from the agents divider's first drag event to its release. Both
+  /// panes dim behind the moving guide; the flag flips twice per gesture.
+  @State private var agentDividerDragging = false
   @State private var headerHeight: CGFloat = 48
   @State private var footerHeight: CGFloat = 0
   @State private var footerDetail: String?
@@ -700,6 +718,12 @@ struct DictationOverlayView: View {
   private var railIntents: [OverlayIntent] {
     OverlayRecordingControls.railIntents(from: projectedIntents)
   }
+  private var hiddenBehindIntercom: Bool {
+    state.intercomWidgetIsVisible && !overlayVisible && !state.conversationIsVisible
+  }
+  private var expandedCanvasActive: Bool {
+    !state.isCollapsed && !hiddenBehindIntercom
+  }
 
   var body: some View {
     // Channel 0's display name reaches every conversation header below.
@@ -707,7 +731,10 @@ struct DictationOverlayView: View {
   }
 
   @ViewBuilder private var overlayBody: some View {
-    OverlayCanvasSurface(palette: palette) {
+    OverlayCanvasSurface(
+      palette: palette,
+      glassRole: state.presentationMode == .expanded ? .readingCanvas : .chrome
+    ) {
       // The rail reads the live transcript (intents, versions, history
       // refusal). Scoped, a capture tick re-renders the rail, not the root.
       overlayGlassContainer(
@@ -797,23 +824,20 @@ struct DictationOverlayView: View {
         // drawer width, or no selected conversation does not mount it on
         // transcription. Beside a conversation the list stays as its corner
         // buttons left it (Maciej, 2026-10-19).
-        let listOnScreen =
-          agentsSurface
-          && !state.isCollapsed
-          && (state.showsAgentMonitor
-            || OverlayAgentDrawerLayout.listPinned(
-              layout: state.agentsLayout, docked: docked,
-              conversationSelected: state.selectedConversation != nil))
+        let listOnScreen = expandedCanvasActive && state.agentListPresented
         let columnShown = listOnScreen
         // A folded list leaves its own rail. A folded conversation leaves a
         // separate edge control on the left; neither panel owns the other's toggle.
-        let railShown = agentsSurface && !state.isCollapsed && !listOnScreen
+        let railShown = agentsSurface && expandedCanvasActive && !listOnScreen
         let railWidth = OverlayAgentDrawerLayout.railWidth(textScale: textScale)
-        let transcriptActionsShown = transcriptionSurface && !state.isCollapsed
+        let transcriptActionsShown = transcriptionSurface && expandedCanvasActive
         let transcriptActionsWidth =
           transcriptActionsShown
           ? OverlayTranscriptActionsLayout.columnWidth(textScale: textScale) : 0
-        let conversationFolded = listOnScreen && state.agentsLayout == .agents
+        // With no conversation chosen the canvas has nothing to paint: the
+        // roster takes the window instead of leaving a blank pane beside it.
+        let conversationFolded =
+          listOnScreen && (state.agentsLayout == .agents || state.selectedConversation == nil)
         let conversationEdgeWidth = min(
           geometry.size.width,
           OverlayAgentDrawerLayout.conversationEdgeWidth(textScale: textScale))
@@ -828,8 +852,7 @@ struct DictationOverlayView: View {
         let canvasWidth = max(
           0,
           geometry.size.width
-            - (columnShown ? drawerWidth : 0) - (railShown ? railWidth : 0)
-            - transcriptActionsWidth)
+            - (columnShown ? drawerWidth : 0) - (railShown ? railWidth : 0))
         // The conversation keeps its split width while its cell folds or
         // unfolds: the pane slide animates a clip, never a reflow. Laying the
         // text out at the folding cell's width wrapped it one character per
@@ -842,23 +865,29 @@ struct DictationOverlayView: View {
         let conversationContentWidth = max(
           0,
           geometry.size.width
-            - (columnShown ? splitDrawerWidth : 0) - (railShown ? railWidth : 0)
-            - transcriptActionsWidth)
+            - (columnShown ? splitDrawerWidth : 0) - (railShown ? railWidth : 0))
         let canvasHidden = canvasWidth < 1 || conversationFolded
         HStack(alignment: .top, spacing: 0) {
           ZStack {
-            // Both ends are numbers, so the fold interpolates with the window's
+            // The transcript stays mounted while the bar is collapsed. Both
+            // ends are numbers, so the fold interpolates with the window's
             // morph, over the same duration (it follows the distance since
-            // 2026-10-15). A `nil` height has nothing to animate from: the body
-            // snapped to zero on the first frame while the glass kept shrinking
-            // (presentation ledger, 2026-10-14).
-            let transcriptVisible = transcriptionSurface && !state.isCollapsed
-            bodySection
-              .frame(height: state.isCollapsed ? 0 : geometry.size.height)
-              .opacity(transcriptVisible ? 1 : 0)
-              .allowsHitTesting(transcriptVisible)
-              .accessibilityHidden(!transcriptVisible)
-            if agentsSurface, let conversation = state.selectedConversation {
+            // 2026-10-15). A `nil` height, or a body removed on collapse, has
+            // nothing to animate from: the body snapped to zero on the first
+            // frame while the glass kept shrinking (presentation ledger,
+            // 2026-10-14). Ordered out behind Fiszki there is no morph to
+            // follow, so the body leaves the tree with the rest of the canvas.
+            if !hiddenBehindIntercom {
+              let transcriptVisible = transcriptionSurface && !state.isCollapsed
+              bodySection
+                .frame(height: state.isCollapsed ? 0 : geometry.size.height)
+                .opacity(transcriptVisible ? 1 : 0)
+                .allowsHitTesting(transcriptVisible)
+                .accessibilityHidden(!transcriptVisible)
+            }
+            if expandedCanvasActive && agentsSurface,
+              let conversation = state.selectedConversation
+            {
               let resolvedTarget = state.resolvedComposerTarget(viewing: conversation)
               // The inbox composes with no recipient of its own: the agents
               // linked to it are the destination (Maciej, 2026-10-30 13:58).
@@ -959,7 +988,11 @@ struct DictationOverlayView: View {
                 draftSyncEnabled: state.canActivateDraftSync(for: conversation.id),
                 onProseEdit: { state.applyConversationProseEdit($0, for: conversation.id) },
                 onToggleDraftSync: { state.toggleDraftSync(from: conversation.id, with: $0) },
-                onStopDraftSync: { state.stopDraftSync(for: conversation.id) }
+                onStopDraftSync: { state.stopDraftSync(for: conversation.id) },
+                onDeliveryControl: { control, message, owner, text in
+                  try await state.controlDelivery(
+                    control, message: message, owner: owner, text: text)
+                }
               )
               .opacity(state.isCollapsed ? 0 : 1)
               .allowsHitTesting(!state.isCollapsed)
@@ -983,6 +1016,7 @@ struct DictationOverlayView: View {
           // brings it back.
           .frame(width: canvasWidth, height: geometry.size.height, alignment: .leading)
           .clipped()
+          .modifier(OverlayDividerDragDim(active: agentDividerDragging))
           .animation(
             reduceMotion ? nil : .easeInOut(duration: state.presentationMorphDuration),
             value: state.isCollapsed
@@ -1002,6 +1036,10 @@ struct DictationOverlayView: View {
             )
             .transition(.move(edge: .trailing).combined(with: .opacity))
           }
+        }
+        // Actions float over the reserved text margin. The native viewport
+        // spans the panel, so its scrollbar stays beside the window edge.
+        .overlay(alignment: .trailing) {
           if transcriptActionsShown {
             transcriptActionsColumn(
               maximumHeight: geometry.size.height, width: transcriptActionsWidth, rail: intentRail
@@ -1122,14 +1160,14 @@ struct DictationOverlayView: View {
     return
       rail
       .frame(height: availableHeight)
+      .background { OverlayMenuCursorRegion() }
       .padding(.top, headerHeight + OverlayTranscriptActionsLayout.columnTopGap)
       .padding(.bottom, OverlayTranscriptActionsLayout.columnBottomPadding)
-      // Keep the complete action buttons outside the native resize band.
-      .padding(.trailing, OverlayResizeHit.band)
+      // Keep the buttons clear of both native scrolling and edge resize.
+      .padding(.trailing, OverlayTranscriptActionsLayout.columnTrailingInset)
       .frame(width: width, height: max(0, maximumHeight), alignment: .top)
       .frame(maxHeight: .infinity, alignment: .top)
       .focusable(false)
-      .background { OverlayMenuCursorRegion() }
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier("overlay-transcript-actions")
       .onAppear { state.refreshRetranscriptionAvailability() }
@@ -1169,6 +1207,8 @@ struct DictationOverlayView: View {
     .frame(width: width, alignment: width < contentMinimum ? .leading : .trailing)
     .frame(maxHeight: .infinity, alignment: .top)
     .clipped()
+    // Dimmed below the handle's overlay: the divider and its guide stay sharp.
+    .modifier(OverlayDividerDragDim(active: agentDividerDragging))
     .background { OverlayMenuCursorRegion() }
     .overlay(alignment: .leading) {
       agentDrawerResizeHandle(width: width, windowWidth: windowWidth)
@@ -1277,35 +1317,36 @@ struct DictationOverlayView: View {
 
   private func agentDrawerResizeHandle(width: CGFloat, windowWidth: CGFloat) -> some View {
     OverlayAgentDrawerDivider(
-      width: width, windowWidth: windowWidth, palette: palette, displayScale: displayScale
+      width: width, windowWidth: windowWidth, palette: palette, displayScale: displayScale,
+      onDragActive: { agentDividerDragging = $0 }
     ) { translation in
       commitAgentDrawerWidth((width - translation) / textScale, windowWidth: windowWidth)
     }
-      .accessibilityElement()
-      .accessibilityLabel(String(localized: "Resize agents sidebar"))
-      .accessibilityValue(Text(verbatim: "\(Int(width))"))
-      .accessibilityAdjustableAction { direction in
-        let step: CGFloat
-        switch direction {
-        case .increment: step = 20
-        case .decrement: step = -20
-        @unknown default: return
-        }
-        // Narrowing a roster that covers the window leaves the snap zone at
-        // once; a 20-point step would stay inside it.
-        let fills = state.agentsLayout == .agents
-        // At the rows' minimum one more step down folds the list to its rail.
-        let atMinimum =
-          width <= OverlayAgentDrawerLayout.contentMinimumWidth(textScale: textScale) + 0.5
-        let next =
-          fills && step < 0
-          ? OverlayAgentDrawerLayout.widestSplitWidth(
-            textScale: textScale, windowWidth: windowWidth)
-          : atMinimum && step < 0 ? 0 : width / textScale + step
-        commitAgentDrawerWidth(next, windowWidth: windowWidth)
+    .accessibilityElement()
+    .accessibilityLabel(String(localized: "Resize agents sidebar"))
+    .accessibilityValue(Text(verbatim: "\(Int(width))"))
+    .accessibilityAdjustableAction { direction in
+      let step: CGFloat
+      switch direction {
+      case .increment: step = 20
+      case .decrement: step = -20
+      @unknown default: return
       }
-      .accessibilityIdentifier("overlay-agent-sidebar-resize")
-      .padding(.top, headerHeight)
+      // Narrowing a roster that covers the window leaves the snap zone at
+      // once; a 20-point step would stay inside it.
+      let fills = state.agentsLayout == .agents
+      // At the rows' minimum one more step down folds the list to its rail.
+      let atMinimum =
+        width <= OverlayAgentDrawerLayout.contentMinimumWidth(textScale: textScale) + 0.5
+      let next =
+        fills && step < 0
+        ? OverlayAgentDrawerLayout.widestSplitWidth(
+          textScale: textScale, windowWidth: windowWidth)
+        : atMinimum && step < 0 ? 0 : width / textScale + step
+      commitAgentDrawerWidth(next, windowWidth: windowWidth)
+    }
+    .accessibilityIdentifier("overlay-agent-sidebar-resize")
+    .padding(.top, headerHeight)
   }
 
   // MARK: Header
@@ -1359,7 +1400,8 @@ struct DictationOverlayView: View {
       // Keep one header identity through morphs; only its material changes.
       .modifier(
         OverlayControlGlass(
-          cornerRadius: CSRadius.window, isEnabled: state.presentationMode == .expanded)
+          cornerRadius: CSRadius.window, isEnabled: state.presentationMode == .expanded,
+          role: .chrome)
       )
       // The cached panel survives orderOut. Observe its window beside the header
       // row so the visibility probe is installed exactly once.
@@ -1399,7 +1441,7 @@ struct DictationOverlayView: View {
     controls.channelCaptureOpen = state.channelAudioCaptureActive
     controls.onStopChannelCapture = state.stopOpenChannels
     controls.onShowDictation = state.showTranscription
-    controls.onShowAgents = { state.showAgentMonitor() }
+    controls.onShowAgents = { state.showAgents() }
     controls.onPresentationSelect = state.setPresentationMode
     return controls
   }
@@ -1532,7 +1574,10 @@ struct DictationOverlayView: View {
           // any channel records, a press is that capture's stop, never
           // channel 0 or the monitor.
           recordingControls(compact: false, showsPreview: false)
-          miniAgentsButton(roster)
+          OverlayAgentRouterControl(
+            routesToIntercom: state.isVerticalIntercom && state.isCollapsed,
+            mini: true, roster: roster, palette: palette,
+            onRevealIntercom: state.toggleAgentSidebar)
           recordingControls(compact: false, showsMicrophone: false)
         } else {
           if let error = state.expansionPreferenceError {
@@ -1543,7 +1588,10 @@ struct DictationOverlayView: View {
             .accessibilityLabel(error)
             .accessibilityIdentifier("overlay-preference-save-error")
           }
-          roster
+          OverlayAgentRouterControl(
+            routesToIntercom: state.isVerticalIntercom && state.isCollapsed,
+            mini: false, roster: roster, palette: palette,
+            onRevealIntercom: state.toggleAgentSidebar)
           OverlayPinButton(state: state, palette: palette)
           recordingControls(compact: false)
         }
@@ -1556,14 +1604,6 @@ struct DictationOverlayView: View {
     // The bar's layout answers its own one- or two-row height.
     .frame(height: horizontalMap ? nil : OverlayHeaderDensity.rowHeight)
     .accessibilityIdentifier(mini ? "overlay-mini-widget" : "")
-  }
-
-  /// Mini's Agents button: the roster's button, which in mini also says an
-  /// agent speaks (L15), since mini has no chips to carry the dot.
-  private func miniAgentsButton(_ roster: OverlayChannelStatusView) -> OverlayChannelStatusView {
-    var button = roster
-    button.signalsSpeaking = true
-    return button
   }
 
   private var transcriptionPreviewButton: some View {
@@ -1594,6 +1634,7 @@ struct DictationOverlayView: View {
   /// 2026-10-23), so narrowing the overlay never removes the way to the group.
   /// Internal so tests can drive the header's same values.
   func channelMap(roster: OverlayChannelStatusView) -> OverlayChannelMapView? {
+    guard !hiddenBehindIntercom else { return nil }
     guard state.presentationMode != .mini || state.channelMapCounterStacked else { return nil }
     let counterOnly = state.channelMapCounterStacked
     guard counterOnly || state.channelMapInHeader else { return nil }
@@ -1769,7 +1810,6 @@ struct DictationOverlayView: View {
   private var bodySection: some View {
     transcriptScroll
       .frame(maxWidth: .infinity, maxHeight: .infinity)
-      .padding(.horizontal, 20)
       .background { OverlayWindowDragRegion(identifier: "overlay-body-drag-region") }
   }
 
@@ -1935,7 +1975,8 @@ struct DictationOverlayView: View {
         showsDiagnostics: showsDiagnostics,
         showsActivityUnderline: overlayVisible && state.animatesTranscriptCaret,
         contentInsets: NSEdgeInsets(
-          top: headerHeight + 4, left: 0, bottom: footerHeight + 10, right: 0),
+          top: headerHeight + 4, left: 20, bottom: footerHeight + 10,
+          right: 20 + OverlayTranscriptActionsLayout.columnWidth(textScale: textScale)),
         onEditingChanged: { editing in
           if editing { state.beginTranscriptEdit() } else { state.endTranscriptEdit() }
         },
@@ -2301,6 +2342,9 @@ private struct OverlayAgentDrawerDivider: View {
   let windowWidth: CGFloat
   let palette: OverlayAppearancePalette
   let displayScale: CGFloat
+  /// Once with `true` at the first drag event, once with `false` after
+  /// release; never per pointer move. The parent dims both panes on it.
+  let onDragActive: (Bool) -> Void
   /// The pointer's horizontal travel at release, in window points.
   let onCommit: (CGFloat) -> Void
   @GestureState private var translation: CGFloat?
@@ -2312,6 +2356,9 @@ private struct OverlayAgentDrawerDivider: View {
       .frame(width: 10, alignment: .leading)
       .contentShape(Rectangle())
       .background { OverlayMenuCursorRegion(cursor: .resizeLeftRight) }
+      // `translation` resets to nil after `onEnded`, so the committed width
+      // and the undim land in the same transaction: no sharp stale frame.
+      .onChange(of: translation != nil) { _, dragging in onDragActive(dragging) }
       .overlay(alignment: .leading) {
         if let translation {
           // The guide stays inside the window: from its leading edge to the
@@ -2331,5 +2378,59 @@ private struct OverlayAgentDrawerDivider: View {
           }
           .onEnded { value in onCommit(value.translation.width) }
       )
+  }
+}
+
+/// The fade both panes wear while the agents divider is dragged. One state
+/// flip applies it, one removes it; nothing here is recomputed per move.
+private struct OverlayDividerDragDim: ViewModifier {
+  let active: Bool
+
+  func body(content: Content) -> some View {
+    content
+      .opacity(active ? OverlayAgentDrawerLayout.dragDimOpacity : 1)
+      .blur(radius: active ? OverlayAgentDrawerLayout.dragBlurRadius : 0)
+      .allowsHitTesting(!active)
+  }
+}
+
+/// The folded Fiszki header opens the Intercom; other layouts retain the
+/// same roster button and mini's speaking indication. The parent supplies
+/// its already-computed roster so header controls share one observation.
+private struct OverlayAgentRouterControl: View {
+  let routesToIntercom: Bool
+  let mini: Bool
+  let roster: OverlayChannelStatusView
+  let palette: OverlayAppearancePalette
+  let onRevealIntercom: () -> Void
+
+  @ViewBuilder
+  var body: some View {
+    if routesToIntercom {
+      Button(action: onRevealIntercom) {
+        OverlayMicrophoneGlyph(
+          character: OverlayHeaderGlyph.agents,
+          tint: palette.mutedText.color,
+          plateOpacity: 0.12)
+      }
+      .buttonStyle(.plain)
+      .csFocusOutline()
+      .fixedSize()
+      .modifier(
+        OverlayHeaderControlChrome(
+          title: String(localized: "Cards", comment: "Intercom cards router button"),
+          accent: .agents, palette: palette, selected: false)
+      )
+      .accessibilityLabel(String(localized: "Cards", comment: "Intercom cards router button"))
+      .accessibilityIdentifier("overlay-intercom-router-button")
+    } else {
+      rosterButton
+    }
+  }
+
+  private var rosterButton: OverlayChannelStatusView {
+    var button = roster
+    button.signalsSpeaking = mini
+    return button
   }
 }

@@ -29,6 +29,10 @@ data  CsAdmissionReadiness.calibratedDevices
 data  CsAdmissionReadiness.sealLaneSource
 data  CsAdmissionReadiness.sealLaneEnv
 prose CsAgentAvailability.detail
+data  CsAgentTurnConfiguration.provider
+data  CsAgentTurnConfiguration.model
+data  CsAgentTurnConfiguration.reasoningEffort
+data  CsAgentTurnConfiguration.receipt
 data  CsAgentArchiveRequest.provider
 data  CsAgentArchiveRequest.providerSessionId
 data  CsAgentArchiveRequest.leaseId
@@ -418,6 +422,7 @@ data  CodescribeAgent.streamDocument()
 data  CodescribeAgent.streamDocumentWithAttachments()
 data  CodescribeAgent.streamMaxConsultation()
 data  CodescribeAgent.streamReply()
+data  CodescribeAgent.streamConfiguredReply()
 data  CodescribeAgent.streamReplyWithAttachments()
 data  CodescribeAgent.streamWorkspace()
 data  CodescribeAgent.streamWorkspaceWithAttachments()

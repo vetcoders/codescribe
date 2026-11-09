@@ -90,6 +90,11 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   let menuCursorRegions = NSHashTable<NSView>.weakObjects()
   let windowDragRegions = NSHashTable<NSView>.weakObjects()
   private var cursorState = OverlayCursorState()
+  /// A resize cursor pressed inside a mounted region stays the panel's cursor
+  /// until the button is released, wherever the pointer travels. The list's
+  /// divider band is 10 points wide, so a drag leaves it on its first move and
+  /// the arrow came back in the middle of the gesture (Maciej, 2026-11-07).
+  private var grabbedCursor: NSCursor?
 
   enum CursorInvalidationReason {
     case boundary, mounting, orderOut
@@ -138,6 +143,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   private var resizePreviewMonitor: Any?
   private var pendingResizePresentation: (mode: OverlayPresentationMode, animated: Bool)?
   private var expandedSizes: [OverlayContentSurface: NSSize] = [:]
+  private var isSettlingAgentsSplitWidth = false
   fileprivate(set) var contentSurface: OverlayContentSurface = .transcription
   var contentSizeDefaults: UserDefaults = .standard
   private var expandedSize: NSSize? {
@@ -415,17 +421,30 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
 
   /// A direct request for the agent column reserves both panes before the
   /// expansion begins. Width determines geometry, never whether the click works.
+  ///
+  /// The width that decides is the one the split will be drawn at: the window
+  /// on screen while it shows the split, the remembered size otherwise. A
+  /// landed transition forgets the remembered size, so judging the shown
+  /// window by the saved one asked for the same settle after every landing:
+  /// the controller calls this from its transition-completed callback, and a
+  /// settle that is not animated completes inside the call (a stack overflow
+  /// in OverlayContentSurfaceTests since c4fe2f236).
   func ensureAgentsSplitWidth(_ minimum: CGFloat) {
     let screenWidth = (screen ?? NSScreen.main)?.visibleFrame.width ?? minimum
     let floor = min(minimum, screenWidth)
     let saved =
       expandedSizes[.agents]
       ?? DictationOverlayWindow.restoredContentSize(surface: .agents, defaults: contentSizeDefaults)
-    guard saved.width < floor || (contentSurface == .agents && frame.width < floor) else { return }
+    let showsSplit = contentSurface == .agents && presentationMode == .expanded
+    let width = showsSplit ? (frameTransitionTarget ?? frame).width : saved.width
+    guard width < floor - 0.5 else { return }
     expandedSizes[.agents] = NSSize(width: max(saved.width, floor), height: saved.height)
-    if contentSurface == .agents, presentationMode == .expanded, !isUserResizing {
-      setPresentationMode(.expanded, animated: isFrameTransitioning, settleResize: true)
-    }
+    // One settle per request: a display that cannot give the floor leaves the
+    // window narrower, and the landing must not ask again from inside.
+    guard showsSplit, !isUserResizing, !isSettlingAgentsSplitWidth else { return }
+    isSettlingAgentsSplitWidth = true
+    defer { isSettlingAgentsSplitWidth = false }
+    setPresentationMode(.expanded, animated: isFrameTransitioning, settleResize: true)
   }
 
   /// Remembered or default expanded size, raised to the qualified content
@@ -645,6 +664,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   func invalidatePresence() {
     cancelUserResize()
     presence?.invalidate()
+    outsideInteractions.stop()
   }
 
   /// True while the screenshot and app-activation monitors are installed.
@@ -659,10 +679,31 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// resigning on the way out must not give the keyboard back.
   private var dispatchingGateClick = false
 
-  /// The transcript canvas needs keyboard input for selection or editing.
+  /// AppKit's key calls; tests record them so a hidden panel never asks the
+  /// window server for the keyboard.
+  var keyCalls = OverlayKeyCalls.appKit
+  /// Reports the user going on in another app while the gate is open.
+  var outsideInteractions: any OverlayOutsideInteractionSource =
+    OverlayGlobalOutsideInteractions()
+
+  /// The transcript canvas or a composer needs keyboard input for selection
+  /// or editing. A panel that still reports key behind a closed gate holds a
+  /// stale record (`OverlayKeyboardRequest.reclaimKey`): the click asks the
+  /// window server again instead of trusting it.
   func takeKeyForTranscript() {
+    let wasKey = keyCalls.isKey(self)
+    let request = OverlayKeyboardRequest.opening(
+      gateOpen: allowsKeyForTranscript, panelIsKey: wasKey)
+    // Still closed here, so the resign-key it posts leaves the responder alone.
+    if request == .reclaimKey { keyCalls.resignKey(self) }
     allowsKeyForTranscript = true
-    if !isKeyWindow { makeKey() }
+    if request != .none { keyCalls.makeKey(self) }
+    if !outsideInteractions.isWatching {
+      outsideInteractions.start { [weak self] interaction in
+        self?.noteInteractionOutside(interaction)
+      }
+    }
+    traceKeyboard("gate.taken", "request=\(request.rawValue) wasKey=\(wasKey)")
   }
 
   /// The canvas resigned. Drop key status so keystrokes return to the app the
@@ -670,7 +711,10 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   func releaseKeyAfterTranscript() {
     guard allowsKeyForTranscript, !dispatchingGateClick else { return }
     allowsKeyForTranscript = false
-    if isKeyWindow { resignKey() }
+    outsideInteractions.stop()
+    let wasKey = keyCalls.isKey(self)
+    if wasKey { keyCalls.resignKey(self) }
+    traceKeyboard("gate.released", "wasKey=\(wasKey)")
   }
 
   /// Key left from outside: resign the canvas. An active edit uses its
@@ -678,7 +722,31 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   func windowDidResignKey(_ notification: Notification) {
     guard allowsKeyForTranscript else { return }
     allowsKeyForTranscript = false
+    outsideInteractions.stop()
     makeFirstResponder(nil)
+    traceKeyboard("gate.resigned", "")
+  }
+
+  /// The user went on in another app while the gate was open. The window
+  /// server has already moved the keyboard there and AppKit may not have told
+  /// this panel, so the gate closes as on resign-key and the record follows.
+  func noteInteractionOutside(_ interaction: OverlayOutsideInteraction) {
+    outsideInteractions.stop()
+    guard allowsKeyForTranscript else { return }
+    allowsKeyForTranscript = false
+    makeFirstResponder(nil)
+    let wasKey = keyCalls.isKey(self)
+    if wasKey { keyCalls.resignKey(self) }
+    traceKeyboard("gate.left", "reason=\(interaction.rawValue) wasKey=\(wasKey)")
+  }
+
+  /// One `overlay-keyboard` line per gate decision in the diagnostic log, so
+  /// the next keyboard left in another app is attributed from evidence.
+  private func traceKeyboard(_ event: String, _ detail: String) {
+    guard let log = DiagnosticLog.installed else { return }
+    let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "-"
+    let parts = [event, detail, "appActive=\(NSApp.isActive)", "front=\(front)"]
+    log.append(category: "overlay-keyboard", parts.filter { !$0.isEmpty }.joined(separator: " "))
   }
 
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -730,6 +798,11 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       }
     }
     if event.type == .mouseMoved || event.type == .cursorUpdate, !pointerOverHintCard {
+      // A grabbed resize cursor outranks every zone until the button is up.
+      if let grabbedCursor {
+        if NSCursor.current !== grabbedCursor { grabbedCursor.set() }
+        return
+      }
       // Resolve once. Owned zones consume motion before overlapping text
       // tracking can set an I-beam. Leaving resize restores the arrow before
       // native dispatch; ordinary interior motion never writes a cursor.
@@ -748,6 +821,26 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
       {
         beginUserResize(edge: edge, at: screenPoint(for: event))
         return
+      }
+      // Only resize affordances are grabbed: a pointing hand on a button has
+      // nothing to hold through a drag, and native text keeps its I-beam.
+      let decision = pointerDecision(at: event.locationInWindow)
+      if case .menu = decision.zone, let cursor = decision.cursor,
+        cursor === NSCursor.resizeLeftRight || cursor === NSCursor.resizeUpDown
+      {
+        grabbedCursor = cursor
+      }
+    }
+    if event.type == .leftMouseDragged, let grabbedCursor, NSCursor.current !== grabbedCursor {
+      grabbedCursor.set()
+    }
+    defer {
+      if event.type == .leftMouseUp, grabbedCursor != nil {
+        // SwiftUI has ended the gesture by now; resolve the cursor afresh for
+        // wherever the pointer was released, whatever the drag left on screen.
+        grabbedCursor = nil
+        cursorState = OverlayCursorState()
+        refreshCursor(at: event.locationInWindow)
       }
     }
     switch event.type {
@@ -1007,6 +1100,7 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// by another window must not suppress our next region entry.
   func invalidateCursorOwnership(reason: CursorInvalidationReason = .boundary) {
     cursorState = OverlayCursorState()
+    grabbedCursor = nil
     guard DiagnosticLog.installed != nil else { return }
     switch reason {
     case .boundary: pointerMetrics.boundaryResets += 1
@@ -1352,20 +1446,28 @@ final class OverlayContentContainer: NSView {
   /// existing scroll view, including when the pointer is over a corner.
   override func scrollWheel(with event: NSEvent) {
     let point = convert(event.locationInWindow, from: nil)
+    if let hitView = hosting.hitTest(point) {
+      if let scroll = (hitView as? NSScrollView) ?? hitView.enclosingScrollView {
+        scroll.scrollWheel(with: event)
+        return
+      }
+    }
     var target: NSScrollView?
     var distance = CGFloat.infinity
     func visit(_ view: NSView) {
       guard !view.isHidden, !view.visibleRect.isEmpty else { return }
-      for child in view.subviews { visit(child) }
-      guard let scroll = view as? NSScrollView else { return }
-      let rect = convert(scroll.visibleRect, from: scroll)
-      let dx = max(rect.minX - point.x, 0, point.x - rect.maxX)
-      let dy = max(rect.minY - point.y, 0, point.y - rect.maxY)
-      let candidateDistance = dx * dx + dy * dy
-      if candidateDistance < distance {
-        target = scroll
-        distance = candidateDistance
+      if let scroll = view as? NSScrollView {
+        let rect = convert(scroll.visibleRect, from: scroll)
+        let dx = max(rect.minX - point.x, 0, point.x - rect.maxX)
+        let dy = max(rect.minY - point.y, 0, point.y - rect.maxY)
+        let candidateDistance = dx * dx + dy * dy
+        if candidateDistance < distance {
+          target = scroll
+          distance = candidateDistance
+        }
+        return
       }
+      for child in view.subviews { visit(child) }
     }
     visit(hosting)
     if let target {
@@ -1499,8 +1601,9 @@ enum DictationOverlayWindow {
   static let miniFloorWidth =
     miniOuterPadding + miniBrandDot + 2 * miniRowSpacing + miniTrailingControls
 
-  /// Mini while a take is live (Founder, 2026-11-04, bus brief §6, §11D):
-  /// between the brand and the tools the bar's 82 pt waveform, the `00:00`
+  /// Mini while a take is live (Monika, 2026-11-04, bus brief §6, §11D):
+  /// between the brand and the tools mini's own 82 pt waveform
+  /// (`OverlayBarMetrics.miniWaveformWidth`), the `00:00`
   /// clock and, for an agent take, one circled digit per open channel
   /// (`OverlayChannelPill` in its counter form, 19 pt) or, for channel 0,
   /// the 22 pt megaphone; a dictation alone has no addressees. The row's gaps
@@ -1759,7 +1862,13 @@ enum DictationOverlayWindow {
     panel.delegate = panel
     state.onPresentationModeChanged = { [weak panel, weak state] mode in
       guard let panel else { return }
-      if let state { panel.setContentSurface(state.windowContentSurface) }
+      if let state {
+        if state.windowContentSurface == .agents, state.agentsLayout == .split {
+          panel.ensureAgentsSplitWidth(
+            OverlayAgentDrawerLayout.minimumSplitWindowWidth(textScale: textScale.scale))
+        }
+        panel.setContentSurface(state.windowContentSurface)
+      }
       panel.setPresentationMode(
         mode,
         animated: panel.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)

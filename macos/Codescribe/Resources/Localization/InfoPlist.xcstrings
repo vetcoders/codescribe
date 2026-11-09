@@ -8,13 +8,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Codescribe uses Apple Events to bring apps forward and deliver transcribed text into the app you are working in."
+            "value" : "Codescribe uses Apple Events to deliver transcribed text and lower Spotify's volume during recording, then restore it."
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Codescribe używa Apple Events, aby przełączać się do odpowiednich aplikacji i wstawiać transkrybowany tekst tam, gdzie pracujesz."
+            "value" : "Codescribe używa Apple Events do wstawiania transkrybowanego tekstu oraz ściszania Spotify podczas nagrywania i przywracania jego głośności."
           }
         }
       }

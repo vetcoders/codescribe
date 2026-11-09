@@ -754,16 +754,18 @@ fn provider_models_endpoint(provider: &ResolvedProvider) -> Result<String, Model
     Ok(url.to_string())
 }
 
-/// Trim, drop blanks, and de-duplicate by id while preserving provider order —
-/// the picker shows this list verbatim. Applied on both write and read, so a
-/// cache file that predates a normalization rule is still cleaned up on load.
+/// Trim, drop blanks, filter non-LLM modalities and redundant dated snapshots,
+/// de-duplicate by id while preserving provider order, and disambiguate
+/// colliding display names — the picker shows this list verbatim. Applied on
+/// both write and read, so a cache file that predates a normalization rule is
+/// still cleaned up on load.
 fn normalize_models(models: Vec<DiscoveredModel>) -> Vec<DiscoveredModel> {
     let mut seen = HashSet::new();
-    models
+    let deduped: Vec<DiscoveredModel> = models
         .into_iter()
         .filter_map(|model| {
             let id = model.id.trim().to_string();
-            if id.is_empty() || !seen.insert(id.clone()) {
+            if id.is_empty() || is_non_text_model_id(&id) || !seen.insert(id.clone()) {
                 return None;
             }
             let display_name = model.display_name.trim().to_string();
@@ -776,7 +778,86 @@ fn normalize_models(models: Vec<DiscoveredModel>) -> Vec<DiscoveredModel> {
                 id,
             })
         })
-        .collect()
+        .collect();
+
+    let mut filtered: Vec<DiscoveredModel> = deduped
+        .into_iter()
+        .filter(|model| {
+            if let Some(base) = strip_dated_snapshot_suffix(&model.id)
+                && seen.contains(base)
+            {
+                return false;
+            }
+            true
+        })
+        .collect();
+
+    let mut display_counts: BTreeMap<String, usize> = BTreeMap::new();
+    for model in &filtered {
+        *display_counts
+            .entry(model.display_name.to_lowercase())
+            .or_insert(0) += 1;
+    }
+
+    for model in &mut filtered {
+        let key = model.display_name.to_lowercase();
+        if display_counts.get(&key).copied().unwrap_or(0) > 1
+            && model.display_name.to_lowercase() != model.id.to_lowercase()
+        {
+            model.display_name = format!("{} ({})", model.display_name, model.id);
+        }
+    }
+
+    filtered
+}
+
+/// True for non-chat/non-text models returned by vendor `/v1/models` catalogs
+/// (TTS, STT/transcribe, embeddings, moderation, image/video, realtime audio).
+fn is_non_text_model_id(id: &str) -> bool {
+    let lower = id.to_ascii_lowercase();
+    lower.starts_with("tts-")
+        || lower.ends_with("-tts")
+        || lower.contains("-tts-")
+        || lower.starts_with("whisper-")
+        || lower.ends_with("-whisper")
+        || lower.ends_with("-transcribe")
+        || lower.contains("-transcribe-")
+        || lower.starts_with("text-embedding-")
+        || lower.starts_with("embedding-")
+        || lower.starts_with("omni-moderation-")
+        || lower.starts_with("text-moderation-")
+        || lower.starts_with("dall-e-")
+        || lower.starts_with("sora-")
+        || lower.starts_with("gpt-image-")
+        || lower.starts_with("chatgpt-image-")
+        || lower.starts_with("grok-imagine-")
+        || lower.contains("-flash-image")
+        || lower.starts_with("gpt-realtime")
+        || lower.starts_with("gpt-audio")
+        || lower == "gpt-live-1"
+        || lower == "babbage-002"
+        || lower == "davinci-002"
+}
+
+/// Returns the base model id when `id` ends with `-YYYY-MM-DD` (e.g.
+/// `gpt-5.2-2025-12-11` -> `Some("gpt-5.2")`).
+fn strip_dated_snapshot_suffix(id: &str) -> Option<&str> {
+    if id.len() <= 11 {
+        return None;
+    }
+    let split = id.len() - 11;
+    if !id.is_char_boundary(split) {
+        return None;
+    }
+    let (base, suffix) = id.split_at(split);
+    let bytes = suffix.as_bytes();
+    let is_dated = bytes[0] == b'-'
+        && bytes[1..5].iter().all(u8::is_ascii_digit)
+        && bytes[5] == b'-'
+        && bytes[6..8].iter().all(u8::is_ascii_digit)
+        && bytes[8] == b'-'
+        && bytes[9..11].iter().all(u8::is_ascii_digit);
+    is_dated.then_some(base)
 }
 
 /// Cache location, resolved through `Config` so an isolated data dir (tests,
@@ -1232,6 +1313,87 @@ mod tests {
         assert_eq!(
             provider_models_endpoint(&proxy).unwrap(),
             "https://proxy.example/openai/models"
+        );
+    }
+
+    #[test]
+    fn normalize_models_disambiguates_colliding_display_names_and_filters_noise() {
+        let raw = vec![
+            DiscoveredModel {
+                id: "gemini-2.5-flash".to_string(),
+                display_name: "Gemini 3.5 Flash Lite".to_string(),
+            },
+            DiscoveredModel {
+                id: "gemini-2.5-flash-lite".to_string(),
+                display_name: "Gemini 3.5 Flash Lite".to_string(),
+            },
+            DiscoveredModel {
+                id: "gemini-3.5-flash-lite".to_string(),
+                display_name: "Gemini 3.5 Flash Lite".to_string(),
+            },
+            DiscoveredModel {
+                id: "gemini-3.1-flash-image".to_string(),
+                display_name: "Gemini 3.1 Flash Image".to_string(),
+            },
+            DiscoveredModel {
+                id: "gpt-5.2".to_string(),
+                display_name: "gpt-5.2".to_string(),
+            },
+            DiscoveredModel {
+                id: "gpt-5.2-2025-12-11".to_string(),
+                display_name: "gpt-5.2-2025-12-11".to_string(),
+            },
+            DiscoveredModel {
+                id: "claude-opus-4-5-20251101".to_string(),
+                display_name: "Claude Opus 4.5".to_string(),
+            },
+            DiscoveredModel {
+                id: "tts-1".to_string(),
+                display_name: "tts-1".to_string(),
+            },
+            DiscoveredModel {
+                id: "whisper-1".to_string(),
+                display_name: "whisper-1".to_string(),
+            },
+            DiscoveredModel {
+                id: "gpt-4o-transcribe".to_string(),
+                display_name: "gpt-4o-transcribe".to_string(),
+            },
+            DiscoveredModel {
+                id: "text-embedding-3-small".to_string(),
+                display_name: "text-embedding-3-small".to_string(),
+            },
+            DiscoveredModel {
+                id: "grok-imagine-video".to_string(),
+                display_name: "grok-imagine-video".to_string(),
+            },
+        ];
+
+        let normalized = normalize_models(raw);
+        assert_eq!(
+            normalized,
+            vec![
+                DiscoveredModel {
+                    id: "gemini-2.5-flash".to_string(),
+                    display_name: "Gemini 3.5 Flash Lite (gemini-2.5-flash)".to_string(),
+                },
+                DiscoveredModel {
+                    id: "gemini-2.5-flash-lite".to_string(),
+                    display_name: "Gemini 3.5 Flash Lite (gemini-2.5-flash-lite)".to_string(),
+                },
+                DiscoveredModel {
+                    id: "gemini-3.5-flash-lite".to_string(),
+                    display_name: "Gemini 3.5 Flash Lite (gemini-3.5-flash-lite)".to_string(),
+                },
+                DiscoveredModel {
+                    id: "gpt-5.2".to_string(),
+                    display_name: "gpt-5.2".to_string(),
+                },
+                DiscoveredModel {
+                    id: "claude-opus-4-5-20251101".to_string(),
+                    display_name: "Claude Opus 4.5".to_string(),
+                },
+            ]
         );
     }
 

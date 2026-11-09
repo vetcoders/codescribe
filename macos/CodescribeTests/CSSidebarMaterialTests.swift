@@ -184,9 +184,9 @@ final class CSSidebarMaterialTests: XCTestCase {
     let column = try String(
       contentsOf: codescribe.appendingPathComponent("DesignSystem/CSSidebarColumn.swift"),
       encoding: .utf8)
-    XCTAssertTrue(
-      column.contains(".background { CSSidebarMaterial().ignoresSafeArea() }"),
-      "the shared column backs every sidebar with the material from the bottom edge to the top")
+    XCTAssertFalse(
+      column.contains("CSSidebarMaterial()"),
+      "NavigationSplitView owns its material without a second effect view")
     for path in ["Screens/Settings/SettingsView.swift", "Screens/AgentChat/ThreadRail.swift"] {
       let source = try String(
         contentsOf: codescribe.appendingPathComponent(path), encoding: .utf8)
@@ -214,23 +214,17 @@ final class CSSidebarMaterialTests: XCTestCase {
       await nextMainQueueTurn()
       host.view.layoutSubtreeIfNeeded()
     }
-    let controls = try XCTUnwrap(window.toolbar).items.compactMap(\.view)
-    // Views review 1–10 (Founder, 2026-10-20): the bar carries the wordmark
-    // alone; no second title names the pane. The brand item still sets the
-    // header rhythm shared with the Agent window.
-    XCTAssertGreaterThanOrEqual(
-      controls.filter { $0.frame.height >= 51 }.count, 1,
-      "the Settings brand item keeps the shared header rhythm")
-    XCTAssertEqual(
-      controls.filter { $0.frame.height >= 51 }.count, 1,
-      "only the brand item: the pane title left the window bar")
-    for view in controls {
-      let rect = view.convert(view.bounds, to: nil)
-      XCTAssertLessThanOrEqual(rect.maxY, window.frame.height)
-      XCTAssertGreaterThanOrEqual(rect.minY, window.contentLayoutRect.maxY)
-    }
-    let material = try XCTUnwrap(
-      findView(of: CSSidebarVisualEffectNSView.self, in: host.view))
+    let owners = window.titlebarAccessoryViewControllers.filter { $0.layoutAttribute == .top }
+    XCTAssertEqual(owners.count, 1, "one header band shared with Agent")
+    let owner = try XCTUnwrap(owners.first)
+    let glass = try XCTUnwrap(findView(of: NSGlassEffectView.self, in: owner.view))
+    let rect = glass.convert(glass.bounds, to: nil)
+    XCTAssertEqual(rect.height, 52, accuracy: 1)
+    XCTAssertEqual(rect.maxX, window.frame.width, accuracy: 1)
+    XCTAssertEqual(rect.minY, window.contentLayoutRect.maxY, accuracy: 1)
+    XCTAssertNotNil(glass.contentView)
+    let material = try XCTUnwrap(findView(of: NSGlassEffectView.self, in: host.view))
+    XCTAssertNil(findView(of: CSSidebarVisualEffectNSView.self, in: host.view))
     let frame = material.convert(material.bounds, to: nil)
     XCTAssertEqual(frame.maxY, window.frame.height, accuracy: 1)
     XCTAssertEqual(frame.minY, 0, accuracy: 1)

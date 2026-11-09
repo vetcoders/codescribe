@@ -454,7 +454,7 @@ private struct OnboardingPermissionRow: View {
               String(
                 localized: LocalizedStringResource(
                   "Optional", locale: model.interfaceLocale,
-                  comment: "Screen Recording and Full Disk Access never block setup completion"))
+                  comment: "Optional feature permissions never block setup completion"))
             )
             .font(CSFont.ui(11))
             .foregroundStyle(CSColor.secondaryInk)
@@ -493,6 +493,7 @@ private struct OnboardingPermissionRow: View {
             Button(actionTitle) { model.grantPermission(for: kind) }
               .csAction()
               .controlSize(.small)
+              .disabled(model.pendingPermissionRequests.contains(kind))
           }
           if repair.opensSettings {
             Button {
@@ -1291,6 +1292,12 @@ extension PermissionKind {
           "Without it, protected files stay unavailable to the Agent as context. Dictation still works.",
           locale: locale,
           comment: "Consequence of a missing Full Disk Access scope"))
+    case .spotifyAutomation:
+      return String(
+        localized: LocalizedStringResource(
+          "Let Codescribe lower Spotify by 70 percent for the whole recording and restore it afterwards. Dictation works without this permission.",
+          locale: locale,
+          comment: "Optional Automation grant for Spotify volume control, without pausing playback"))
     }
   }
 }

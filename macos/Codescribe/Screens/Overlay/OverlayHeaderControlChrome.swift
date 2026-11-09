@@ -240,6 +240,9 @@ final class OverlayHintPanel {
   static let gap: CGFloat = 6
   /// Distance kept from the screen's visible edges.
   static let screenInset: CGFloat = 4
+  /// How far from its window's leading edge an anchor still counts as
+  /// hugging it; a quarter of the window's width when that is larger.
+  static let leadingEdgeReach: CGFloat = 36
 
   private var panel: NSPanel?
   private var controller: NSHostingController<AnyView>?
@@ -379,7 +382,9 @@ final class OverlayHintPanel {
     panel.appearance = NSAppearance(named: palette.appearance == .dark ? .darkAqua : .aqua)
     var frame =
       leading
-      ? Self.frame(size: size, leading: anchorRect, clearance: leadingClearance, within: bounds)
+      ? Self.frame(
+        size: size, leading: anchorRect, clearance: leadingClearance,
+        parentFrame: withinWindow ? nil : parent.frame, within: bounds)
       : Self.frame(size: size, below: anchorRect, within: bounds)
     // A card re-measured while the pointer rests in it keeps its bottom edge,
     // where the pager sits, so a shorter page does not pull the card out from
@@ -459,25 +464,53 @@ final class OverlayHintPanel {
     return NSRect(origin: origin, size: size)
   }
 
-  /// Sidebar hints sit over the document, outside the rail's scroll clip.
-  /// `clearance` widens the gap on the leading side only.
+  /// Sidebar hints sit over the document, outside the rail's scroll clip, and
+  /// inside the owning window whenever it is large enough for the card.
+  /// For a smaller window the parent's edges stand in for the anchor's when
+  /// the anchor hugs the window's leading edge (a fiszka's name), and the
+  /// card sits beside the window.
   static func frame(
-    size: CGSize, leading anchor: NSRect, clearance: CGFloat = 0, within visible: NSRect
+    size: CGSize, leading anchor: NSRect, clearance: CGFloat = 0, parentFrame: NSRect? = nil, within visible: NSRect
   ) -> NSRect {
-    let left = anchor.minX - clearance - gap - size.width
-    let right = anchor.maxX + gap
-    // A column against the left screen edge previews on its right. Clamping
-    // the left candidate onto the row used to cover the very control hovered.
-    let x =
-      left >= visible.minX + screenInset
-      ? left
-      : right + size.width <= visible.maxX - screenInset ? right : left
+    // A window that can hold the card keeps it: beside the row, or under it
+    // when the row spans the window (Maciej, 2026-11-06: hover cards are
+    // fine, "tylko NIE poza oknem"). Only a window too small for the card,
+    // a fiszka or a rail, sends it outside.
+    if let parentFrame {
+      let inside = parentFrame.intersection(visible)
+      if !inside.isNull, inside.width >= size.width + 2 * screenInset,
+        inside.height >= size.height + 2 * screenInset
+      {
+        return frame(size: size, leading: anchor, clearance: clearance, within: inside)
+      }
+    }
+    let parent = parentFrame.flatMap { parent in
+      anchor.minX - parent.minX <= max(leadingEdgeReach, parent.width / 4) ? parent : nil
+    }
+    let leadingEdge = min(anchor.minX, parent?.minX ?? anchor.minX)
+    let trailingEdge = max(anchor.maxX, parent?.maxX ?? anchor.maxX)
+    let left = leadingEdge - clearance - gap - size.width
+    let right = trailingEdge + gap
+    // A column against the left edge previews on its right. With no room on
+    // either side the card goes under the row, above it when the bounds end
+    // first: clamping a side candidate onto the row used to cover the very
+    // control hovered.
+    let fitsLeft = left >= visible.minX + screenInset
+    let fitsRight = right + size.width <= visible.maxX - screenInset
+    let candidate: NSPoint
+    if fitsLeft || fitsRight {
+      candidate = NSPoint(x: fitsLeft ? left : right, y: anchor.maxY - size.height)
+    } else {
+      let below = anchor.minY - gap - size.height
+      candidate = NSPoint(
+        x: anchor.minX, y: below >= visible.minY + screenInset ? below : anchor.maxY + gap)
+    }
     let origin = NSPoint(
       x: min(
-        max(x, visible.minX + screenInset),
+        max(candidate.x, visible.minX + screenInset),
         visible.maxX - screenInset - size.width),
       y: min(
-        max(anchor.midY - size.height / 2, visible.minY + screenInset),
+        max(candidate.y, visible.minY + screenInset),
         visible.maxY - screenInset - size.height))
     return NSRect(origin: origin, size: size)
   }
@@ -506,6 +539,7 @@ final class OverlayHintPanel {
     effect.maskImage = Self.roundedMask(radius: CSRadius.chip)
     let controller = NSHostingController(
       rootView: AnyView(OverlayTooltipChip(title: "", palette: .light, filled: false)))
+    controller.sizingOptions = []
     controller.view.frame = effect.bounds
     controller.view.autoresizingMask = [.width, .height]
     effect.addSubview(controller.view)

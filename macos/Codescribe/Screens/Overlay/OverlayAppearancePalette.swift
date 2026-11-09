@@ -35,8 +35,12 @@ struct OverlayAppearancePalette: Equatable, Sendable {
   let lexiconMarker: OverlayColorToken
   let shadowOpacity: Double
 
-  static var light: OverlayAppearancePalette { OverlayAppearancePalette(.light) }
-  static var dark: OverlayAppearancePalette { OverlayAppearancePalette(.dark) }
+  /// Stored once per process. Each construction samples twelve roles through
+  /// `NSAppearance.performAsCurrentDrawingAppearance` + ColorSync, so a
+  /// computed property here put that cost on every SwiftUI body and every
+  /// live-transcript tick that resolves the palette.
+  static let light = OverlayAppearancePalette(.light)
+  static let dark = OverlayAppearancePalette(.dark)
 
   private init(_ appearance: OverlayAppearance) {
     self.appearance = appearance

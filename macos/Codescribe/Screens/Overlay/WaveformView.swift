@@ -97,9 +97,9 @@ final class AudioLevelMeter {
     // Advisory thresholds, not transcript admission or an accuracy score.
     // A recovery margin keeps normal syllable-level variation from flashing.
     if speechDB < -46 {
-      hasLowInputSignal = true
+      if !hasLowInputSignal { hasLowInputSignal = true }
     } else if speechDB > -42 {
-      hasLowInputSignal = false
+      if hasLowInputSignal { hasLowInputSignal = false }
     }
     speechSeconds = 0
     speechEnergy = 0

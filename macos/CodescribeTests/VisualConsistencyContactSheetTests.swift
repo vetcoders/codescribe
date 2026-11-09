@@ -169,8 +169,9 @@ final class VisualConsistencyContactSheetTests: XCTestCase {
             protocolVersion: String(repeating: "unbrokenProtocolToken", count: 6),
             error: ""),
           permissionLevel: "ask", initiallyShowingDetails: true,
-          onToggle: {}, onTest: {}, onRemove: {})
-          .padding(CSSpace.xl))
+          onToggle: {}, onTest: {}, onRemove: {}
+        )
+        .padding(CSSpace.xl))
 
       run.takeDensity(
         id: "mcp-failure-expanded-\(sizeName)", size: CGSize(width: width, height: 420),
@@ -181,15 +182,17 @@ final class VisualConsistencyContactSheetTests: XCTestCase {
             protocolVersion: "",
             error: "Synthetic connection failure; the diagnostic remains visible."),
           permissionLevel: nil, initiallyShowingDetails: true,
-          onToggle: {}, onTest: {}, onRemove: {})
-          .padding(CSSpace.xl))
+          onToggle: {}, onTest: {}, onRemove: {}
+        )
+        .padding(CSSpace.xl))
 
       run.takeDensity(
         id: "custom-expanded-\(sizeName)", size: CGSize(width: width, height: 310),
         root: ProviderCard(
           model: model, provider: providers[1], onEdit: {},
-          initiallyShowingAdvanced: true)
-          .padding(CSSpace.xl))
+          initiallyShowingAdvanced: true
+        )
+        .padding(CSSpace.xl))
 
       run.takeDensity(
         id: "key-editor-\(sizeName)", size: CGSize(width: width, height: 230),
@@ -198,8 +201,9 @@ final class VisualConsistencyContactSheetTests: XCTestCase {
           optional: true, embedded: true,
           presentation: .customProvider(endpoint: providers[0].endpoint),
           probeResult: nil, probePending: false, initiallyEditing: true,
-          onSave: { _ in }, onClear: {}, onTest: {})
-          .padding(CSSpace.xl))
+          onSave: { _ in }, onClear: {}, onTest: {}
+        )
+        .padding(CSSpace.xl))
     }
 
     let failedLicense = LicenseService(
@@ -824,10 +828,13 @@ private final class SheetRun {
   private func contentMounted(_ host: NSView, surface: String, state: String) -> Bool {
     switch surface {
     case "overlay":
-      let headerReady = descendants(of: host, where: {
-        ($0 as? OverlayWindowDragRegionView)?.accessibilityIdentifier()
-          == "overlay-header-drag-region"
-      }).contains { view in
+      let headerReady = descendants(
+        of: host,
+        where: {
+          ($0 as? OverlayWindowDragRegionView)?.accessibilityIdentifier()
+            == "overlay-header-drag-region"
+        }
+      ).contains { view in
         guard let frame = visibleBounds(view, in: host) else { return false }
         return frame.width > 20 && frame.height > 8
       }
@@ -996,6 +1003,7 @@ private enum ViewPlacement {
   case titlebarChrome(CGRect)
 }
 
+@MainActor
 private func place(_ view: NSView, in host: NSView) -> ViewPlacement? {
   let raw = host.convert(view.bounds, from: view)
   guard raw.width >= 1, raw.height >= 1 else { return nil }
@@ -1024,6 +1032,7 @@ private func place(_ view: NSView, in host: NSView) -> ViewPlacement? {
   return .inside(frame)
 }
 
+@MainActor
 private func visibleBounds(_ view: NSView, in host: NSView) -> CGRect? {
   switch place(view, in: host) {
   case .inside(let frame), .escapes(let frame), .titlebarChrome(let frame):
@@ -1033,27 +1042,32 @@ private func visibleBounds(_ view: NSView, in host: NSView) -> CGRect? {
   }
 }
 
+@MainActor
 private func isTitlebarControl(_ view: NSView) -> Bool {
   let name = String(describing: type(of: view))
   return name.contains("Button") || name.contains("Segment") || name.contains("Toolbar")
     || name.contains("Titlebar")
 }
 
+@MainActor
 private func mostlyAboveVisualTop(_ frame: CGRect, host: NSView) -> Bool {
   let outside: CGFloat =
     host.isFlipped ? max(0, -frame.minY) : max(0, frame.maxY - host.bounds.height)
   return outside > frame.height * 0.5
 }
 
+@MainActor
 private func distanceFromVisualTop(_ frame: CGRect, host: NSView) -> CGFloat {
   host.isFlipped ? frame.midY : host.bounds.height - frame.midY
 }
 
+@MainActor
 private func distanceFromVisualBottom(_ frame: CGRect, host: NSView) -> CGFloat {
   host.isFlipped ? host.bounds.height - frame.midY : frame.midY
 }
 
 /// `fraction` is 0 at the visual top and 1 at the visual bottom.
+@MainActor
 private func visualY(_ fractionFromTop: CGFloat, host: NSView) -> CGFloat {
   host.isFlipped
     ? host.bounds.height * fractionFromTop
@@ -1083,6 +1097,7 @@ private struct PixelScan {
 /// The separate horizontal bands of ink down a capture: each band is a run
 /// of scan lines holding at least one opaque sample. A row of a menu draws
 /// one band whatever material sits behind it; a blank capture draws none.
+@MainActor
 private func inkBands(_ bitmap: NSBitmapImageRep) -> Int {
   let width = bitmap.pixelsWide
   let height = bitmap.pixelsHigh
@@ -1103,6 +1118,7 @@ private func inkBands(_ bitmap: NSBitmapImageRep) -> Int {
   return bands
 }
 
+@MainActor
 private func scanPixels(_ bitmap: NSBitmapImageRep) -> PixelScan {
   let width = bitmap.pixelsWide
   let height = bitmap.pixelsHigh
@@ -1116,6 +1132,7 @@ private func scanPixels(_ bitmap: NSBitmapImageRep) -> PixelScan {
   return colorAtScan(bitmap)
 }
 
+@MainActor
 private func orientedRawScan(_ bitmap: NSBitmapImageRep) -> PixelScan? {
   let width = bitmap.pixelsWide
   let height = bitmap.pixelsHigh
@@ -1132,6 +1149,7 @@ private func orientedRawScan(_ bitmap: NSBitmapImageRep) -> PixelScan? {
   return rawScan(bitmap, flipY: flipY)
 }
 
+@MainActor
 private func rawScan(_ bitmap: NSBitmapImageRep, flipY: Bool) -> PixelScan? {
   let width = bitmap.pixelsWide
   let height = bitmap.pixelsHigh
@@ -1169,6 +1187,7 @@ private func rawScan(_ bitmap: NSBitmapImageRep, flipY: Bool) -> PixelScan? {
   )
 }
 
+@MainActor
 private func rawAlpha(_ bitmap: NSBitmapImageRep, x: Int, y: Int, flipY: Bool) -> Double? {
   guard bitmap.bitsPerSample == 8, let data = bitmap.bitmapData else { return nil }
   let bpp = bitmap.bitsPerPixel / 8
@@ -1182,6 +1201,7 @@ private func rawAlpha(_ bitmap: NSBitmapImageRep, x: Int, y: Int, flipY: Bool) -
   return Double(data[offset + alphaIndex]) / 255
 }
 
+@MainActor
 private func colorAtScan(_ bitmap: NSBitmapImageRep) -> PixelScan {
   let width = bitmap.pixelsWide
   let height = bitmap.pixelsHigh
@@ -1216,6 +1236,7 @@ private func colorAtScan(_ bitmap: NSBitmapImageRep) -> PixelScan {
   )
 }
 
+@MainActor
 private func cornerAlpha(_ bitmap: NSBitmapImageRep) -> Double {
   let points = [
     (0, 0),
@@ -1229,6 +1250,7 @@ private func cornerAlpha(_ bitmap: NSBitmapImageRep) -> Double {
   return alphas.max() ?? 1
 }
 
+@MainActor
 private func appearanceToken(_ appearance: NSAppearance) -> String {
   switch appearance.bestMatch(from: [.aqua, .darkAqua]) {
   case .aqua?:
@@ -1240,6 +1262,7 @@ private func appearanceToken(_ appearance: NSAppearance) -> String {
   }
 }
 
+@MainActor
 private func relativeLuminance(_ color: NSColor) -> Double? {
   guard let rgb = color.usingColorSpace(.sRGB) else { return nil }
   func channel(_ value: CGFloat) -> Double {
@@ -1252,12 +1275,14 @@ private func relativeLuminance(_ color: NSColor) -> Double? {
     + 0.0722 * channel(rgb.blueComponent)
 }
 
+@MainActor
 private func median(_ values: [Double]) -> Double? {
   guard !values.isEmpty else { return nil }
   let sorted = values.sorted()
   return sorted[sorted.count / 2]
 }
 
+@MainActor
 private func contactSheet(from cells: [RenderedCell]) throws -> Data {
   let columns = 4
   let tileSize = contactTileSize
@@ -1306,6 +1331,7 @@ private func contactSheet(from cells: [RenderedCell]) throws -> Data {
   }
 }
 
+@MainActor
 private func aspectFit(_ imageSize: CGSize, in tile: CGRect) -> CGRect {
   guard imageSize.width > 0, imageSize.height > 0 else { return tile }
   let scale = min(tile.width / imageSize.width, tile.height / imageSize.height)
@@ -1318,6 +1344,7 @@ private func aspectFit(_ imageSize: CGSize, in tile: CGRect) -> CGRect {
   )
 }
 
+@MainActor
 private func solidPNG(width: Int, height: Int, color: NSColor) throws -> Data {
   try renderPNG(size: NSSize(width: width, height: height)) {
     color.setFill()
@@ -1325,6 +1352,7 @@ private func solidPNG(width: Int, height: Int, color: NSColor) throws -> Data {
   }
 }
 
+@MainActor
 private func renderPNG(size: CGSize, draw: () -> Void) throws -> Data {
   guard
     let bitmap = NSBitmapImageRep(
@@ -1354,6 +1382,7 @@ private func renderPNG(size: CGSize, draw: () -> Void) throws -> Data {
   return png
 }
 
+@MainActor
 private func fixtureMeasurement(id: String, width: Double, height: Double) -> CellMeasurement {
   let size = EvidencePoint(CGRect(x: 0, y: 0, width: width, height: height))
   return CellMeasurement(
@@ -1375,6 +1404,7 @@ private func fixtureMeasurement(id: String, width: Double, height: Double) -> Ce
   )
 }
 
+@MainActor
 private func colorBounds(
   in bitmap: NSBitmapImageRep, where predicate: (NSColor) -> Bool
 ) -> (width: Int, height: Int) {
@@ -1399,6 +1429,7 @@ private func colorBounds(
   return (maxX - minX + 1, maxY - minY + 1)
 }
 
+@MainActor
 private func resolveEvidenceDirectory() -> EvidenceDirectory {
   if let path = ProcessInfo.processInfo.environment["CODESCRIBE_VISUAL_EVIDENCE_DIR"],
     !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -1447,6 +1478,7 @@ private func isolatedSettingsModel(licenseService: LicenseService = .preview) ->
   return model
 }
 
+@MainActor
 private func densityServer(_ name: String, enabled: Bool) -> CsMcpServer {
   CsMcpServer(
     name: name, command: "fixture-mcp", args: ["--offline"], envKeys: ["FIXTURE_ENV"],

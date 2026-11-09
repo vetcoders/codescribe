@@ -45,8 +45,9 @@ bin/control-codescribe health --sha <expected-build-sha> --json
   isolated `CODESCRIBE_TEST_DATA_DIR` so tests never touch the operator's real
   macOS Keychain or `~/.codescribe` history.
 - Never paste secrets or `.env*` contents into fixtures, issues, or PR bodies.
-- When another build is active or the operator is using the app, do not run
-  `make install-app` without `make install-if-idle` / `make restart-if-idle`.
+- Install with `make install-app` only. It never quits the running app; its
+  `restart-if-idle` waiter swaps the generation at the first idle moment and
+  refuses while a take, an agent turn or a composer draft is live.
 
 ## When to Run Previews / Full Suite Gates
 
@@ -63,7 +64,7 @@ Before merging any PR:
 
 1. Run `bin/control-codescribe doctor --json` and `bin/control-codescribe map --check --json`.
 2. Run `bin/control-codescribe execute --json` (or `--code-file <test-script>`).
-3. When testing a locally installed build (`make install-if-idle`), confirm the
+3. When testing a locally installed build (`make install-app`), confirm the
    running process SHA with `bin/control-codescribe health --sha <build-sha> --json`.
 4. Cite the exact commands and their results under `## Testing` in the PR body,
    and state explicitly what could not be verified (for example when Voice Lab

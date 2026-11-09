@@ -82,6 +82,17 @@ pub trait AgentProvider: Send + Sync {
     /// Stable identifier for this backend, used in logs and telemetry.
     fn name(&self) -> &str;
 
+    /// Context window, in input tokens, of the model that would serve
+    /// `options`; drives context compaction (see `compaction`).
+    ///
+    /// Default: the family table for `options.model`. A backend that fills an
+    /// empty model with its own default overrides this to name that model,
+    /// and an external agent process that manages its own context returns
+    /// `None`, which turns compaction off for the session.
+    fn context_window(&self, options: &StreamOptions) -> Option<u64> {
+        Some(super::compaction::default_context_window(&options.model))
+    }
+
     /// Provider-owned Responses-API chain id (`previous_response_id`), if any.
     ///
     /// Default: no chain. OpenAI Responses implements this so a user Stop can

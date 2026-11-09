@@ -1317,9 +1317,9 @@ final class OverlayBarReviewRenderTests: XCTestCase {
   // MARK: - 17. The header's secondary-click menu
 
   /// The header's secondary-click menu on the expanded overlay, once with an
-  /// anchor chosen (Bottom Center) and once with Free motion on: which item
-  /// carries the native checkmark, on the first level and in the Place
-  /// submenu (L17). AppKit draws the menu, so the scene pops it
+  /// anchor chosen (Bottom Center) and once with Free motion on: the one
+  /// item of the position list that carries the native checkmark (Monika,
+  /// 2026-11-07). AppKit draws the menu, so the scene pops it
   /// up on the panel and draws the menu's own window while it tracks; the
   /// window's class names go into an attachment when none is found.
   func testRenderHeaderMenu() throws {
@@ -1338,9 +1338,6 @@ final class OverlayBarReviewRenderTests: XCTestCase {
         XCTAssertEqual(state.freeMotion, freeMotion)
         let scene = freeMotion ? "free-motion" : "anchor"
         try renderHeaderMenu(state, look: look, name: "bar-header-menu-\(scene)")
-        // The Place submenu alone (L17): the remembered place's checkmark.
-        try renderHeaderMenu(
-          state, look: look, name: "bar-header-menu-place-\(scene)", submenu: "Place")
       }
     }
   }
@@ -1378,18 +1375,14 @@ final class OverlayBarReviewRenderTests: XCTestCase {
   }
 
   /// Opens the header menu on the real overlay panel in one look and saves
-  /// the menu's window as `<name>-<look>`. With `submenu`, the item of that
-  /// title's submenu is popped up alone (a copy, since a submenu belongs to
-  /// its item), so its own checkmarks can be judged.
+  /// the menu's window as `<name>-<look>`.
   ///
   /// The scene owns its state: it activates the app and ends any menu
   /// tracking an earlier test left before it pops up, because `popUp`
   /// returns at once without tracking (and the capture timer never fires)
   /// when another menu still tracks or the app is not active. A failure
   /// names whether the timer fired inside a tracking loop.
-  private func renderHeaderMenu(
-    _ state: OverlayState, look: Look, name: String, submenu: String? = nil
-  ) throws {
+  private func renderHeaderMenu(_ state: OverlayState, look: Look, name: String) throws {
     let suite = "OverlayBarReviewRenderTests.\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
@@ -1430,16 +1423,7 @@ final class OverlayBarReviewRenderTests: XCTestCase {
     }
     let header = try XCTUnwrap(found, "\(name): no header menu at the passive header point")
     header.delegate?.menuNeedsUpdate?(header)
-    var menu = header
-    if let submenu {
-      // The title as the app shows it, also under `-testLanguage pl`.
-      let shown = Bundle.main.localizedString(forKey: submenu, value: nil, table: nil)
-      let item = try XCTUnwrap(
-        header.items.first { [submenu, shown].contains($0.title) }?.submenu,
-        "\(name): no \(submenu) submenu among \(header.items.map(\.title))")
-      item.delegate?.menuNeedsUpdate?(item)
-      menu = try XCTUnwrap(item.copy() as? NSMenu)
-    }
+    let menu = header
     menu.appearance = look.appearance
     // An earlier test's menu or an inactive app makes `popUp` return at
     // once, untracked; the scene starts from its own clean state.

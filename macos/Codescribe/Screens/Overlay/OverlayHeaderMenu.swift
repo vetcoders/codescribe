@@ -82,14 +82,12 @@ struct OverlayHeaderMenu: View {
 
     Divider()
 
-    // Position: the mode first, the place under it (L17, 2026-11-06). The
-    // first level is two native toggles with exactly one checkmark, Free
-    // motion or Fixed position; the six places live in their own submenu,
-    // the remembered one checked even while Free motion is on. Choosing a
-    // place switches to Fixed position and moves the panel there; choosing
-    // Fixed position returns the panel to the remembered place. A native
-    // menu item that opens a submenu carries neither a checkmark nor an
-    // action, so the mode and the places are separate items.
+    // Position: one list, one checkmark (Monika, 2026-11-07). Free motion
+    // and the six places are seven native toggles of one choice: Free
+    // motion is checked while it is on, otherwise the chosen place is.
+    // Choosing a place pins the panel there and leaves Free motion;
+    // choosing Free motion unchecks the place; choosing the checked Free
+    // motion again returns the panel to the last chosen place.
     Section {
       Toggle(
         isOn: Binding(
@@ -99,31 +97,15 @@ struct OverlayHeaderMenu: View {
         Label("Free motion", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
       }
       .accessibilityIdentifier("overlay-free-motion")
-      Toggle(
-        isOn: Binding(
-          get: { !state.freeMotion },
-          set: { _ in state.setFreeMotion(false) })
-      ) {
-        Text(
-          "Fixed position",
-          comment: "Overlay placement menu: the overlay stays on its remembered place")
-      }
-      .accessibilityIdentifier("overlay-fixed-position")
-      Menu {
-        ForEach(OverlayAnchor.allCases) { anchor in
-          Toggle(
-            isOn: Binding(
-              get: { state.placementRemembered(anchor) },
-              set: { _ in state.selectPlacementAnchor(anchor) })
-          ) {
-            Label(anchor.label, systemImage: anchor.systemImage)
-          }
-          .accessibilityIdentifier("overlay-anchor-\(anchor.rawValue)")
+      ForEach(OverlayAnchor.allCases) { anchor in
+        Toggle(
+          isOn: Binding(
+            get: { state.placementChecked(anchor) },
+            set: { _ in state.selectPlacementAnchor(anchor) })
+        ) {
+          Label(anchor.label, systemImage: anchor.systemImage)
         }
-      } label: {
-        Text(
-          "Place",
-          comment: "Overlay placement menu: submenu of the six places the overlay snaps to")
+        .accessibilityIdentifier("overlay-anchor-\(anchor.rawValue)")
       }
     } header: {
       Text(

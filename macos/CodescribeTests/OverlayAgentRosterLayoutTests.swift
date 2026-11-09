@@ -267,6 +267,10 @@ final class OverlayAgentRosterLayoutTests: XCTestCase {
     XCTAssertTrue(
       body.contains(".frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)"),
       "progressive content starts under the fixed header")
+    XCTAssertTrue(body.contains("OverlayIntercomMessagePreview("))
+    XCTAssertFalse(body.contains("OverlayRosterMessagePreview("))
+    XCTAssertFalse(body.contains("OverlayComposerSurface"))
+    XCTAssertFalse(body.contains("palette.desktopBackground.color.opacity"))
     let handles = try sourceSection(
       "OverlayIntercomWidget.swift", from: "private struct OverlayIntercomResizeHandles: View {",
       to: "private struct OverlayIntercomInstanceCard: View {")

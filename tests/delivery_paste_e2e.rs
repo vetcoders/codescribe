@@ -93,11 +93,11 @@ fn foreign_insert_selects_one_route_and_borrows_clipboard_losslessly() {
 
 /// Stop-path contract: a plain hold / toggle session freezes `OrientDictation`;
 /// the paste mode decides the gun (Safe pastes into a terminal only past the
-/// editable-input and executable guards, Off archives only), and an assistive session never
+/// editable-input and executable guards, Off defers), and an assistive session never
 /// reaches it.
 #[test]
 fn stop_path_intent_follows_the_paste_mode() {
-    let dictation = delivery_intent_from_session(false, false, false);
+    let dictation = delivery_intent_from_session(false, false);
     assert_eq!(dictation, DeliveryIntent::OrientDictation);
 
     let mut facts = overlay_insert_facts(true, false);
@@ -124,11 +124,11 @@ fn stop_path_intent_follows_the_paste_mode() {
 
     facts.paste_mode = PasteMode::Off;
     let off = resolve_delivery_route(dictation, facts);
-    assert_eq!(off.route, DeliveryRoute::ArchiveOnly);
+    assert_eq!(off.route, DeliveryRoute::DeferredInsert);
     assert_eq!(off.reason, "paste_mode_off");
 
     facts.paste_mode = PasteMode::Comfort;
-    let assistive = delivery_intent_from_session(true, false, false);
+    let assistive = delivery_intent_from_session(true, false);
     let agent = resolve_delivery_route(assistive, facts);
     assert_eq!(agent.route, DeliveryRoute::AgentComposer);
 }

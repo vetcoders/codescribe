@@ -23,7 +23,7 @@ use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, CGKeyCode}
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use std::sync::Mutex;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tracing::{debug, info, warn};
 
 /// Read the current pasteboard image and encode it as PNG.
@@ -56,104 +56,67 @@ const KEYCODE_V: CGKeyCode = 9;
 /// macOS virtual key code for 'C' key
 const KEYCODE_C: CGKeyCode = 8;
 
+/// Marks our synthetic keys so the hotkey tap cannot consume a paste or
+/// interpret its key-up as release of the user's still-held shortcut.
+pub(crate) const SYNTHETIC_KEY_EVENT_TAG: i64 = 0x0043_5350_4153_5445;
+
 /// Delay in milliseconds before restoring the original clipboard content
 /// Can be overridden via RESTORE_CLIPBOARD_DELAY_MS environment variable
 const DEFAULT_RESTORE_DELAY_MS: u64 = 200;
-/// How long an armed transcript stays deliverable before the press is refused.
-///
-/// Bounded so a command pressed long after dictation cannot paste text the user
-/// has forgotten about into whatever window happens to be focused now.
-pub const DEFERRED_INSERT_TTL: Duration = Duration::from_secs(120);
 
 /// Serializes explicit clipboard replacements against delayed restores. A new
 /// write invalidates every older restore before that write can land.
 static CLIPBOARD_RESTORE_EPOCH: Mutex<u64> = Mutex::new(0);
 
-/// A transcript waiting for the user to press the deferred-insert command.
-#[derive(Debug, Clone)]
-struct DeferredInsertSlot {
-    /// Text to paste when the command fires.
-    text: String,
-    /// Arming instant, measured against [`DEFERRED_INSERT_TTL`].
-    armed_at: Instant,
-}
-
 /// The single armed transcript. Process-local: arming never touches the system
 /// pasteboard, so the user's clipboard survives an insert that never happens.
-static DEFERRED_INSERT_SLOT: Mutex<Option<DeferredInsertSlot>> = Mutex::new(None);
+/// It remains available until the next nonempty deferred transcript replaces it.
+static DEFERRED_INSERT_SLOT: Mutex<Option<String>> = Mutex::new(None);
 
-/// Why a deferred-insert press did or did not paste.
+/// Whether a deferred-insert press requested a paste.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeferredInsertDelivery {
-    /// The armed transcript was pasted and the slot consumed.
-    Delivered,
+    /// Synthetic paste was requested; recipient acceptance is unconfirmed.
+    PasteRequested,
     /// Nothing was armed — the press was a no-op.
     NothingToInsert,
-    /// The slot outlived [`DEFERRED_INSERT_TTL`]; it is dropped, not pasted.
-    Expired,
 }
 
-/// [`arm_deferred_insert`] with an injectable arming instant, for tests.
-fn arm_deferred_insert_at(text: String, armed_at: Instant) -> bool {
-    if text.is_empty() {
+/// Replace the process-local delivery slot without reading or writing the
+/// system clipboard. The newest nonempty transcript always wins.
+pub fn arm_deferred_insert(text: String) -> bool {
+    if text.trim().is_empty() {
         return false;
     }
     let mut slot = DEFERRED_INSERT_SLOT
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    *slot = Some(DeferredInsertSlot { text, armed_at });
+    *slot = Some(text);
     true
 }
 
-/// Replace the process-local delivery slot without reading or writing the
-/// system clipboard. The newest transcript always wins.
-pub fn arm_deferred_insert(text: String) -> bool {
-    arm_deferred_insert_at(text, Instant::now())
-}
-
-/// Consume the armed slot, or report why there is nothing to paste.
+/// [`deliver_deferred_insert`] with the paste step injected.
 ///
-/// An expired slot is taken and dropped rather than left behind, so a stale
-/// transcript cannot be resurrected by a later press.
-fn take_deferred_insert_at(now: Instant) -> Result<DeferredInsertSlot, DeferredInsertDelivery> {
-    let mut slot = DEFERRED_INSERT_SLOT
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let Some(armed) = slot.take() else {
-        return Err(DeferredInsertDelivery::NothingToInsert);
-    };
-    if now.saturating_duration_since(armed.armed_at) >= DEFERRED_INSERT_TTL {
-        return Err(DeferredInsertDelivery::Expired);
-    }
-    Ok(armed)
-}
-
-/// [`deliver_deferred_insert`] with the clock and paste step injected.
-///
-/// The seam that lets the arm/expire/deliver-once rules be tested without
-/// posting real keyboard events or touching the system pasteboard.
-fn deliver_deferred_insert_at<F>(now: Instant, paste: F) -> Result<DeferredInsertDelivery>
+/// Each deliberate press snapshots the retained payload. Posting keyboard
+/// events is not recipient acceptance, so success and failure both leave it
+/// available. The lock is released before requesting paste; a concurrent arm
+/// replaces the slot without the older request writing its snapshot back.
+pub(crate) fn deliver_deferred_insert_with<F>(paste: F) -> Result<DeferredInsertDelivery>
 where
     F: FnOnce(&str) -> Result<()>,
 {
-    let armed = match take_deferred_insert_at(now) {
-        Ok(armed) => armed,
-        Err(outcome) => return Ok(outcome),
+    let armed = DEFERRED_INSERT_SLOT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    let Some(text) = armed else {
+        return Ok(DeferredInsertDelivery::NothingToInsert);
     };
-    if let Err(error) = paste(&armed.text) {
-        let mut slot = DEFERRED_INSERT_SLOT
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        // A newer take armed while delivery ran keeps ownership of the slot.
-        if slot.is_none() {
-            *slot = Some(armed);
-        }
-        return Err(error);
-    }
-    Ok(DeferredInsertDelivery::Delivered)
+    paste(&text)?;
+    Ok(DeferredInsertDelivery::PasteRequested)
 }
 
-/// Consume the armed transcript and run the classic snapshot → set → Cmd+V →
+/// Read the retained transcript and run the classic snapshot → set → Cmd+V →
 /// restore path at the moment the user presses the global command. The restore
 /// step follows the same resolved clipboard settings as the controller's paste.
 pub fn deliver_deferred_insert(
@@ -166,7 +129,7 @@ pub fn deliver_deferred_insert(
             "Select a non-password recipient before inserting. The transcript remains available."
         );
     }
-    deliver_deferred_insert_at(Instant::now(), |text| {
+    deliver_deferred_insert_with(|text| {
         let receipt = paste_to_stop_target(
             text,
             &target,
@@ -793,6 +756,10 @@ fn simulate_key_event(keycode: CGKeyCode, key_down: bool, flags: CGEventFlags) -
         .context("Failed to create keyboard event")?;
 
     event.set_flags(flags);
+    event.set_integer_value_field(
+        core_graphics::event::EventField::EVENT_SOURCE_USER_DATA,
+        SYNTHETIC_KEY_EVENT_TAG,
+    );
     event.post(CGEventTapLocation::HID);
 
     Ok(())
@@ -1000,6 +967,7 @@ pub fn paste_and_restore(text: &str) -> Result<()> {
 mod tests {
     use super::*;
     use serial_test::serial;
+    use std::time::Instant;
 
     #[test]
     fn paste_posts_only_cmd_v_down_and_up() {
@@ -1454,173 +1422,143 @@ mod tests {
         assert_eq!(current, "degraded tagged transcript");
     }
 
-    /// Arming stores text in-process only; the system pasteboard is untouched.
+    /// The process buffer never borrows the system clipboard merely to arm.
     #[test]
     #[serial]
     fn deferred_insert_arm_does_not_touch_clipboard() {
         let _guard = ClipboardTestGuard::capture();
         let Some(()) = skip_if_clipboard_unavailable(
             set_clipboard("user clipboard sentinel"),
-            "set deferred insert sentinel",
+            "seed clipboard",
         ) else {
             return;
         };
-
-        assert!(arm_deferred_insert("tagged transcript".to_string()));
-
-        let Some(current) =
-            skip_if_clipboard_unavailable(get_clipboard(), "read deferred insert sentinel")
-        else {
+        assert!(arm_deferred_insert("tagged transcript".into()));
+        let Some(current) = skip_if_clipboard_unavailable(get_clipboard(), "read clipboard") else {
             return;
         };
         assert_eq!(current, "user clipboard sentinel");
-        let _ = take_deferred_insert_at(Instant::now());
     }
 
-    /// Latest arm wins; second press after delivery reports NothingToInsert.
     #[test]
     #[serial]
-    fn deferred_insert_press_delivers_once_and_rearm_replaces_payload() {
-        let base = Instant::now();
-        assert!(arm_deferred_insert_at("first".to_string(), base));
-        assert!(arm_deferred_insert_at("second".to_string(), base));
-
-        let mut delivered = Vec::new();
-        let outcome = deliver_deferred_insert_at(base, |text| {
-            delivered.push(text.to_string());
+    fn deferred_insert_retains_text_until_another_transcript_replaces_it() {
+        arm_deferred_insert("first".into());
+        let mut requested = Vec::new();
+        for _ in 0..3 {
+            assert_eq!(
+                deliver_deferred_insert_with(|text| {
+                    requested.push(text.to_owned());
+                    Ok(())
+                })
+                .unwrap(),
+                DeferredInsertDelivery::PasteRequested
+            );
+        }
+        assert!(!arm_deferred_insert(String::new()));
+        deliver_deferred_insert_with(|text| {
+            assert_eq!(
+                text, "first",
+                "an empty take must not erase the last transcript"
+            );
             Ok(())
         })
-        .expect("deliver armed transcript");
-
-        assert_eq!(outcome, DeferredInsertDelivery::Delivered);
-        assert_eq!(delivered, ["second"]);
-        assert_eq!(
-            deliver_deferred_insert_at(base, |_| Ok(())).expect("empty second press"),
-            DeferredInsertDelivery::NothingToInsert
-        );
+        .unwrap();
+        arm_deferred_insert("second".into());
+        deliver_deferred_insert_with(|text| {
+            requested.push(text.to_owned());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(requested, ["first", "first", "first", "second"]);
     }
 
     #[test]
     #[serial]
     fn deferred_insert_failed_press_keeps_payload_for_retry() {
-        let base = Instant::now();
-        arm_deferred_insert_at("complete transcript".into(), base);
+        arm_deferred_insert("complete transcript".into());
         assert!(
-            deliver_deferred_insert_at(base, |_| { anyhow::bail!("recipient disappeared") })
-                .is_err()
+            deliver_deferred_insert_with(|_| { anyhow::bail!("recipient disappeared") }).is_err()
         );
-        let mut delivered = String::new();
-        assert_eq!(
-            deliver_deferred_insert_at(base, |text| {
-                delivered = text.to_owned();
-                Ok(())
-            })
-            .unwrap(),
-            DeferredInsertDelivery::Delivered
-        );
-        assert_eq!(delivered, "complete transcript");
-    }
-
-    #[test]
-    #[serial]
-    fn deferred_insert_failed_press_does_not_replace_newer_take() {
-        let base = Instant::now();
-        arm_deferred_insert_at("old transcript".into(), base);
-        assert!(
-            deliver_deferred_insert_at(base, |_| {
-                arm_deferred_insert_at("new transcript".into(), base);
-                anyhow::bail!("recipient disappeared")
-            })
-            .is_err()
-        );
-        let mut delivered = String::new();
-        deliver_deferred_insert_at(base, |text| {
-            delivered = text.to_owned();
+        deliver_deferred_insert_with(|text| {
+            assert_eq!(text, "complete transcript");
             Ok(())
         })
         .unwrap();
-        assert_eq!(delivered, "new transcript");
     }
 
     #[test]
     #[serial]
-    fn deferred_insert_failed_press_does_not_extend_expiry() {
-        let base = Instant::now();
-        arm_deferred_insert_at("transcript".into(), base);
-        assert!(
-            deliver_deferred_insert_at(base + DEFERRED_INSERT_TTL / 2, |_| {
-                anyhow::bail!("recipient disappeared")
+    fn deferred_insert_completion_never_overwrites_a_newer_transcript() {
+        for fail in [false, true] {
+            arm_deferred_insert("old transcript".into());
+            let outcome = deliver_deferred_insert_with(|text| {
+                assert_eq!(text, "old transcript");
+                // Reentrant arming also proves no buffer lock is held during
+                // a potentially slow recipient request.
+                arm_deferred_insert("new transcript".into());
+                if fail {
+                    anyhow::bail!("recipient disappeared");
+                }
+                Ok(())
+            });
+            assert_eq!(outcome.is_err(), fail);
+            deliver_deferred_insert_with(|text| {
+                assert_eq!(text, "new transcript");
+                Ok(())
             })
-            .is_err()
-        );
+            .unwrap();
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn empty_deferred_insert_never_requests_keys() {
+        *DEFERRED_INSERT_SLOT.lock().unwrap() = None;
         assert_eq!(
-            deliver_deferred_insert_at(base + DEFERRED_INSERT_TTL, |_| {
-                panic!("expired payload must never paste")
-            })
-            .unwrap(),
-            DeferredInsertDelivery::Expired
+            deliver_deferred_insert_with(|_| { panic!("an empty buffer must not post keys") })
+                .unwrap(),
+            DeferredInsertDelivery::NothingToInsert
         );
     }
 
-    /// Delivery path restores the user's clipboard after the temporary paste set.
+    /// Exercise borrowing/restoring without posting a keyboard event.
     #[test]
     #[serial]
-    fn deferred_insert_press_restores_user_clipboard_after_delivery() {
+    fn deferred_insert_press_restores_user_clipboard_after_request() {
         let _guard = ClipboardTestGuard::capture();
         let Some(()) = skip_if_clipboard_unavailable(
             set_clipboard("user clipboard before deferred insert"),
-            "set clipboard before deferred insert delivery",
+            "seed clipboard",
         ) else {
             return;
         };
-        let base = Instant::now();
-        assert!(arm_deferred_insert_at(
-            "tagged transcript".to_string(),
-            base
-        ));
-
-        let outcome = deliver_deferred_insert_at(base, |text| {
+        arm_deferred_insert("tagged transcript".into());
+        let outcome = deliver_deferred_insert_with(|text| {
             let snapshot = ClipboardSnapshot::capture()?;
-            let paste_epoch = set_clipboard_with_epoch(text)?;
+            let epoch = set_clipboard_with_epoch(text)?;
             assert_eq!(get_clipboard()?, "tagged transcript");
-            schedule_clipboard_restore(snapshot, paste_epoch, Duration::ZERO)
+            schedule_clipboard_restore(snapshot, epoch, Duration::ZERO)
                 .join()
                 .expect("clipboard restore thread must finish");
             Ok(())
         })
-        .expect("deliver deferred transcript through clipboard swap");
-
-        assert_eq!(outcome, DeferredInsertDelivery::Delivered);
-        let Some(restored) = skip_if_clipboard_unavailable(
-            get_clipboard(),
-            "read clipboard after deferred insert delivery",
-        ) else {
+        .unwrap();
+        assert_eq!(outcome, DeferredInsertDelivery::PasteRequested);
+        let Some(restored) =
+            skip_if_clipboard_unavailable(get_clipboard(), "read restored clipboard")
+        else {
             return;
         };
         assert_eq!(restored, "user clipboard before deferred insert");
-    }
-
-    /// Past TTL yields Expired, never pastes, and consumes the slot.
-    #[test]
-    #[serial]
-    fn deferred_insert_expiry_never_delivers_stale_text() {
-        let base = Instant::now();
-        assert!(arm_deferred_insert_at("stale".to_string(), base));
-        let mut paste_called = false;
-
-        let outcome = deliver_deferred_insert_at(base + DEFERRED_INSERT_TTL, |_| {
-            paste_called = true;
+        deliver_deferred_insert_with(|text| {
+            assert_eq!(
+                text, "tagged transcript",
+                "requesting paste must not consume the buffer"
+            );
             Ok(())
         })
-        .expect("expired press is not an error");
-
-        assert_eq!(outcome, DeferredInsertDelivery::Expired);
-        assert!(!paste_called);
-        assert_eq!(
-            deliver_deferred_insert_at(base + DEFERRED_INSERT_TTL, |_| Ok(()))
-                .expect("expired slot was consumed"),
-            DeferredInsertDelivery::NothingToInsert
-        );
+        .unwrap();
     }
 
     /// Soft-skip when the host has no pasteboard; panic on unexpected errors.

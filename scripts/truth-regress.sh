@@ -7,7 +7,7 @@
 # Dry-run (-n) lists matching pairs and writes nothing. A full pass links
 # audio into the candidate dir under the historical stem, runs
 # `codescribe transcribe --raw --no-bus` per file, then
-# `qube-report --baseline-dir … --candidate-dir …`.
+# `codescribe report --baseline-dir … --candidate-dir …`.
 # Never writes under the source day directory or under transcriptions/.
 
 set -euo pipefail
@@ -115,14 +115,9 @@ case "$cand_abs" in
 esac
 
 codescribe_bin=${CODESCRIBE:-codescribe}
-qube_bin=${QUBE_REPORT:-qube-report}
 
 if ! command -v "$codescribe_bin" >/dev/null 2>&1; then
   printf 'error: codescribe not on PATH (override with CODESCRIBE=)\n' >&2
-  exit 127
-fi
-if ! command -v "$qube_bin" >/dev/null 2>&1; then
-  printf 'error: qube-report not on PATH (override with QUBE_REPORT=)\n' >&2
   exit 127
 fi
 
@@ -135,4 +130,4 @@ if [[ "$pair_count" -gt 0 ]]; then
   done <"$tmp"
 fi
 
-"$qube_bin" --baseline-dir "$day_abs" --candidate-dir "$cand_abs" --out "$cand_abs"
+"$codescribe_bin" report --baseline-dir "$day_abs" --candidate-dir "$cand_abs" --out "$cand_abs"

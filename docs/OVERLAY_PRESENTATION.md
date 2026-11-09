@@ -40,10 +40,9 @@ records the compact-card layout and its matching More/right-click menu.
 The runtime action semantics and availability are defined below.
 
 An agent row gives its full first line to identity, receipt and clock. The
-waveform microphone, speaker and More menu remain visible over the top trailing
-corner of the provider/model/project descriptor and routed two-line preview
-below it. The preview keeps the full text layout width underneath the controls,
-like the conversation's message-header actions. The delivery/reader state line
+waveform microphone, speaker and More menu sit in their own column beside the
+provider/model/project descriptor and routed two-line preview below it, so they
+never cover its text and no fade hides it. The delivery/reader state line
 remains below the preview; panel and Sync controls keep their separate targets
 on the identity row.
 The conversation button and these controls remain siblings; opening a
@@ -269,8 +268,7 @@ Hotkeys › Fn and Agent channels edits it, one line of at most 24 characters
 (grapheme clusters; `SettingsViewModel.sharedChannelNameLimit`, and
 `shared_channel_name_line` in the loader cuts a hand-edited settings.json
 the same way), with **Restore default**; the bar does not. The same name heads channel 0's conversation (`0 · <name>`),
-its row in the Bus window (`0 · <name> (n of
-m)`), the chip's hint and its message card; action wording such as the
+its row in the Bus window (`0 · <name> (n of m)`), the chip's hint and its message card; action wording such as the
 bubble route `You → All` stays. Only the name is personal: the digit, the
 chord and the routing of channel 0 do not change. It is not an agent: the counter, `OverlayChannelMapModel.count`
 and the 1–5 / 6–9 row split count agents only. With no agent bound and no
@@ -413,7 +411,11 @@ small list of the mailboxes and the bound agents after a short pause
 replaces the button's "Agents" hint; while agent capture is open, or with no
 row to show (no current mailbox conversation and no agent bound), the button
 keeps its one-line hint, because a click then stops the capture or opens the
-Agents canvas. A click on ✦ keeps its action
+Agents canvas. When the full roster is already visible, the quick list is
+suppressed to avoid duplicating it (Founder, 2026-11-08). It remains available
+on transcription, conversations with the roster folded, and compact forms.
+The canvas and header share `OverlayState.agentListPresented`; the selected
+appearance of ✦ alone does not suppress the list. A click on ✦ keeps its action
 (`OverlayState.toggleAgentSidebar`). The list rides the shared interactive
 hint panel (`OverlayHeaderControlChrome`, as the roster's message preview):
 it is a child window of the overlay, stays while the pointer crosses from ✦
@@ -864,19 +866,18 @@ geometry evidence; do not add a second anchor store.
 The header's secondary-click menu (`OverlayHeaderMenu`, every header form)
 offers placement as native menu toggles, so the menu draws the checkmark (L9,
 2026-11-06; a checkmark drawn as a `Label` image is not the item's state and
-macOS 26 menus showed none). Under **Anchor** the mode comes first and the
-place under it (L17, 2026-11-06): the first level holds **Free motion** and
-**Fixed position**, exactly one of them checked (`OverlayState.freeMotion`),
-then the **Place** submenu with the six places, the remembered one checked
-also while Free motion is on (`OverlayState.placementRemembered`). Choosing
-a place, the remembered one included, switches to Fixed position and moves
-the panel there (`selectPlacementAnchor`). Choosing **Fixed position**
-returns the panel to the remembered place, and so does turning Free motion
-off (`OverlayState.setFreeMotion(false)` →
-`selectPlacementAnchor(placementAnchor)`, which fires `onPlacementChanged`);
-turning it on keeps the panel where it is dragged (`selectFreeMotion`). A
-native menu item that opens a submenu carries neither a checkmark nor an
-action, so Fixed position and Place are two items, not one.
+macOS 26 menus showed none). Under **Anchor** placement is one list with
+one checkmark (Monika, 2026-11-07): **Free motion** and the six places, seven
+items of one choice. Free motion is checked while it is on
+(`OverlayState.freeMotion`), otherwise the chosen place is
+(`OverlayState.placementChecked`). Choosing a place, the checked one included,
+pins the panel there, turns Free motion off and moves the panel
+(`selectPlacementAnchor`, which fires `onPlacementChanged`). Choosing Free
+motion unchecks the place and keeps the panel where it is dragged
+(`selectFreeMotion`); the chosen anchor stays remembered, so choosing the
+checked Free motion again returns the panel to the last chosen place
+(`OverlayState.setFreeMotion(false)` → `selectPlacementAnchor(placementAnchor)`).
+There is no separate Fixed position item and no Place submenu.
 Dragging and the saved origin (`OverlayPlacement`) are unchanged. The auto-fold
 submenu uses the same native toggles.
 
@@ -1021,9 +1022,9 @@ dictation control keeps the plain `mic`, the dictation verb (Maciej,
 Channel activity updates an already visible main overlay, but the vertical
 Intercom does not summon a closed main overlay; Show in Agents remains explicit.
 The floating pills retain their rich informational hover. The classic Agents
-list keeps its inline actions and also offers the last-message hover described
-above; provider, model, status and session metadata are not repeated in a
-second tooltip.
+list keeps its inline actions and its inline two-line preview and offers the
+last-message hover described above, like the pinned pill, rail and saved rows; provider,
+model, status and session metadata are not repeated in a second tooltip.
 The same `OverlayChannelMapPreference` stores the layout; switching it preserves
 the selected conversation, drafts and active route. No second inventory or
 recorder is created. The default remains horizontal, and an absent opt-in stays off.
@@ -1039,23 +1040,24 @@ Hiding the roster chooses the rail, and hovering that rail cannot undo the fold.
 Open nonzero capture uses a violet microphone; only an open channel zero uses
 the outlined broadcast megaphone. These glyphs project routing and never choose it.
 
-### All and inbox rows
+### Sticky shared channel and inbox
 
-The full Agents column lists `0 · All` and your inbox as its first two rows,
-in the rail's order, then channels 1–9 and the saved conversations: one list,
-scrolled together (Founder, 2026-11-04: one sidebar, no separate card on top).
-Until then the two sat on a pinned card over the list, on the composer's
-surface (Maciej, 2026-10-30); the card and its surface are gone, and the
-monitor's pinned slot stays empty. Each mailbox row wears the agents' glass,
-padding, selection bar, hover and gesture focus ring. All keeps its
-three-line preview, recipient counts, microphone/megaphone and playback
-controls, drawn as the agents' glass circles (`rosterDiameter`), not the
-flat glyphs the card had; there is one All row and one projection of its
-state. The inbox
-row shows the envelope where an agent's digit and presence dot stand (it
-has neither), its name, the last message's preview, the unread badge and the
-clock (`inboxRow`, identifier `overlay-inbox-row`). Keyboard focus and
-scroll-to-selected reach both rows like any other.
+The full Agents column keeps the shared channel and the human inbox above the
+scrolling agent rows on one stationary, rounded glass surface (Founder,
+2026-11-08, retaining the sticky interaction from `73588fe49`). Agents continue
+scrolling beneath that glass. The two destinations have equal 13 pt semibold
+names, separate click targets, unread badges, hover and selection marks; a
+subtle separator divides their label areas. The inbox keeps its envelope.
+Last-message previews remain in the existing hover cards so the sticky area
+stays compact. The shared channel's existing megaphone and playback controls
+stay together on the right, with their existing state, actions and broadcast
+policy menu. Viewing either mailbox never changes capture.
+
+`OverlayPinnedMailboxes` fills the monitor's existing pinned slot. It uses the
+composer material and its Reduce Transparency sheet, without the additional
+drawn outer border. Agent rows are the scrolling content; there is no duplicate
+shared channel or inbox row below the pinned surface. Keyboard and gesture
+selection can reach both mailboxes without scrolling the agent list to them.
 
 ### One fold button
 

@@ -87,8 +87,11 @@ final class OverlayChromeV3Tests: XCTestCase {
       let scroll = try XCTUnwrap(text.enclosingScrollView)
       let rect = root.convert(scroll.bounds, from: scroll)
       XCTAssertEqual(
-        rect.width, width - OverlayTranscriptActionsLayout.columnWidth(textScale: 1) - 2 * 20,
-        accuracy: 1, "the transcript reserves its actions column and two 20-point body margins")
+        rect.width, width, accuracy: 1,
+        "the native scrollbar belongs to the window edge, outside the tools")
+      XCTAssertEqual(
+        text.frame.width, width - OverlayTranscriptActionsLayout.columnWidth(textScale: 1) - 40,
+        accuracy: 1, "only the document reserves the actions column and body margins")
       XCTAssertGreaterThan(rect.height, 100)
       XCTAssertEqual(rect.minY, root.bounds.minY, accuracy: 2)
       XCTAssertEqual(rect.maxY, root.bounds.maxY, accuracy: 2)
@@ -180,5 +183,39 @@ final class OverlayChromeV3Tests: XCTestCase {
     if #available(macOS 26, *) {
       XCTAssertNil(descendant(OverlayDesktopGlassView.self, in: root))
     }
+  }
+
+  func testChromeKeepsOneNativeMaterialAndHonoursAccessibility() throws {
+    for scheme in [ColorScheme.light, .dark] {
+      for reduced in [false, true] {
+        let root = NSHostingView(
+          rootView: OverlayCanvasBackdrop(
+            palette: .resolve(scheme), reduceTransparency: reduced, role: .chrome
+          )
+          .environment(\.colorScheme, scheme)
+        )
+        root.frame = NSRect(x: 0, y: 0, width: 320, height: 200)
+        root.layoutSubtreeIfNeeded()
+        let glass = descendant(OverlayDesktopGlassView.self, in: root)
+        if reduced {
+          XCTAssertNil(glass, "the optical chrome must respect Reduce Transparency")
+        } else {
+          let glass = try XCTUnwrap(glass)
+          XCTAssertEqual(glass.style, .regular)
+          XCTAssertNil(glass.tintColor, "the native material supplies the chrome tone")
+          XCTAssertNil(glass.hitTest(NSPoint(x: 100, y: 100)))
+        }
+      }
+    }
+  }
+
+  func testGlassTuningIsBoundedAndDeveloperOnly() {
+    XCTAssertEqual(ChromeGlassTuning.effectiveTint(0.35, developerEnabled: true), 0.35)
+    XCTAssertEqual(ChromeGlassTuning.effectiveTint(-1, developerEnabled: true), 0)
+    XCTAssertEqual(ChromeGlassTuning.effectiveTint(2, developerEnabled: true), 1)
+    XCTAssertEqual(ChromeGlassTuning.effectiveTint(.nan, developerEnabled: true), 0)
+    XCTAssertEqual(ChromeGlassTuning.effectiveTint(.infinity, developerEnabled: true), 0)
+    XCTAssertEqual(ChromeGlassTuning.effectiveTint(0, developerEnabled: false), 0)
+    XCTAssertEqual(ChromeGlassTuning.effectiveTint(0.35, developerEnabled: false), 0)
   }
 }

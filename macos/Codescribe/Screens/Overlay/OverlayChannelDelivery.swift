@@ -515,11 +515,12 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
         else { return false }
         return message.replyToOccurrenceID.map { broadcastIDs.contains($0) } ?? true
       }
-      let broadcastReplyIDs = Set(broadcast.filter { $0.kind == .reply }.map(\.id))
+      let broadcastConversation = OverlayConversation(
+        id: "0", channel: "0", name: "All", owner: nil,
+        messages: broadcast)
+      let broadcastReplyIDs = Set(broadcastConversation.replyIDs)
       var result = [
-        OverlayConversation(
-          id: "0", channel: "0", name: "All", owner: nil,
-          messages: broadcast),
+        broadcastConversation,
         .humanInbox(messages: ordered.filter { $0.sourceChannel == "10" }),
       ]
       // Materialize identity strings once per row, not once per historical
@@ -1554,6 +1555,7 @@ struct OverlayChannelDelivery: Equatable, Identifiable, Sendable {
       }
     }
 
+    /// Parent bus document; shared occurrence/capture IDs are never stripped.
     static func channelSessionID(of session: String) -> String {
       guard let range = session.range(of: "-s", options: .backwards) else { return session }
       let prefix = String(session[..<range.lowerBound])
@@ -2033,10 +2035,70 @@ struct OverlayConversation: Equatable, Identifiable, Sendable {
   let channel: String
   let name: String
   let owner: OverlayConversationOwner?
-  let messages: [OverlayConversationMessage]
+  private(set) var replyIDs: [String]
+  /// One of this conversation's replies is coming out of the speaker now.
+  /// Synthesis and the wait for the shared player are not speech yet; the
+  /// player serializes agents, so at most one conversation speaks at a time.
+  private(set) var replySpeaking: Bool
+  private(set) var replyPlaybackActive: Bool
+  private(set) var maxMessageOrder: UInt64
+  var messages: [OverlayConversationMessage] {
+    didSet {
+      let metadata = Self.computeReplyMetadata(from: messages)
+      replyIDs = metadata.replyIDs
+      replySpeaking = metadata.replySpeaking
+      replyPlaybackActive = metadata.replyPlaybackActive
+      maxMessageOrder = metadata.maxMessageOrder
+    }
+  }
   /// Archive metadata can advertise an owner before its bus has been read.
   /// An unopened history is not a verified empty conversation.
   var historyLoaded = true
+
+  init(
+    id: String,
+    channel: String,
+    name: String,
+    owner: OverlayConversationOwner?,
+    messages: [OverlayConversationMessage],
+    historyLoaded: Bool = true
+  ) {
+    let metadata = Self.computeReplyMetadata(from: messages)
+    self.id = id
+    self.channel = channel
+    self.name = name
+    self.owner = owner
+    self.replyIDs = metadata.replyIDs
+    self.replySpeaking = metadata.replySpeaking
+    self.replyPlaybackActive = metadata.replyPlaybackActive
+    self.maxMessageOrder = metadata.maxMessageOrder
+    self.messages = messages
+    self.historyLoaded = historyLoaded
+  }
+
+  private init(
+    id: String,
+    channel: String,
+    name: String,
+    owner: OverlayConversationOwner?,
+    messages: [OverlayConversationMessage],
+    historyLoaded: Bool,
+    replyIDs: [String],
+    replySpeaking: Bool,
+    replyPlaybackActive: Bool,
+    maxMessageOrder: UInt64
+  ) {
+    self.id = id
+    self.channel = channel
+    self.name = name
+    self.owner = owner
+    self.replyIDs = replyIDs
+    self.replySpeaking = replySpeaking
+    self.replyPlaybackActive = replyPlaybackActive
+    self.maxMessageOrder = maxMessageOrder
+    self.messages = messages
+    self.historyLoaded = historyLoaded
+  }
 
   /// The human mailbox has no agent lease, microphone or numeric shortcut.
   /// Its internal route remains channel 10; only the presentation is named.
@@ -2058,19 +2120,55 @@ struct OverlayConversation: Equatable, Identifiable, Sendable {
       owner: nil, messages: messages)
   }
 
-  var replyIDs: [String] { messages.filter { $0.kind == .reply }.map(\.id) }
   func projectingDelivery(at now: Date) -> Self {
-    var result = Self(
+    guard
+      messages.indices.contains(where: {
+        messages[$0].holdingSeconds(at: now) != messages[$0].holdSecondsRemaining
+      })
+    else {
+      return self
+    }
+    var projectedMessages = messages
+    for index in projectedMessages.indices {
+      projectedMessages[index].holdSecondsRemaining = projectedMessages[index].holdingSeconds(
+        at: now)
+    }
+    return Self(
       id: id, channel: channel, name: name, owner: owner,
-      messages: messages.map { $0.projectingDelivery(at: now) })
-    result.historyLoaded = historyLoaded
-    return result
+      messages: projectedMessages, historyLoaded: historyLoaded,
+      replyIDs: replyIDs, replySpeaking: replySpeaking,
+      replyPlaybackActive: replyPlaybackActive, maxMessageOrder: maxMessageOrder)
   }
-  /// One of this conversation's replies is coming out of the speaker now.
-  /// Synthesis and the wait for the shared player are not speech yet; the
-  /// player serializes agents, so at most one conversation speaks at a time.
-  var replySpeaking: Bool {
-    messages.contains { $0.kind == .reply && $0.playback?.state == "playing" }
+
+  private struct DerivedReplyMetadata {
+    var replyIDs: [String] = []
+    var replySpeaking = false
+    var replyPlaybackActive = false
+    var maxMessageOrder: UInt64 = 0
+  }
+
+  private static func computeReplyMetadata(
+    from messages: [OverlayConversationMessage]
+  ) -> DerivedReplyMetadata {
+    var metadata = DerivedReplyMetadata()
+    metadata.replyIDs.reserveCapacity(messages.count)
+    for index in messages.indices {
+      let order = messages[index].order
+      if order > metadata.maxMessageOrder {
+        metadata.maxMessageOrder = order
+      }
+      guard messages[index].kind == .reply else { continue }
+      metadata.replyIDs.append(messages[index].id)
+      if let state = messages[index].playback?.state {
+        if state == "playing" {
+          metadata.replySpeaking = true
+          metadata.replyPlaybackActive = true
+        } else if state == "waiting" {
+          metadata.replyPlaybackActive = true
+        }
+      }
+    }
+    return metadata
   }
 }
 

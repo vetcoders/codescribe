@@ -101,9 +101,9 @@ struct CSSidebarColumn<Content: View, Header: View, Footer: View>: View {
       // The system search field stays first under the toolbar, so the header
       // lands between it and the rows.
       .csSidebarSlot(.top) { header }
-      // On the List, not a stack around it: the list runs through the
-      // titlebar, so the material does too.
-      .background { CSSidebarMaterial().ignoresSafeArea() }
+      // NavigationSplitView owns the native full-height sidebar glass.
+      // A second visual-effect background inside it changes the sampled
+      // material and competes with its active/inactive appearance.
       .csSidebarColumnWidth(width)
   }
 }

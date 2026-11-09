@@ -178,14 +178,26 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     state.finishControllerRecording()
   }
 
-  /// Founder, 2026-11-04 (bus brief §12.1): a still click on the free
+  private func headerClickState(_ mode: OverlayIntercomPresentationMode) -> OverlayState {
+    let name = "CodescribeTests.header-click.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: name)!
+    addTeardownBlock { defaults.removePersistentDomain(forName: name) }
+    let preference = OverlayChannelMapPreference(defaults: defaults)
+    preference.selectMode(mode)
+    let state = OverlayState()
+    state.channelMapPreference = preference
+    state.engine = OverlayChromePolicyEngine()
+    state.attach()
+    XCTAssertEqual(state.layoutContract.mode, mode)
+    return state
+  }
+
+  /// Belka (Monika, 2026-11-04, bus brief §12.1): a still click on the free
   /// background toggles mini and the bar round and round. The window opens
   /// only from the chevron, the Agents button and the menus; from the window
   /// a header click returns to the bar.
-  func testHeaderClickTogglesMiniAndTheBarAndLeavesTheWindowForTheBar() {
-    let state = OverlayState()
-    state.engine = OverlayChromePolicyEngine()
-    state.attach()
+  func testBelkaHeaderClickTogglesMiniAndTheBarAndLeavesTheWindowForTheBar() {
+    let state = headerClickState(.horizontal)
     XCTAssertEqual(state.presentationMode, .mini)
     state.advancePresentationFromHeader()
     XCTAssertEqual(state.presentationMode, .midi)
@@ -203,6 +215,37 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertEqual(state.presentationMode, .expanded)
     state.toggleCollapsed()
     XCTAssertEqual(state.presentationMode, .mini)
+  }
+
+  /// Klasyczny and Fiszki (Maciej, 2026-11-06): a still click on the
+  /// collapsed overlay opens the window on its last full view, not the bar,
+  /// and a click on the window's header returns to the compact form the
+  /// window replaced, mini or the bar. Belka's cycle above is untouched.
+  func testClassicAndFiszkiHeaderClickOpensTheWindowAndReturnsToTheRememberedCompactForm() {
+    for mode in [OverlayIntercomPresentationMode.classic, .vertical] {
+      let state = headerClickState(mode)
+      XCTAssertEqual(state.presentationMode, .mini)
+      state.advancePresentationFromHeader()
+      XCTAssertEqual(state.presentationMode, .expanded, "\(mode): mini opens the window")
+      XCTAssertEqual(state.windowContentSurface, .transcription)
+      state.advancePresentationFromHeader()
+      XCTAssertEqual(state.presentationMode, .mini, "\(mode): the window returns to mini")
+      state.setPresentationMode(.midi)
+      state.advancePresentationFromHeader()
+      XCTAssertEqual(state.presentationMode, .expanded, "\(mode): the bar opens the window")
+      state.advancePresentationFromHeader()
+      XCTAssertEqual(state.presentationMode, .midi, "\(mode): the window returns to the bar")
+      // The last full view is remembered across the fold: Agents stays Agents.
+      state.showAgentMonitor()
+      XCTAssertEqual(state.presentationMode, .expanded)
+      XCTAssertEqual(state.windowContentSurface, .agents)
+      state.advancePresentationFromHeader()
+      XCTAssertEqual(state.presentationMode, .midi, "\(mode): Agents folds to the bar it replaced")
+      state.advancePresentationFromHeader()
+      XCTAssertEqual(state.presentationMode, .expanded)
+      XCTAssertEqual(
+        state.windowContentSurface, .agents, "\(mode): the click reopens the last full view")
+    }
   }
 
   /// Outside mini only the header band advances the presentation: a still
@@ -751,7 +794,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       of: source, from: "private func canvasStack", to: "private var header: some View")
     XCTAssertEqual(canvas.components(separatedBy: "transcriptActionsColumn(").count - 1, 1)
     XCTAssertTrue(
-      canvas.contains("let transcriptActionsShown = transcriptionSurface && !state.isCollapsed"))
+      canvas.contains("let transcriptActionsShown = transcriptionSurface && expandedCanvasActive"))
     let column = try section(
       of: source, from: "private func transcriptActionsColumn",
       to: "private func agentDrawerColumn")
@@ -815,7 +858,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     XCTAssertTrue(source.contains("overlay-transcript-actions"))
     XCTAssertTrue(
       source.contains(
-        "let transcriptActionsShown = transcriptionSurface && !state.isCollapsed"))
+        "let transcriptActionsShown = transcriptionSurface && expandedCanvasActive"))
     XCTAssertTrue(source.contains("OverlayIntentRail.projectedIntents(for: state)"))
     XCTAssertTrue(source.contains("OverlayRecordingControls.railIntents(from: projectedIntents)"))
     XCTAssertTrue(source.contains("intents: railIntents"))
@@ -918,13 +961,18 @@ final class OverlayChromeFounderCutTests: XCTestCase {
 
   func testTakeStartAndCollapseRemoveMountedTools() throws {
     let source = try overlaySource()
+    // The one gate both columns read: collapsed, or ordered out behind Fiszki.
+    XCTAssertTrue(
+      source.contains(
+        "private var expandedCanvasActive: Bool {\n    !state.isCollapsed && !hiddenBehindIntercom")
+    )
     let canvas = try section(
       of: source, from: "private func canvasStack", to: "private var header: some View")
     XCTAssertTrue(
       canvas.contains(
-        "let transcriptActionsShown = transcriptionSurface && !state.isCollapsed"))
+        "let transcriptActionsShown = transcriptionSurface && expandedCanvasActive"))
     XCTAssertTrue(
-      canvas.contains("let railShown = agentsSurface && !state.isCollapsed && !listOnScreen"))
+      canvas.contains("let railShown = agentsSurface && expandedCanvasActive && !listOnScreen"))
     XCTAssertTrue(
       canvas.range(
         of: #"footerMessageRow\s*\.frame\(height: 18\)"#,
@@ -1333,13 +1381,13 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     }
   }
 
-  /// Position in the header menu (L17, 2026-11-06): the first level holds
-  /// the mode, Free motion or Fixed position, with exactly one checkmark;
-  /// the six places live in the Place submenu with a checkmark on the
-  /// remembered one, also while Free motion is on. Choosing a place switches
-  /// to Fixed position and moves the panel; choosing Fixed position returns
-  /// the panel to the remembered place; choosing Free motion again does too.
-  func testHeaderMenuChoosesTheModeFirstAndThePlaceUnderIt() throws {
+  /// Position in the header menu (Monika, 2026-11-07): one list of seven
+  /// items, Free motion and the six places, with exactly one checkmark in
+  /// every state. Choosing a place turns Free motion off and moves the
+  /// panel; choosing Free motion unchecks the place; choosing the checked
+  /// Free motion again returns the panel to the last chosen place. There is
+  /// no Fixed position item and no Place submenu.
+  func testHeaderMenuPositionIsOneListWithOneCheck() throws {
     let oldAnchor = OverlayPlacement.anchor
     let oldFreeMotion = OverlayPlacement.freeMotion
     defer {
@@ -1372,20 +1420,9 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         return resolved
       }
       let freeMotion = "Free motion"
-      let fixed = "Fixed position"
-      let anchors = Set(OverlayAnchor.allCases.map(\.label))
-      @MainActor func places(_ menu: NSMenu) throws -> NSMenu {
-        let item = try XCTUnwrap(menu.items.first { $0.title == "Place" }, "no Place submenu")
-        let submenu = try XCTUnwrap(item.submenu)
-        submenu.delegate?.menuNeedsUpdate?(submenu)
-        return submenu
-      }
-      @MainActor func checkedModes(_ menu: NSMenu) -> [String] {
-        menu.items.filter { $0.state == .on && [freeMotion, fixed].contains($0.title) }
-          .map(\.title)
-      }
-      @MainActor func checkedPlaces(_ menu: NSMenu) throws -> [String] {
-        try places(menu).items.filter { $0.state == .on }.map(\.title)
+      let positions = [freeMotion] + OverlayAnchor.allCases.map(\.label)
+      @MainActor func checked(_ menu: NSMenu) -> [String] {
+        menu.items.filter { $0.state == .on && positions.contains($0.title) }.map(\.title)
       }
       @MainActor func choose(_ title: String) throws {
         let menu = try headerMenu()
@@ -1394,52 +1431,47 @@ final class OverlayChromeFounderCutTests: XCTestCase {
         menu.performActionForItem(at: index)
         settle(root)
       }
-      @MainActor func choosePlace(_ title: String) throws {
-        let submenu = try places(try headerMenu())
-        let index = try XCTUnwrap(
-          submenu.items.firstIndex { $0.title == title }, "\(title) missing from Place")
-        submenu.performActionForItem(at: index)
-        settle(root)
-      }
 
       let menu = try headerMenu()
+      let titles = menu.items.map(\.title)
+      let listed = titles.filter(positions.contains)
+      XCTAssertEqual(listed, positions, "the seven items in order on the first level")
+      let first = try XCTUnwrap(titles.firstIndex(of: freeMotion))
+      XCTAssertEqual(
+        Array(titles[first..<first + positions.count]), positions,
+        "the seven items are one contiguous list")
+      XCTAssertFalse(titles.contains("Fixed position"), "no Fixed position item")
+      XCTAssertFalse(titles.contains("Place"), "no Place submenu")
       XCTAssertTrue(
-        menu.items.allSatisfy { !anchors.contains($0.title) },
-        "no place on the first level")
-      XCTAssertEqual(checkedModes(menu), [fixed])
-      XCTAssertEqual(try checkedPlaces(menu), [OverlayAnchor.bottomCenter.label])
+        menu.items[first..<first + positions.count].allSatisfy { $0.submenu == nil })
+      XCTAssertEqual(checked(menu), [OverlayAnchor.bottomCenter.label])
 
       try choose(freeMotion)
       XCTAssertTrue(state.freeMotion)
-      XCTAssertEqual(checkedModes(try headerMenu()), [freeMotion])
-      XCTAssertEqual(
-        try checkedPlaces(try headerMenu()), [OverlayAnchor.bottomCenter.label],
-        "the remembered place stays checked under Free motion")
+      XCTAssertEqual(checked(try headerMenu()), [freeMotion], "Free motion unchecks the place")
 
       var before = placements
-      try choose(fixed)
-      XCTAssertFalse(state.freeMotion, "Fixed position leaves Free motion")
-      XCTAssertEqual(state.placementAnchor, .bottomCenter, "back to the remembered place")
-      XCTAssertGreaterThan(placements, before, "the panel is placed there again")
-      XCTAssertEqual(checkedModes(try headerMenu()), [fixed])
+      try choose(OverlayAnchor.topLeft.label)
+      XCTAssertFalse(state.freeMotion, "choosing a place turns Free motion off")
+      XCTAssertEqual(state.placementAnchor, .topLeft)
+      XCTAssertGreaterThan(placements, before, "the panel moves to the place")
+      XCTAssertEqual(checked(try headerMenu()), [OverlayAnchor.topLeft.label])
 
       try choose(freeMotion)
+      XCTAssertEqual(checked(try headerMenu()), [freeMotion])
       before = placements
       try choose(freeMotion)
       XCTAssertFalse(state.freeMotion, "a second choice of Free motion turns it off")
+      XCTAssertEqual(state.placementAnchor, .topLeft, "back to the last chosen place")
       XCTAssertGreaterThan(placements, before)
-
-      try choose(freeMotion)
-      try choosePlace(OverlayAnchor.topLeft.label)
-      XCTAssertFalse(state.freeMotion, "choosing a place switches to Fixed position")
-      XCTAssertEqual(state.placementAnchor, .topLeft)
-      XCTAssertEqual(checkedModes(try headerMenu()), [fixed])
-      XCTAssertEqual(try checkedPlaces(try headerMenu()), [OverlayAnchor.topLeft.label])
+      XCTAssertEqual(checked(try headerMenu()), [OverlayAnchor.topLeft.label])
 
       before = placements
-      try choosePlace(OverlayAnchor.topLeft.label)
-      XCTAssertEqual(state.placementAnchor, .topLeft, "the remembered place stays")
+      try choose(OverlayAnchor.topLeft.label)
+      XCTAssertEqual(state.placementAnchor, .topLeft, "the checked place stays")
+      XCTAssertFalse(state.freeMotion)
       XCTAssertGreaterThan(placements, before, "choosing it again places the panel there")
+      XCTAssertEqual(checked(try headerMenu()), [OverlayAnchor.topLeft.label])
     }
   }
 
@@ -1706,12 +1738,13 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       roster.contains("open ? recordingAccent"),
       "an open microphone takes the active-speaker accent")
     XCTAssertFalse(roster.contains("open ? Color.red"), "recording is no longer a separate red")
+    // The pinned pill is compact (Maciej, 2026-11-06): All keeps one line,
+    // and its last message stays one hover away.
     let all = try section(
-      of: roster, from: "private func scaledMonitorBody(", to: "var currentConversations")
-    XCTAssertTrue(all.contains(".lineLimit(3)"), "three preview lines belong to All")
-    XCTAssertTrue(all.contains("overlay-all-preview"))
-    XCTAssertTrue(
-      roster.contains("includePreview: false"), "the title button does not repeat the preview")
+      of: roster, from: "private func pinnedMailboxPill(", to: "private func scaledMonitorBody(")
+    XCTAssertTrue(all.contains(".lineLimit(1)"), "one line belongs to All")
+    XCTAssertTrue(all.contains("OverlayRosterMessageHint("), "the preview is the hover hint")
+    XCTAssertFalse(roster.contains("overlay-all-preview"))
     let agentLabel = try source(at: "Codescribe/Screens/Overlay/OverlayAgentRosterLabel.swift")
     XCTAssertTrue(agentLabel.contains(".lineLimit(2)"), "agent rows keep a two-line preview")
     let agentBudget = try section(

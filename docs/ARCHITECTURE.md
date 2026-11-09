@@ -199,10 +199,9 @@ Codescribe/
 │   ├── Services/                 # UpdaterService (Sparkle), platform services
 │   └── DesignSystem/             # Tokens, shared components, CSSidebarColumn
 │
-├── bin/                          # CLI binaries
-│   ├── codescribe-teacher.rs     # Teacher / correction replay
-│   ├── qube_daemon.rs            # Qube donor daemon
-│   └── qube_report.rs            # Qube reporting
+├── bin/                          # CLI entry points
+│   ├── codescribe.rs             # transcribe, bus, lexicon, report, daemon, teach, corpus, replay
+│   └── control-codescribe        # Local verification/control instrument
 │
 ├── tests/                        # Integration/E2E tests
 ├── assets/                       # Icons + packaged assets

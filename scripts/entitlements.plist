@@ -20,6 +20,10 @@
     <key>com.apple.security.device.audio-input</key>
     <true/>
 
+    <!-- Spotify volume ducking uses the player's public Apple Events suite. -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+
     <!-- REQUIRED by Candle ML dylibs (Whisper/MiniLM): unsigned executable memory for -->
     <!-- JIT/codegen used by the ML runtime. Do not set <false/> without a launch test. -->
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>

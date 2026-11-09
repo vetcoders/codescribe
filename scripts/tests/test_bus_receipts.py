@@ -715,6 +715,18 @@ class BackfillTests(ReceiptFixture):
                          receipts)
         self.assertEqual(self.sources(), before)
 
+    def test_backfill_reaches_deliveries_after_large_occurrence_records(self):
+        self.history()
+        _, journal = DEMUX.follower_paths(self.root, self.lease_id)
+        draft = {"schema": DEMUX.EVENT_SCHEMA, "kind": "revised",
+                 "occurrences": [{"evidence": "x" * (1536 * 1024)}]}
+        journal.write_bytes((json.dumps(draft) + "\n").encode() + journal.read_bytes())
+        before = self.sources()
+        result, output, error = self.backfill("--backfill-receipts")
+        self.assertEqual((result, error), (0, ""))
+        self.assertEqual(json.loads(output), self.EXPECTED)
+        self.assertEqual(self.sources(), before)
+
     def test_dry_run_reports_the_same_counts_and_writes_nothing(self):
         self.history()
         before = self.sources()

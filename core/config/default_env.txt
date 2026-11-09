@@ -85,7 +85,6 @@ DUMP_AUDIO_LOGS=1
 # When enabled, dictation saves to a daily Markdown note.
 QUICK_NOTES_ENABLED=0
 # If enabled, Quick Notes becomes "save-only" (no auto-paste).
-QUICK_NOTES_SAVE_ONLY=0
 # Optional override for notes directory:
 # CODESCRIBE_NOTES_DIR=~/Documents/notes
 

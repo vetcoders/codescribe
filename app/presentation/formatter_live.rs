@@ -8,11 +8,11 @@
 //! everywhere else.
 //!
 //! The view is presentation only. It is never pushed into the reducer's
-//! derived history, never journaled, never selected for delivery and never
-//! advances a Raw revision, seal or occurrence. Stop keeps choosing between the
-//! complete formatted take and the complete Raw floor in
-//! `PresentationEmitter::delivery_projection`; once that selection exists, or
-//! the take is terminal, this view stands down.
+//! derived history, never journaled, and never advances a Raw revision, seal
+//! or occurrence. At Stop, delivery reassembles current source-bound formatted
+//! fragments with the remaining committed text; it never copies provisional
+//! paint. Once that selection exists, or the take is terminal, this live view
+//! stands down.
 
 use std::sync::Mutex;
 
