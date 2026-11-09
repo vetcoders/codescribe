@@ -2422,10 +2422,13 @@ private struct OverlayAgentRouterControl: View {
       .fixedSize()
       .modifier(
         OverlayHeaderControlChrome(
-          title: String(localized: "Fiszki", comment: "Intercom cards router button"),
+          title: String(
+            localized: "Fiszki", defaultValue: "Cards", comment: "Intercom cards router button"),
           accent: .agents, palette: palette, selected: false)
       )
-      .accessibilityLabel(String(localized: "Fiszki", comment: "Intercom cards router button"))
+      .accessibilityLabel(
+        String(localized: "Fiszki", defaultValue: "Cards", comment: "Intercom cards router button")
+      )
       .accessibilityIdentifier("overlay-intercom-router-button")
     } else {
       rosterButton
