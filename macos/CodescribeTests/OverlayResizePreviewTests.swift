@@ -317,6 +317,17 @@ final class OverlayResizePreviewTests: XCTestCase {
     let veilLayer = try XCTUnwrap(resizedBacking.subviews.last?.layer)
     let veilAlpha = try renderControl { veilLayer.render(in: $0) }
     let rootAlpha = try renderControl { layer.render(in: $0) }
+    let backgroundLayer = try XCTUnwrap(resizedBacking.layer)
+    let backgroundAlpha = try renderControl { backgroundLayer.render(in: $0) }
+    let drawingWasHidden = drawing.isHidden
+    drawing.isHidden = true
+    CATransaction.flush()
+    let rootWithoutForeground = try renderControl { layer.render(in: $0) }
+    drawing.isHidden = drawingWasHidden
+    CATransaction.flush()
+    print(
+      "RESIZE_OPAQUE_DIAGNOSTIC backgroundOwner=\(backgroundAlpha) rootWithoutForeground=\(rootWithoutForeground)"
+    )
     print("RESIZE_OPAQUE_DIAGNOSTIC samePoint writer=\(writer) veil=\(veilAlpha) root=\(rootAlpha)")
     func layers(_ layer: CALayer, depth: Int = 0) {
       print(
