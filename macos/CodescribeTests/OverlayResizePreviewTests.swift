@@ -77,9 +77,7 @@ final class OverlayResizePreviewTests: XCTestCase {
       XCTAssertEqual(window.frame, initialFrame, "Markdown keeps its original layout size")
       XCTAssertEqual(source.paints, capturedPaints, "pointer updates must reuse the capture")
     }
-    let drawing = try XCTUnwrap(
-      NSApp.windows.filter(\.isVisible).compactMap { $0.contentView as? OverlayResizePreviewView }
-        .first { $0.headers.contains { $0?.content != nil } })
+    let drawing = try previewDrawing()
     XCTAssertTrue(
       drawing.headers.contains { $0?.content != nil }, "the body must not become a blank plate")
     preview.finish()
@@ -122,5 +120,98 @@ final class OverlayResizePreviewTests: XCTestCase {
       let top = try colour(25, 20)
       XCTAssertGreaterThan(top.greenComponent, 0.8, "body cannot paint over header controls")
     }
+  }
+
+  func testRepeatedPreviewPaintDoesNotAccumulateEarlierFrames() throws {
+    let view = OverlayResizePreviewView(
+      headers: [nil], group: false, headerHeight: 40,
+      palette: .resolve(ColorScheme.light), cornerRadius: 10)
+    view.frame = NSRect(x: 0, y: 0, width: 120, height: 100)
+    let bitmap = try XCTUnwrap(NSBitmapImageRep(
+      bitmapDataPlanes: nil, pixelsWide: 120, pixelsHigh: 100,
+      bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+      colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+    let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
+    NSGraphicsContext.saveGraphicsState()
+    defer { NSGraphicsContext.restoreGraphicsState() }
+    NSGraphicsContext.current = context
+    NSColor.clear.setFill()
+    view.bounds.fill(using: .copy)
+    view.draw(view.bounds)
+    let firstAlpha = try XCTUnwrap(bitmap.colorAt(x: 30, y: 50)).alphaComponent
+    for _ in 0..<5 { view.draw(view.bounds) }
+    let repeatedAlpha = try XCTUnwrap(bitmap.colorAt(x: 30, y: 50)).alphaComponent
+    XCTAssertEqual(
+      repeatedAlpha, firstAlpha, accuracy: 0.01,
+      "A buffered preview must replace the previous frame, not composite into it")
+  }
+
+  func testFrozenCaptureContainsForegroundWithoutTheOldCanvas() throws {
+    let source = NSHostingView(rootView:
+      OverlayCanvasSurface(palette: .resolve(ColorScheme.light)) {
+        Rectangle().fill(Color.red).frame(width: 12)
+          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+      }
+      .environment(\.csReduceTransparencyOverride, false)
+      .environment(\.csContrastOverride, .standard))
+    source.sizingOptions = []
+    let window = NSPanel(
+      contentRect: NSRect(x: 80, y: 80, width: 240, height: 200),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = source
+    source.layoutSubtreeIfNeeded()
+    let preview = OverlayResizePreview(
+      windows: [window], group: false, headerHeight: 40,
+      palette: .resolve(ColorScheme.light), capturesContent: true)
+    defer { preview.finish(); window.close() }
+    preview.update(frame: window.frame)
+    let drawing = try previewDrawing()
+    let header = try XCTUnwrap(drawing.headers.compactMap { $0 }.first)
+    let content = try XCTUnwrap(header.content)
+    let bitmap = try XCTUnwrap(content.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))
+    let xScale = CGFloat(bitmap.pixelsWide) / content.size.width
+    let y = bitmap.pixelsHigh / 2
+    let foreground = try XCTUnwrap(bitmap.colorAt(x: Int(6 * xScale), y: y))
+    let canvas = try XCTUnwrap(bitmap.colorAt(x: bitmap.pixelsWide / 2, y: y))
+    XCTAssertGreaterThan(foreground.alphaComponent, 0.9, "The frozen text/control layer stays")
+    XCTAssertLessThan(
+      canvas.alphaComponent, 0.05,
+      "Old glass and its veil cannot become a smaller solid canvas inside the new frame")
+  }
+
+  func testExpandedPreviewMaterialFollowsTheCurrentFrameWithoutResizingSource() throws {
+    let window = NSPanel(
+      contentRect: NSRect(x: 80, y: 80, width: 400, height: 300),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = SourceView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+    let original = window.frame
+    let preview = OverlayResizePreview(
+      windows: [window], group: false, headerHeight: 40,
+      palette: .resolve(ColorScheme.light), capturesContent: true)
+    defer { preview.finish(); window.close() }
+    for size in [NSSize(width: 600, height: 420), NSSize(width: 300, height: 240)] {
+      preview.update(frame: NSRect(origin: original.origin, size: size))
+      let drawing = try previewDrawing()
+      let root = try XCTUnwrap(drawing.window?.contentView)
+      if #available(macOS 26, *) {
+        let glass = try XCTUnwrap(descendants(root).compactMap { $0 as? OverlayDesktopGlassView }.first)
+        XCTAssertEqual(glass.convert(glass.bounds, to: root), root.bounds)
+      } else {
+        XCTAssertTrue(descendants(root).contains { $0 is OverlayDesktopEffectView })
+      }
+      XCTAssertEqual(window.frame, original, "No per-pointer source/Markdown layout")
+    }
+  }
+
+  private func descendants(_ view: NSView) -> [NSView] {
+    [view] + view.subviews.flatMap { descendants($0) }
+  }
+
+  private func previewDrawing() throws -> OverlayResizePreviewView {
+    try XCTUnwrap(NSApp.windows.filter(\.isVisible).compactMap(\.contentView)
+      .flatMap { descendants($0) }.compactMap { $0 as? OverlayResizePreviewView }
+      .first { $0.headers.contains { $0?.content != nil } })
   }
 }
