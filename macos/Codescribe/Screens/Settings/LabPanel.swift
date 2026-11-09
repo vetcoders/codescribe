@@ -8,6 +8,7 @@ struct LabPanel: View {
   /// A drag on the ledger slider persists once, at release.
   @State private var ledgerGate = SliderCommitGate()
   @State private var glassSurface: ChromeGlassSurface = .onboarding
+  @State private var topScrollClip: CGFloat = 0
   var glassPreferences = ChromeGlassPreferences()
 
   var body: some View {
@@ -88,6 +89,13 @@ struct LabPanel: View {
     }
     .settingsPage()
     .frame(maxWidth: .infinity, alignment: .leading)
+    .clipShape(LabScrollTopClipShape(topInset: topScrollClip))
+    .onScrollGeometryChange(for: CGFloat.self) { geometry in
+      max(0, geometry.visibleRect.minY + geometry.contentInsets.top)
+    } action: { _, clip in
+      topScrollClip = clip
+    }
+    .background(LabScrollViewportClip())
     .task { await model.refreshAdmission() }
   }
 
@@ -355,6 +363,134 @@ struct LabPanel: View {
         .fixedSize(horizontal: false, vertical: true)
       }
       .settingsGroupedInset()
+    }
+  }
+}
+
+private struct LabScrollTopClipShape: Shape {
+  var topInset: CGFloat
+
+  func path(in rect: CGRect) -> Path {
+    let y = min(max(0, topInset), rect.height)
+    return Path(
+      CGRect(x: rect.minX, y: y, width: rect.width, height: max(0, rect.height - y)))
+  }
+}
+
+/// Clips the enclosing settings scroll view below the 52 pt titlebar accessory
+/// (`window.contentLayoutRect`) so scrolled Lab controls and word pins never
+/// bleed behind the transparent header glass.
+private struct LabScrollViewportClip: NSViewRepresentable {
+  func makeCoordinator() -> Coordinator { Coordinator() }
+
+  func makeNSView(context: Context) -> ClipAttachmentView {
+    let view = ClipAttachmentView()
+    view.onAttach = { [weak coordinator = context.coordinator] scrollView in
+      coordinator?.attach(to: scrollView)
+    }
+    return view
+  }
+
+  func updateNSView(_ nsView: ClipAttachmentView, context: Context) {
+    nsView.attachWhenReady()
+    context.coordinator.refreshMask()
+  }
+
+  static func dismantleNSView(_ nsView: ClipAttachmentView, coordinator: Coordinator) {
+    coordinator.detach()
+  }
+
+  @MainActor
+  final class Coordinator {
+    private weak var scrollView: NSScrollView?
+    private let maskLayer = CAShapeLayer()
+    private var frameObserver: NSObjectProtocol?
+    private var windowObserver: NSObjectProtocol?
+
+    func attach(to target: NSScrollView) {
+      if scrollView === target {
+        refreshMask()
+        return
+      }
+      detach()
+      scrollView = target
+      target.wantsLayer = true
+      target.postsFrameChangedNotifications = true
+      frameObserver = NotificationCenter.default.addObserver(
+        forName: NSView.frameDidChangeNotification,
+        object: target,
+        queue: .main
+      ) { [weak self] _ in
+        MainActor.assumeIsolated { self?.refreshMask() }
+      }
+      if let window = target.window {
+        windowObserver = NotificationCenter.default.addObserver(
+          forName: NSWindow.didResizeNotification,
+          object: window,
+          queue: .main
+        ) { [weak self] _ in
+          MainActor.assumeIsolated { self?.refreshMask() }
+        }
+      }
+      refreshMask()
+    }
+
+    func detach() {
+      if let frameObserver { NotificationCenter.default.removeObserver(frameObserver) }
+      if let windowObserver { NotificationCenter.default.removeObserver(windowObserver) }
+      frameObserver = nil
+      windowObserver = nil
+      if scrollView?.layer?.mask === maskLayer {
+        scrollView?.layer?.mask = nil
+      }
+      scrollView = nil
+    }
+
+    func refreshMask() {
+      guard let scrollView, let layer = scrollView.layer else { return }
+      let bounds = scrollView.bounds
+      guard bounds.width > 0, bounds.height > 0 else { return }
+      let layoutTopInset: CGFloat =
+        if let window = scrollView.window {
+          scrollView.isFlipped
+            ? max(0, scrollView.convert(window.contentLayoutRect, from: nil).minY)
+            : max(0, bounds.height - scrollView.convert(window.contentLayoutRect, from: nil).maxY)
+        } else {
+          0
+        }
+      let topInset = max(scrollView.contentInsets.top, layoutTopInset)
+      guard topInset > 0 else {
+        if layer.mask === maskLayer { layer.mask = nil }
+        return
+      }
+      let clipHeight = max(0, bounds.height - topInset)
+      let clipY = layer.isGeometryFlipped ? bounds.minY + topInset : bounds.minY
+      let clipRect = CGRect(x: bounds.minX, y: clipY, width: bounds.width, height: clipHeight)
+      maskLayer.frame = bounds
+      maskLayer.path = CGPath(rect: clipRect, transform: nil)
+      if layer.mask !== maskLayer {
+        layer.mask = maskLayer
+      }
+    }
+  }
+
+  @MainActor
+  final class ClipAttachmentView: NSView {
+    var onAttach: ((NSScrollView) -> Void)?
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToWindow() {
+      super.viewDidMoveToWindow()
+      attachWhenReady()
+    }
+
+    func attachWhenReady() {
+      Task { @MainActor [weak self] in
+        await Task.yield()
+        guard let self, let scrollView = enclosingScrollView else { return }
+        onAttach?(scrollView)
+      }
     }
   }
 }

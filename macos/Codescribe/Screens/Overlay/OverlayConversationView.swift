@@ -553,7 +553,7 @@ struct OverlayConversationView: View {
           submissionBlocked: !pendingDeliveryControls.isEmpty,
           onEditorActive: onComposerEditorActive, onTypingActivity: onComposerTypingActivity,
           onEmptySubmit: sendHeldNow,
-          focusRevision: revisionFocus &+ composerFocusRevision,
+          focusRevision: focusRevision &+ revisionFocus &+ composerFocusRevision,
           isCovered: isCovered || !isPresented,
           placeholder: composerPlaceholder,
           replySelection: replySelection, onClearReply: onClearReply,

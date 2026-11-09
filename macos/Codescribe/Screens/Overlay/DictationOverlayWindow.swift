@@ -698,13 +698,19 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
   /// stale record (`OverlayKeyboardRequest.reclaimKey`): the click asks the
   /// window server again instead of trusting it.
   func takeKeyForTranscript() {
+    let needsAppActivation =
+      isVisible && !ignoresMouseEvents && alphaValue > 0 && !NSApp.isActive
     let wasKey = keyCalls.isKey(self)
     let request = OverlayKeyboardRequest.opening(
       gateOpen: allowsKeyForTranscript, panelIsKey: wasKey)
     // Still closed here, so the resign-key it posts leaves the responder alone.
     if request == .reclaimKey { keyCalls.resignKey(self) }
     allowsKeyForTranscript = true
-    if request != .none { keyCalls.makeKey(self) }
+    if request != .none || needsAppActivation { keyCalls.makeKey(self) }
+    if needsAppActivation {
+      NSApplication.shared.activate(ignoringOtherApps: true)
+      if !keyCalls.isKey(self) { keyCalls.makeKey(self) }
+    }
     if !outsideInteractions.isWatching {
       outsideInteractions.start { [weak self] interaction in
         self?.noteInteractionOutside(interaction)
@@ -722,6 +728,15 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
     let wasKey = keyCalls.isKey(self)
     if wasKey { keyCalls.resignKey(self) }
     traceKeyboard("gate.released", "wasKey=\(wasKey)")
+  }
+
+  override func resignKey() {
+    super.resignKey()
+    guard allowsKeyForTranscript else { return }
+    allowsKeyForTranscript = false
+    outsideInteractions.stop()
+    makeFirstResponder(nil)
+    traceKeyboard("gate.resigned", "")
   }
 
   /// Key left from outside: resign the canvas. An active edit uses its
@@ -910,8 +925,10 @@ final class FloatingOverlayPanel: NSPanel, NSWindowDelegate {
         var hit = contentView.hitTest(contentView.convert(event.locationInWindow, from: nil))
         while let view = hit {
           // SwiftUI uses different native text classes across macOS versions.
-          // Follow public responder capabilities, not a private class name.
-          if view.acceptsFirstResponder && view.responds(to: #selector(NSText.copy(_:))) {
+          // Follow public responder capabilities, not a private class name;
+          // scroll/clip wrappers around a text view count as that text view.
+          let candidate = (view as? NSScrollView)?.documentView ?? view
+          if candidate.acceptsFirstResponder && candidate.responds(to: #selector(NSText.copy(_:))) {
             takeKeyForTranscript()
             openedKeyboardGate = true
             break

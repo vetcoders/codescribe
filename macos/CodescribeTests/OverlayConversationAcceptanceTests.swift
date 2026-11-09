@@ -2749,6 +2749,34 @@ final class OverlayConversationAcceptanceTests: XCTestCase {
       view.components(separatedBy: ".contentMargins(.top,").count - 1, 1,
       "one top margin carries both")
   }
+
+  /// Switching conversations in the rail increments `OverlayConversationView.focusRevision`;
+  /// the view must forward that revision into `OverlayConversationComposer` so the newly
+  /// mounted composer takes first responder.
+  @MainActor
+  func testSwitchingConversationsForwardsFocusRevisionToTheComposer() throws {
+    let lena = try canvasConversation(
+      id: "conversation-lena", channel: "2", name: "Lena", lease: leaseA,
+      session: "lena-session")
+    let andrzej = try canvasConversation(
+      id: "conversation-andrzej", channel: "3", name: "andrzej", lease: leaseB,
+      session: "andrzej-session")
+    let model = ConversationCanvasModel(
+      ConversationCanvasState(conversation: lena, focusRevision: 0, isPresented: true))
+    let rig = mountConversationCanvas(model, height: 520)
+    defer { rig.window.close() }
+    pumpConversationCanvas(0.1)
+    rig.window.makeFirstResponder(nil)
+    XCTAssertFalse((rig.window.firstResponder as? NSTextView)?.isEditable == true)
+
+    model.state = ConversationCanvasState(
+      conversation: andrzej, focusRevision: model.state.focusRevision &+ 1, isPresented: true)
+    pumpConversationCanvas(0.1)
+    let responder = rig.window.firstResponder as? NSTextView
+    XCTAssertEqual(
+      responder?.isEditable, true,
+      "switching conversations with a bumped focusRevision must focus the composer editor")
+  }
 }
 
 private struct ConversationCanvasState {
