@@ -238,12 +238,15 @@ class ChannelHandoverTests(unittest.TestCase):
         second = self.delivered(OLD, "James, druga.")
         acknowledged = self.helper("--bus", str(self.bus), "--ack", first, *self.owner(OLD))
         self.assertEqual(acknowledged.returncode, 0, acknowledged.stderr)
+        # The live follower drops the acknowledged envelope on a later pass;
+        # wait for it so neither snapshot below races that pass.
+        self.settled(OLD, first)
 
         status = json.loads(self.helper("--status", *self.owner(OLD)).stdout)
         self.assertEqual(
             (status["pending_file"], status["acknowledged_markers"], status["backlog"],
              status["unacked_seals"], status["channel"]),
-            (2, 1, 1, 1, CHANNEL), status)
+            (1, 1, 1, 1, CHANNEL), status)
 
         neighbour = self.bindings()["5"]
         result = self.detach(OLD)
@@ -265,7 +268,7 @@ class ChannelHandoverTests(unittest.TestCase):
         self.assertTrue(self.gone(receipt["follower_pid"]))
         self.assertTrue(alive(other["follower_pid"]))
         self.assertEqual(
-            [item["delivery_id"] for item in self.lease(OLD)["pending"]], [first, second])
+            [item["delivery_id"] for item in self.lease(OLD)["pending"]], [second])
         self.assertEqual(self.markers(OLD), [f"{first}.json"])
         status = json.loads(self.helper("--status", *self.owner(OLD)).stdout)
         self.assertIsNone(status["channel"])
