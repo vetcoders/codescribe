@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 import SwiftUI
 import XCTest
 
@@ -269,9 +270,15 @@ final class OverlayResizePreviewTests: XCTestCase {
     let bitmap = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: root.bounds))
     let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
     root.displayIfNeeded()
+    let beforeLayers = root.layer?.sublayers?.count ?? 0
+    root.window?.displayIfNeeded()
+    CATransaction.flush()
     // Composite the native layers as the window does. Recursive cacheDisplay
     // flattens a transparent child's clear into its siblings' drawing context.
     let layer = try XCTUnwrap(root.layer)
+    print(
+      "RESIZE_OPAQUE_DIAGNOSTIC layersBefore=\(beforeLayers) layersAfter=\(layer.sublayers?.count ?? 0)"
+    )
     let clip = context.cgContext.boundingBoxOfClipPath
     context.cgContext.scaleBy(
       x: clip.width / root.bounds.width, y: clip.height / root.bounds.height)
@@ -291,6 +298,33 @@ final class OverlayResizePreviewTests: XCTestCase {
     context.flushGraphics()
     print(
       "RESIZE_OPAQUE_DIAGNOSTIC writerControl=\(String(describing: bitmap.colorAt(x: 2, y: 2)))")
+    func renderControl(_ paint: (CGContext) -> Void) throws -> CGFloat {
+      let target = try XCTUnwrap(
+        NSBitmapImageRep(
+          bitmapDataPlanes: nil, pixelsWide: 500, pixelsHigh: 360,
+          bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+          colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+      let graphics = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: target))
+      graphics.cgContext.clear(CGRect(x: 0, y: 0, width: 500, height: 360))
+      paint(graphics.cgContext)
+      graphics.flushGraphics()
+      return try XCTUnwrap(target.colorAt(x: 400, y: 180)).alphaComponent
+    }
+    let writer = try renderControl {
+      $0.setFillColor(NSColor.red.cgColor)
+      $0.fill(CGRect(x: 0, y: 0, width: 500, height: 360))
+    }
+    let veilLayer = try XCTUnwrap(resizedBacking.subviews.last?.layer)
+    let veilAlpha = try renderControl { veilLayer.render(in: $0) }
+    let rootAlpha = try renderControl { layer.render(in: $0) }
+    print("RESIZE_OPAQUE_DIAGNOSTIC samePoint writer=\(writer) veil=\(veilAlpha) root=\(rootAlpha)")
+    func layers(_ layer: CALayer, depth: Int = 0) {
+      print(
+        "RESIZE_OPAQUE_DIAGNOSTIC layer depth=\(depth) type=\(type(of: layer)) frame=\(layer.frame) hidden=\(layer.isHidden) children=\(layer.sublayers?.count ?? 0)"
+      )
+      for child in layer.sublayers ?? [] { layers(child, depth: depth + 1) }
+    }
+    layers(layer)
     let addedArea = try XCTUnwrap(
       bitmap.colorAt(
         x: bitmap.pixelsWide * 4 / 5, y: bitmap.pixelsHigh / 2))
