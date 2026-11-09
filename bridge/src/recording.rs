@@ -1654,7 +1654,11 @@ mod retranscribe_tests {
         }
     }
 
+    /// Opt-in corpus acceptance. The hermetic language/wire contract above
+    /// uses a loopback fixture and must not discover a real HOME via Cargo.
     #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "operator corpus probe; requires retained speech, local models and the STT helper"]
+    #[serial_test::serial]
     async fn local_file_button_pass_uses_configured_language_on_retained_audio() {
         let operator_home = std::env::var("HOME")
             .ok()
@@ -1825,6 +1829,8 @@ mod retranscribe_tests {
     ///   PROOF_WAV=~/.codescribe/sessions/<id>.wav \
     ///   cargo test -p codescribe-ffi -- --ignored --nocapture retranscribe_passes_on_real_session_audio
     #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "operator roundtrip; requires PROOF_WAV, local models/helper and a real file provider"]
+    #[serial_test::serial]
     async fn retranscribe_passes_on_real_session_audio() {
         let operator_home = std::env::var("HOME")
             .ok()
