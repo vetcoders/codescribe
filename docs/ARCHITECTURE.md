@@ -391,6 +391,12 @@ titlebar height. The window's content-layout guide remains an output rather
 than a second constraint owner. Reapplying
 chrome updates the same identified constraints rather than adding more owners.
 
+Physical-resize acceptance on Silver (2026-11-09): the Founder repeated shrinking
+the Agent window with the sidebar expanded and collapsed in the stable-signed
+`ec605c02f` preview (build 3803) and confirmed that the bottom no longer clips.
+This accepts the Agent bottom-clipping repair; it does not establish acceptance
+of the separate header optics, overlay tone transitions or overlay resize lag.
+
 ### The Settings scale
 
 The Settings central pane has one scale and one owner for it:
