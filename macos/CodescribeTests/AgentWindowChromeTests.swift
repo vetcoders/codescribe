@@ -273,6 +273,58 @@ final class AgentWindowChromeTests: XCTestCase {
       as? NSGlassEffectView
   }
 
+  /// A native full-size content host must reserve the titlebar as well as
+  /// the readable content floor. Measuring the fitting size alone missed it.
+  func testProductionMinimumFrameKeepsComposerActionsInsideWindow() throws {
+    let previous = UserDefaults.standard.object(forKey: sidebarKey)
+    defer { restoreSidebarDefault(previous) }
+    var evidence: [String] = []
+    for expanded in [true, false] {
+      UserDefaults.standard.set(expanded, forKey: sidebarKey)
+      let scale = TextScaleController(key: "AgentWindowChromeTests.minimumFrameScale")
+      let root = TextScaleRoot(controller: scale) {
+        AgentChatView(store: AgentChatStore(engine: nil))
+          .environment(\.csReduceTransparencyOverride, false)
+          .environment(\.csContrastOverride, .standard)
+      }
+      let hosting = NSHostingController(rootView: root)
+      hosting.sizingOptions = []
+      let window = AgentWindowChrome.makeWindow(content: hosting)
+      defer {
+        window.orderOut(nil)
+        window.close()
+      }
+      BackgroundTestWindow.present(window)
+      pump(window) {
+        self.composerInput(in: hosting.view) != nil
+          && self.rectangularHeaderGlass(in: window) != nil
+      }
+      let minimumFrame = hosting.view.fittingSize
+      window.setFrame(NSRect(origin: window.frame.origin, size: minimumFrame), display: false)
+      window.contentView?.superview?.layoutSubtreeIfNeeded()
+      window.displayIfNeeded()
+      let input = try XCTUnwrap(composerInput(in: hosting.view) as? NSTextView)
+      let scroll = try XCTUnwrap(input.enclosingScrollView)
+      let field = frame(scroll)
+      let actionsBelow =
+        ComposerControlMetrics.spacing + ComposerControlMetrics.hitTargetSize
+        + ComposerControlMetrics.verticalPadding
+      evidence.append(
+        "expanded=\(expanded) fitting=\(minimumFrame) frame=\(window.frame) "
+          + "layout=\(window.contentLayoutRect) field=\(field) actionsBelow=\(actionsBelow)")
+      XCTAssertGreaterThanOrEqual(
+        window.contentLayoutRect.height, AgentWindowMetrics.minHeight,
+        "the native titlebar must not consume the readable content minimum")
+      XCTAssertGreaterThanOrEqual(
+        field.minY, actionsBelow, "the action row below the field must fit above the window bottom")
+      XCTAssertTrue(hosting.sizingOptions.isEmpty)
+    }
+    let attachment = XCTAttachment(string: evidence.joined(separator: "\n"))
+    attachment.name = "Actual minimum frame and composer clearance"
+    attachment.lifetime = .keepAlways
+    add(attachment)
+  }
+
   /// Match the app's crash-protected host, not only a bare test controller.
   func testProductionHostRetainsFittingMinimumAcrossLayoutUpdates() throws {
     let previous = UserDefaults.standard.object(forKey: sidebarKey)

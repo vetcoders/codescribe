@@ -20,6 +20,11 @@ same-screen moves, including fractional origins, with production hosting sizing
 disabled. A pass rules out only frame churn in those probes; it does not prove
 that hover drawing, live resize or the compositor is free of optical artifacts.
 
+The production minimum-frame test also resizes the native window frame to the
+host's actual fitting minimum. It checks the remaining content-layout height
+and the native composer's clearance for its action row. A fitting-size pass by
+itself does not establish that the titlebar and bottom controls fit together.
+
 ```bash
 make test-swift                                    # whole suite
 make test-swift SWIFT_TEST_ARGS='-only-testing:CodescribeTests/OverlayStateTests'
