@@ -204,7 +204,9 @@ struct AgentContextToggle: View {
       .contentShape(Rectangle())
       .background(AgentContextHitAnchor { presenter.registerToggle($0) })
     }
-    .buttonStyle(.borderless)
+    // The focus-ring style is the button's only style: a `.borderless` set
+    // closer to the button would win over it, and with the native effect
+    // disabled keyboard focus on Context would be invisible.
     .csFocusRing(cornerRadius: CSRadius.window)
     .fixedSize()
     .help(isOpen ? AgentContextPanelCopy.closeHelp : AgentContextPanelCopy.openHelp)
@@ -266,13 +268,17 @@ final class AgentContextCardPresenter: ObservableObject {
     removeEventMonitor()
   }
 
-  /// The Context button's frame, for the outside-click rule.
+  /// The Context button's frame, for the outside-click rule. The button lives
+  /// in the titlebar accessory, which AppKit can host in a window of its own
+  /// (the full-screen toolbar window), so it never decides which window the
+  /// card belongs to; a click there is another window's event and reaches
+  /// the button, whose own action closes the card.
   func registerToggle(_ view: NSView) {
     toggleAnchor = view
-    attach(to: view.window)
   }
 
-  /// The card's frame, for the outside-click rule.
+  /// The card's frame, for the outside-click rule. The card's window is the
+  /// one whose Escape, clicks, close and order-out apply to it.
   func registerCard(_ view: NSView) {
     cardAnchor = view
     attach(to: view.window)
