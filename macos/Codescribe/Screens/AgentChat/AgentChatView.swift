@@ -153,11 +153,26 @@ enum AgentWindowChrome {
     // The full-width glass already supplies its optical edge. A second
     // system separator becomes a bright seam when this window is key.
     window.titlebarSeparatorStyle = .none
-    // The window owns the floor. The columns alone would let a collapsed
-    // window shrink to the detail column, and a minimum on the split view
-    // makes an opening sidebar slide and jump.
-    window.contentMinSize = NSSize(
-      width: AgentWindowMetrics.minWidth, height: AgentWindowMetrics.minHeight)
+    // AppKit ignores contentMinSize with Auto Layout. The production host
+    // disables automatic SwiftUI sizing to prevent a display-cycle crash, so
+    // this owner must provide the native minimum constraints itself. Use the
+    // layout guide: its height excludes the current native titlebar band.
+    guard let guide = window.contentLayoutGuide as? NSLayoutGuide,
+      let owner = guide.owningView
+    else { return }
+    let dimensions: [(String, NSLayoutDimension, CGFloat)] = [
+      ("codescribe-agent-floor-width", guide.widthAnchor, AgentWindowMetrics.minWidth),
+      ("codescribe-agent-floor-height", guide.heightAnchor, AgentWindowMetrics.minHeight),
+    ]
+    for (identifier, dimension, minimum) in dimensions {
+      if let constraint = owner.constraints.first(where: { $0.identifier == identifier }) {
+        constraint.constant = minimum
+      } else {
+        let constraint = dimension.constraint(greaterThanOrEqualToConstant: minimum)
+        constraint.identifier = identifier
+        constraint.isActive = true
+      }
+    }
   }
 }
 

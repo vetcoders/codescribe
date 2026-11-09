@@ -9,6 +9,8 @@ to obtain a window-size pass. The diagnostic retains frame, content minimum,
 native minimum and fitting-size evidence across layout and sidebar updates.
 It does not simulate a pointer resize or certify the minimum enforced during a
 real drag; the recorded desktop gesture remains a separate acceptance check.
+The production owner supplies required width and height minima on the public
+window content-layout guide; it does not restore automatic SwiftUI sizing.
 
 ```bash
 make test-swift                                    # whole suite

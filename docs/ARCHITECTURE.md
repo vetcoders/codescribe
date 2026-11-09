@@ -374,6 +374,15 @@ the split view opens it at: Agent is 640 × 440 with a 424 pt conversation
 column beside the 216 pt rail, Settings 880 × 620 with its 664 pt detail
 column.
 
+`AgentWindowChrome` owns the Agent floor through two required minimum
+constraints on the window's public `contentLayoutGuide`. AppKit ignores
+`minSize` / `contentMinSize` when Auto Layout owns sizing. The production
+`NSHostingController` deliberately keeps `sizingOptions = []` to prevent an
+AppKit display-cycle crash; that protection must not be removed to obtain a
+minimum-size pass. The explicit guide constraints preserve it and account for
+the native titlebar height without a fixed frame-size compensation. Reapplying
+chrome updates the same identified constraints rather than adding more owners.
+
 ### The Settings scale
 
 The Settings central pane has one scale and one owner for it:
