@@ -243,6 +243,6 @@ final class OverlayGlassRenderingProbeTests: XCTestCase {
 
   private func firstText(in view: NSView) -> LiveTranscriptNativeTextView? {
     if let text = view as? LiveTranscriptNativeTextView { return text }
-    return view.subviews.lazy.compactMap { firstText(in: $0) }.first
+    return view.subviews.lazy.compactMap { self.firstText(in: $0) }.first
   }
 }
