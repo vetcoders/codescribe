@@ -1764,26 +1764,11 @@ private struct OverlayIntercomHeader: View {
       .background {
         if !content.showsCount { OverlayResizeAnchor() }
       }
-      Button {
-        controller.openMainWindow(surface: .agents)
-      } label: {
-        Text(verbatim: OverlayHeaderGlyph.agents)
-          .font(.system(size: 11 * scale, weight: .semibold))
-          .frame(width: metrics.groupWidth, height: metrics.controlHeight)
-          .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-      .conversationActionHover(
-        restingColor: palette.bodyText.color, hoverColor: palette.primaryText.color
-      )
-      .accessibilityLabel(String(localized: "Agents"))
-      .accessibilityIdentifier("overlay-intercom-header-agents")
-      .help(String(localized: "Agents"))
       if content.showsCount {
         Spacer(minLength: IntercomHeaderMetrics.spacerMinimum)
           .background(OverlayResizeAnchor())
         Button {
-          if let broadcast { controller.openMailbox(broadcast.id) }
+          controller.openMainWindow(surface: .agents)
         } label: {
           Text(verbatim: chips.count.formatted()).csMono(10)
             .scaleEffect(isCountHovered ? 1.24 : 1.0)
@@ -1792,15 +1777,14 @@ private struct OverlayIntercomHeader: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(broadcast == nil)
         .onHover { isCountHovered = $0 }
         .conversationActionHover(
           restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
         )
-        .accessibilityLabel(String(localized: "Shared conversation"))
+        .accessibilityLabel(String(localized: "Agents"))
         .accessibilityValue(Text(verbatim: chips.count.formatted()))
         .accessibilityIdentifier("overlay-intercom-header-count")
-        .help(String(localized: "Shared conversation"))
+        .help(String(localized: "Agents"))
       }
       if controller.headerNeedsPaging {
         Button("Previous agents", systemImage: "chevron.up") { controller.scrollGroup(-1) }
@@ -2889,6 +2873,19 @@ private struct OverlayIntercomConversationBody: View {
         Task { await state.sendConversationText(conversation) }
       },
       hidesNavigation: true,
+      onPrepareHeldEdit: { message in
+        let target = state.heldComposerTarget(message, viewing: conversation)
+        return state.prepareHeldComposerEdit(target, selectInMainWindow: false)
+      },
+      onReturnHeldText: { message, text, revision in
+        let target = state.heldComposerTarget(message, viewing: conversation)
+        _ = state.returnHeldComposerText(
+          text, to: target, revision: revision,
+          attachments: (message.attachments ?? []).map(\.path),
+          reply: message.userReplyTo
+        )
+        return target.id == conversation.id
+      },
       presentation: presentation,
       showsComposer: showsComposer && current,
       allowsLiveActions: current,

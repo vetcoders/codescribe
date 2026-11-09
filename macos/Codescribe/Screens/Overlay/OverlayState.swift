@@ -1768,24 +1768,71 @@ final class OverlayState {
   func heldComposerTarget(
     _ message: OverlayConversationMessage, viewing conversation: OverlayConversation
   ) -> OverlayConversation {
-    message.sourceChannel == "0"
-      ? OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
-      : conversation
+    if message.sourceChannel == "0" {
+      return conversations.first { $0.id == "0" && $0.channel == "0" && $0.owner == nil }
+        ?? OverlayConversation(id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    }
+    if message.recipients.count == 1,
+      let recipientOwner = message.recipients.first?.owner,
+      conversation.owner?.id != recipientOwner.id,
+      let match = conversations.first(where: {
+        $0.id == recipientOwner.id && $0.owner?.id == recipientOwner.id
+      })
+    {
+      return match
+    }
+    return conversation
   }
 
   /// Select at the click, before withdrawal can suspend.
-  func prepareHeldComposerEdit(_ target: OverlayConversation) -> UUID {
-    selectConversation(target.id)
+  func prepareHeldComposerEdit(
+    _ target: OverlayConversation, selectInMainWindow: Bool = true
+  ) -> UUID {
+    if selectInMainWindow {
+      selectConversation(target.id)
+    }
     return composerTargetRevision
+  }
+
+  /// Merge a returned message back into the target draft while keeping any
+  /// newer prose in front and all attachment pointer lines deduplicated at the end.
+  static func mergeReturnedComposerDraft(
+    existing: String, returnedText: String, returnedAttachments: [String] = []
+  ) -> String {
+    let currentParts = ConversationDraft.split(existing)
+    let returnedParts = ConversationDraft.split(returnedText)
+    let currentTrimmed = currentParts.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    let returnedTrimmed = returnedParts.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    let mergedProse: String
+    if currentTrimmed.isEmpty {
+      mergedProse = returnedParts.text
+    } else if returnedTrimmed.isEmpty {
+      mergedProse = currentParts.text
+    } else {
+      mergedProse = currentParts.text + "\n\n" + returnedParts.text
+    }
+    var mergedAttachments = currentParts.attachments
+    for path in returnedParts.attachments + returnedAttachments
+    where !path.isEmpty && !mergedAttachments.contains(path) {
+      mergedAttachments.append(path)
+    }
+    return ConversationDraft.compose(text: mergedProse, attachments: mergedAttachments)
   }
 
   /// Append to the frozen draft even if its owner retired. A later explicit
   /// selection wins, including when the user switched away and back again.
-  func returnHeldComposerText(_ text: String, to target: OverlayConversation, revision: UUID)
-    -> Bool
-  {
+  func returnHeldComposerText(
+    _ text: String, to target: OverlayConversation, revision: UUID,
+    attachments: [String] = [], reply: OverlayUserReplyReference? = nil
+  ) -> Bool {
     let old = conversationDraft(for: target.id)
-    setConversationDraft(old.isEmpty ? text : old + "\n\n" + text, for: target.id)
+    let merged = Self.mergeReturnedComposerDraft(
+      existing: old, returnedText: text, returnedAttachments: attachments)
+    setConversationDraft(merged, for: target.id)
+    if conversationReplies[target.id] == nil, let reply {
+      conversationReplies[target.id] = reply
+    }
+    persistComposerDrafts()
     return composerTargetRevision == revision && selectedConversationID == target.id
       && resolvedComposerTarget(viewing: target).map({ ComposerContext($0) })
         == ComposerContext(target)
@@ -3339,7 +3386,9 @@ final class OverlayState {
       if let existing = unadoptedComposerDrafts[send.conversationID] {
         guard !existing.text.contains(send.text) else { continue }
         unadoptedComposerDrafts[send.conversationID] = .init(
-          text: existing.text + "\n\n" + send.text, reply: existing.reply ?? send.reply,
+          text: Self.mergeReturnedComposerDraft(
+            existing: existing.text, returnedText: send.text),
+          reply: existing.reply ?? send.reply,
           savedAt: now)
       } else {
         unadoptedComposerDrafts[send.conversationID] = .init(
@@ -3540,12 +3589,12 @@ final class OverlayState {
   private func returnHeldSendToComposer(_ send: OverlayHeldSend) {
     let current = conversationDraft(for: send.conversationID)
     setConversationDraft(
-      current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        ? send.text : current + "\n\n" + send.text,
+      Self.mergeReturnedComposerDraft(existing: current, returnedText: send.text),
       for: send.conversationID)
     if conversationReplies[send.conversationID] == nil, let reply = send.reply {
       conversationReplies[send.conversationID] = reply
     }
+    persistComposerDrafts()
   }
 
   /// Only messages the helper has not taken yet are restored after a crash.

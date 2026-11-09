@@ -267,6 +267,14 @@ struct OverlayConversationView: View {
     return state == .skipped
   }
 
+  /// The draft a Cancel/Edit hands back: the held row's prose plus the
+  /// pointer lines `OverlayHeldSend.row` took out of the frozen draft, encoded
+  /// by the composer's own owner so the files come back as pills, not text.
+  static func heldDraft(_ message: OverlayConversationMessage) -> String {
+    ConversationDraft.compose(
+      text: message.text, attachments: (message.attachments ?? []).map(\.path))
+  }
+
   static func visibleMessages(in conversation: OverlayConversation) -> [OverlayConversationMessage]
   {
     guard let owner = conversation.owner else { return conversation.messages }
@@ -1036,14 +1044,16 @@ struct OverlayConversationView: View {
       !pendingDeliveryControls.contains(message.id),
       message.sourceChannel == "0" || conversation.owner != nil
     else { return }
-    let returning = message.text
+    let returningAttachments = (message.attachments ?? []).map(\.path)
+    let returning = Self.heldDraft(message)
     let selectionRevision = onPrepareHeldEdit?(message)
     performDeliveryControl(.withdraw, message: message) {
       let shouldFocus: Bool
       if let onReturnHeldText, let selectionRevision {
         shouldFocus = onReturnHeldText(message, returning, selectionRevision)
       } else {
-        draft = draft.isEmpty ? returning : draft + "\n\n" + returning
+        draft = OverlayState.mergeReturnedComposerDraft(
+          existing: draft, returnedText: returning, returnedAttachments: returningAttachments)
         shouldFocus = true
       }
       if shouldFocus {

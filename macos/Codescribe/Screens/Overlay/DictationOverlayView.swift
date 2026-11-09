@@ -953,7 +953,9 @@ struct DictationOverlayView: View {
                 onReturnHeldText: { message, text, revision in
                   state.returnHeldComposerText(
                     text, to: state.heldComposerTarget(message, viewing: conversation),
-                    revision: revision
+                    revision: revision,
+                    attachments: (message.attachments ?? []).map(\.path),
+                    reply: message.userReplyTo
                   )
                 },
                 conversationNavigationRequest: state.conversationNavigationRequest,

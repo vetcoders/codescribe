@@ -25,6 +25,60 @@ final class OverlayLocalHoldTests: XCTestCase {
     try await super.tearDown()
   }
 
+  /// Cancel/Edit hands back the frozen draft whole: the prose, every file the
+  /// held row painted as an attachment, and the reply reference, so the files
+  /// return as composer pills and newer typing stays in front.
+  func testEditReturnsTheFrozenProseAndAttachmentsAsOneDraft() throws {
+    let configDirectory = CodescribeConfig().configDir()
+    guard configDirectory != NSHomeDirectory() + "/.codescribe" else {
+      throw XCTSkip("needs an isolated CODESCRIBE_DATA_DIR, as make test-swift provides")
+    }
+    let store = ConversationAttachmentPointer.configDirectory
+      .appendingPathComponent("attachments/\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: store, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: store) }
+    let files = try ["Zrzut ekranu 2026-11-09 o 08.17.png", "notatka żółć.txt"].map {
+      name -> String in
+      let url = store.appendingPathComponent(name)
+      try Data(name.utf8).write(to: url)
+      return url.resolvingSymlinksInPath().path
+    }
+    let prose = "Popraw to proszę.\n\nDrugi akapit."
+    let frozen =
+      prose + "\n" + files.map { ConversationAttachmentPointer.prefix + $0 }.joined(separator: "\n")
+    let owner = try XCTUnwrap(agent("2").owner)
+    let reply = OverlayUserReplyReference(
+      id: "reply-1", sender: "lena", channel: "2", excerpt: "Poprzednia odpowiedź")
+    let send = OverlayHeldSend(
+      id: OverlayHeldSend.newID(), conversationID: owner.id, owner: owner, text: frozen,
+      reply: reply, alsoSentTo: [], acceptedAt: clock,
+      deadline: clock.addingTimeInterval(5), phase: .holding)
+    let row = send.row(order: 1, now: clock)
+    XCTAssertEqual(row.text, prose)
+    XCTAssertEqual(row.attachments?.map(\.path), files)
+    XCTAssertEqual(row.userReplyTo, reply)
+
+    let returned = OverlayConversationView.heldDraft(row)
+    XCTAssertEqual(returned, frozen)
+    let parts = ConversationDraft.split(returned)
+    XCTAssertEqual(parts.text, prose)
+    XCTAssertEqual(parts.attachments, files)
+
+    let target = try agent("2")
+    let state = state(agents: [target]) { _, _, _, _ in
+      AgentBusTextPublication(messageID: "unused", holdUntil: nil, recipients: [])
+    }
+    state.setConversationDraft("Nowy dopisek", for: target.id)
+    let revision = state.prepareHeldComposerEdit(target)
+    _ = state.returnHeldComposerText(
+      returned, to: target, revision: revision, attachments: files, reply: row.userReplyTo)
+    let mergedParts = ConversationDraft.split(state.conversationDraft(for: target.id))
+    XCTAssertEqual(mergedParts.text, "Nowy dopisek\n\n" + prose)
+    XCTAssertEqual(mergedParts.attachments, files)
+    XCTAssertEqual(state.conversationReplies[target.id], reply)
+    for path in files { XCTAssertTrue(FileManager.default.fileExists(atPath: path)) }
+  }
+
   private static let all = OverlayConversation(
     id: "0", channel: "0", name: "All", owner: nil, messages: [])
 
