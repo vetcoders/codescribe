@@ -1651,6 +1651,29 @@ class OverlayIntercomPanel: NSPanel {
   }
 }
 
+/// The Intercom's mark: a two-by-three cell of dots, the graph's nodes as a
+/// glyph. It paints with the current
+/// foreground style, so the menu's hover treatment colours it like any glyph.
+struct OverlayIntercomDotsGlyph: View {
+  static let columns = 2
+  static let rows = 3
+  let scale: CGFloat
+
+  var body: some View {
+    let dot = 2.6 * scale
+    VStack(spacing: 1.6 * scale) {
+      ForEach(0..<Self.rows, id: \.self) { _ in
+        HStack(spacing: 2 * scale) {
+          ForEach(0..<Self.columns, id: \.self) { _ in
+            Circle().frame(width: dot, height: dot)
+          }
+        }
+      }
+    }
+    .accessibilityHidden(true)
+  }
+}
+
 private struct OverlayIntercomHeader: View {
   @Environment(\.colorScheme) private var colorScheme
   @Environment(\.csTextScale) private var scale
@@ -1674,8 +1697,7 @@ private struct OverlayIntercomHeader: View {
       Menu {
         intercomMenuActions(broadcast: broadcast, inbox: inbox)
       } label: {
-        Image(systemName: "circle.grid.2x2.fill")
-          .csFont(10, .semibold)
+        OverlayIntercomDotsGlyph(scale: scale)
           .rotationEffect(.degrees(isMenuHovered ? 180 : 0))
           .scaleEffect(isMenuHovered ? 0.88 : 1.0)
           .animation(.easeInOut(duration: 0.5), value: isMenuHovered)
@@ -1694,8 +1716,10 @@ private struct OverlayIntercomHeader: View {
       .menuIndicator(.hidden)
       .fixedSize()
       .onHover { isMenuHovered = $0 }
+      // Body ink at rest, a few tones above the muted controls beside it
+      // at rest; the hover brightens it like every other glyph.
       .conversationActionHover(
-        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+        restingColor: palette.bodyText.color, hoverColor: palette.primaryText.color
       )
       .accessibilityLabel("Intercom menu")
       .accessibilityIdentifier("overlay-intercom-menu")
@@ -2125,10 +2149,6 @@ private struct OverlayIntercomCard: View {
       // The row greys only for a gone follower, the same state as the ring
       // before the name; a stalled reader keeps its colour (Monika, 2026-11-04).
       let disconnected = channelRow.map { roster.hasDeadFollower($0) } ?? false
-      let audioBelowName =
-        !expanded
-        && controller.contentMetrics.audioFooterHeight(
-          width: controller.groupWidth, cardHeight: controller.groupCardHeight) > 0
       let content = controller.contentMetrics.cardContent(
         width: controller.groupWidth, cardHeight: controller.groupCardHeight)
       let preview = controller.contentMetrics.compactPreviewLayout(
@@ -2183,11 +2203,7 @@ private struct OverlayIntercomCard: View {
                   Color.clear
                 }
               }
-              .frame(
-                maxWidth: .infinity,
-                maxHeight: preview != nil || !audioBelowName ? .infinity : 0,
-                alignment: .top
-              )
+              .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
               .contentShape(Rectangle())
               .onTapGesture {
                 if canOpenConversation { controller.expand(identity) }
@@ -2205,26 +2221,11 @@ private struct OverlayIntercomCard: View {
               }
               .accessibilityIdentifier("overlay-intercom-preview-open-\(identity.digit)")
             }
-            if audioBelowName {
-              audioSlot(
-                current ? conversation : nil, palette: palette,
-                speaking: current && conversation?.replySpeaking == true,
-                open: current
-                  && (conversation.map { state.conversationMicrophoneOpen($0) } ?? false)
-              )
-              .frame(maxWidth: .infinity, alignment: .trailing)
-              .padding(.horizontal, 6)
-              .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
-              .accessibilityIdentifier("overlay-intercom-audio-footer-\(identity.digit)")
-            }
           }
           .accessibilitySortPriority(0)
           VStack(spacing: 0) {
-            cardHeader(
-              palette: palette, expanded: expanded, roster: roster, inactive: inactive,
-              audioBelowName: audioBelowName
-            )
-            .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
+            cardHeader(palette: palette, expanded: expanded, roster: roster, inactive: inactive)
+              .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
             if showsContext, let conversation {
               // One physical metadata line uses the card width, not the narrow name
               // button between status marks and audio controls. The complete card
@@ -2313,7 +2314,7 @@ private struct OverlayIntercomCard: View {
   @ViewBuilder
   private func cardHeader(
     palette: OverlayAppearancePalette, expanded: Bool, roster: OverlayChannelStatusView,
-    inactive: Bool, audioBelowName: Bool
+    inactive: Bool
   ) -> some View {
     let conversation = conversation
     let current =
@@ -2547,9 +2548,10 @@ private struct OverlayIntercomCard: View {
             state: state, conversationID: conversation.id, palette: palette)
         }
         // Focus precedes the shared audio pair: live input on the left,
-        // reply playback on the right. Narrow rows retain one shared slot.
+        // reply playback on the right. Narrow rows retain one shared slot;
+        // no card height moves the pair under the name.
         Group {
-          if !audioBelowName, row.slots >= 1 {
+          if row.slots >= 1 {
             audioSlot(
               current ? conversation : nil, palette: palette, speaking: speaking, open: open,
               shared: row.slots == 1)
@@ -3047,7 +3049,7 @@ private struct OverlayIntercomConversationContext: View {
 }
 
 /// A tonal surface relief. Its small light/shadow pairs suggest grip without
-/// borrowing the high-contrast four-dot icon of the Intercom's main menu.
+/// borrowing the high-contrast dots glyph of the Intercom's main menu.
 private struct OverlayIntercomDetachGrip: View {
   @Environment(\.colorScheme) private var colorScheme
   @Environment(\.csTextScale) private var scale
@@ -3198,7 +3200,6 @@ private struct OverlayIntercomInstanceCard: View {
     // The row greys only for a gone follower, the same state as the ring
     // before the name; a stalled reader keeps its colour (Monika, 2026-11-04).
     let disconnected = channelRow.map { roster.hasDeadFollower($0) } ?? false
-    let audioBelowName = !mini && instanceAudioFooterHeight(instance) > 0
     let corner =
       mini
       ? OverlayIntercomWidgetLayout.rowCornerRadius(scale: scale)
@@ -3228,31 +3229,16 @@ private struct OverlayIntercomInstanceCard: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
           }
-          if audioBelowName {
-            OverlayIntercomAudioControls(
-              state: state, conversation: current ? conversation : nil, digit: instance.digit,
-              palette: palette,
-              open: current && (conversation.map { state.conversationMicrophoneOpen($0) } ?? false),
-              speaking: current && conversation?.replySpeaking == true, shared: false
-            )
-            .frame(maxWidth: .infinity, alignment: .trailing)
-            .padding(.horizontal, 6)
-            .frame(height: OverlayIntercomWidgetLayout.controlHeight(scale: scale))
-            .accessibilityIdentifier("overlay-intercom-instance-audio-footer-\(instance.digit)")
-          }
         }
         .accessibilitySortPriority(0)
         // The agent's provider, model and repository must not vanish with the
         // detach (Maciej, 2026-10-28); they ride the name line of this one row.
-        headerRow(
-          instance, conversation: conversation, palette: palette, roster: roster,
-          audioBelowName: audioBelowName
-        )
-        .frame(height: titleBarHeight)
-        // Same plate as the docked card: composer glass above the rows, opaque
-        // when Reduce Transparency is on. The header's drag grip stays inside it.
-        .modifier(OverlayComposerSurface(palette: palette))
-        .accessibilitySortPriority(1)
+        headerRow(instance, conversation: conversation, palette: palette, roster: roster)
+          .frame(height: titleBarHeight)
+          // Same plate as the docked card: composer glass above the rows, opaque
+          // when Reduce Transparency is on. The header's drag grip stays inside it.
+          .modifier(OverlayComposerSurface(palette: palette))
+          .accessibilitySortPriority(1)
       }
     )
     .foregroundStyle(palette.primaryText.color)
@@ -3285,7 +3271,7 @@ private struct OverlayIntercomInstanceCard: View {
 
   private func headerRow(
     _ instance: OverlayIntercomInstance, conversation: OverlayConversation?,
-    palette: OverlayAppearancePalette, roster: OverlayChannelStatusView, audioBelowName: Bool
+    palette: OverlayAppearancePalette, roster: OverlayChannelStatusView
   ) -> some View {
     let current =
       intercomConversation(state: state, digit: instance.digit).map { instance.matches($0) }
@@ -3388,7 +3374,7 @@ private struct OverlayIntercomInstanceCard: View {
           state: state, conversationID: conversation.id, palette: palette)
       }
       if layout.tier != .icon {
-        if !audioBelowName, layout.controls.slots >= 1 {
+        if layout.controls.slots >= 1 {
           OverlayIntercomAudioControls(
             state: state, conversation: current ? conversation : nil, digit: instance.digit,
             palette: palette,
@@ -3483,13 +3469,6 @@ private struct OverlayIntercomInstanceCard: View {
     let width = CGFloat(instance.width) - windowSlots
     let height = instance.minimized ? metrics.iconSide : CGFloat(instance.height)
     return (metrics.tier(width: width, cardHeight: height), metrics.rowControls(width: width))
-  }
-
-  private func instanceAudioFooterHeight(_ instance: OverlayIntercomInstance) -> CGFloat {
-    let metrics = IntercomContentMetrics(
-      names: [instance.name], digits: [instance.displayDigit], scale: scale)
-    return metrics.audioFooterHeight(
-      width: CGFloat(instance.width) - 26 * max(1, scale), cardHeight: CGFloat(instance.height))
   }
 
 }

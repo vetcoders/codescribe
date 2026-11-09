@@ -96,9 +96,10 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
   }
 
   @MainActor
-  func testFourDotHeaderAtCompactAndWideWidthsWithoutPresentingWindows() throws {
-    XCTAssertNotNil(
-      NSImage(systemSymbolName: "circle.grid.2x2.fill", accessibilityDescription: nil))
+  func testDotsHeaderAtCompactAndWideWidthsWithoutPresentingWindows() throws {
+    XCTAssertEqual(
+      OverlayIntercomDotsGlyph.columns * OverlayIntercomDotsGlyph.rows, 6,
+      "the Intercom mark is a two-by-three cell of dots (Maciej, 2026-11-07)")
     let keyBefore = NSApp.keyWindow
     let suite = "CodescribeTests.header.\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -126,7 +127,7 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
         host.cacheDisplay(in: host.bounds, to: bitmap)
         let attachment = XCTAttachment(
           image: NSImage(cgImage: try XCTUnwrap(bitmap.cgImage), size: host.bounds.size))
-        attachment.name = "four-dot-header-\(palette.appearance)-\(Int(width))"
+        attachment.name = "dots-header-\(palette.appearance)-\(Int(width))"
         attachment.lifetime = .keepAlways
         add(attachment)
       }
@@ -288,7 +289,10 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
           "right column",
           NSRect(x: window.maxX - 312, y: window.midY, width: 300, height: 44)
         ),
-        ("full width", NSRect(x: window.minX + 12, y: window.midY, width: window.width - 24, height: 44)),
+        (
+          "full width",
+          NSRect(x: window.minX + 12, y: window.midY, width: window.width - 24, height: 44)
+        ),
         ("bottom row", NSRect(x: window.minX + 12, y: window.minY + 8, width: 300, height: 44)),
         ("top row", NSRect(x: window.minX + 12, y: window.maxY - 52, width: 300, height: 44)),
         (
@@ -299,7 +303,8 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       for (name, row) in rows {
         let frame = OverlayHintPanel.frame(
           size: size, leading: row, parentFrame: window, within: screen)
-        XCTAssertTrue(window.contains(frame), "\(name) in \(window): card left the window, \(frame)")
+        XCTAssertTrue(
+          window.contains(frame), "\(name) in \(window): card left the window, \(frame)")
         XCTAssertFalse(frame.intersects(row), "\(name) in \(window): card covers its row, \(frame)")
       }
     }
@@ -755,6 +760,34 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     }
   }
 
+  /// Maciej, 2026-11-07: "najważniejszy jest przycisk Voice … niech generalnie
+  /// pozostawia przycisk w tym samym rzędzie". A tall, narrow card keeps its
+  /// microphone on the name row; its height is spent on the preview alone,
+  /// never on a second audio row under the name.
+  func testNoCardHeightMovesTheMicrophoneUnderTheName() {
+    for scale in [CGFloat(0.8), 1, 1.6] {
+      let metrics = IntercomContentMetrics(
+        names: ["Lena", "Klaudiusz-div0", "ompforensics"], digits: ["2", "9", "6"], scale: scale)
+      let row = Layout.controlHeight(scale: scale)
+      let context = Layout.contextStripHeight(scale: scale)
+      for width in stride(from: metrics.minimumNameWidth, to: metrics.actionsWidth, by: 7) {
+        XCTAssertGreaterThanOrEqual(
+          metrics.rowControls(width: width).slots, 1,
+          "the name row keeps a microphone at \(width) pt")
+        for cardHeight in [metrics.iconSide, 2 * row + context, 3 * row + context, 6 * row] {
+          XCTAssertEqual(
+            metrics.tier(width: width, cardHeight: cardHeight), .name,
+            "height never changes the row's tier")
+          if let preview = metrics.compactPreviewLayout(width: width, cardHeight: cardHeight) {
+            XCTAssertEqual(
+              preview.height, cardHeight - row - context, accuracy: 0.001,
+              "the preview takes the whole height below the name row and context strip")
+          }
+        }
+      }
+    }
+  }
+
   func testOneSharedPlaceIsTheMicrophoneUntilTheAgentTalks() {
     typealias Audio = OverlayAgentAudioControls
     XCTAssertFalse(Audio.sharedShowsSpeaker(speaking: false, muted: false, open: false))
@@ -1206,8 +1239,7 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       "a draft with no visible card still gets a window to speak into")
   }
 
-  /// Channel 0 and your inbox are one permanent pill over the agents list
-  /// (Maciej, 2026-11-06), on the composer's surface (Maciej, 2026-10-30).
+  /// Channel 0 and your inbox share a permanent glass surface over the agents.
   /// The scrolling list starts with the agents; the mailboxes are not rows.
   func testMailboxesArePinnedInOnePillOverTheScrollingAgents() throws {
     let url = URL(fileURLWithPath: #filePath)
@@ -1223,29 +1255,32 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       body.range(of: "} content: { rowFocus in", range: pinned.upperBound..<body.endIndex))
     let pinnedSection = body[pinned.upperBound..<content.lowerBound]
     let contentSection = body[content.upperBound...]
-    XCTAssertTrue(pinnedSection.contains("pinnedMailboxPill(rowFocus: rowFocus)"))
+    XCTAssertTrue(pinnedSection.contains("OverlayPinnedMailboxes("))
+    XCTAssertTrue(pinnedSection.contains("pinnedMailboxRow($0, title: broadcastHeader"))
+    XCTAssertTrue(pinnedSection.contains("symbol: \"envelope\", rowFocus: rowFocus"))
     XCTAssertFalse(pinnedSection.contains("EmptyView()"))
     XCTAssertTrue(body.contains("showsHeader: false"), "the pill is the list's only top row")
     XCTAssertFalse(contentSection.contains("channel == \"0\""), "All is not a scrolling row")
     XCTAssertFalse(contentSection.contains("isHumanInbox"), "the inbox is not a scrolling row")
     XCTAssertNotNil(contentSection.range(of: "detailsContent(rowFocus: rowFocus)"))
 
-    let pillStart = try XCTUnwrap(source.range(of: "private func pinnedMailboxPill("))
-    let pill = String(source[pillStart.lowerBound..<start.lowerBound])
+    let pillStart = try XCTUnwrap(source.range(of: "private struct OverlayPinnedMailboxes: View"))
+    let rowStart = try XCTUnwrap(source.range(of: "private struct OverlayPinnedMailboxRow: View"))
+    let rowEnd = try XCTUnwrap(source.range(of: "private struct OverlayAgentMonitorBody<"))
+    let pill = String(source[pillStart.lowerBound..<rowStart.lowerBound])
+    let row = String(source[rowStart.lowerBound..<rowEnd.lowerBound])
     XCTAssertEqual(
-      pill.components(separatedBy: "OverlayComposerSurface(palette: palette)").count - 1, 1,
+      pill.components(separatedBy: "OverlayComposerSurface(palette: palette, showsBorder: false)")
+        .count - 1, 1,
       "one surface: one pill")
-    XCTAssertTrue(pill.contains("symbol: \"envelope\""))
     XCTAssertTrue(pill.contains("overlay-inbox-row"))
     XCTAssertTrue(pill.contains("overlay-channel-toggle-0"))
-    XCTAssertTrue(pill.contains("identifier: \"overlay-agent-sidebar-fold\""))
-    // The conversation label's metrics, so both stand at one height.
+    XCTAssertTrue(body.contains("listFoldButton(onFoldList)"))
     XCTAssertTrue(pill.contains("VStack(alignment: .leading, spacing: 2)"))
-    XCTAssertTrue(pill.contains("size: 13, weight: .bold"))
-    XCTAssertTrue(pill.contains("size: 11, weight: .regular"))
     XCTAssertTrue(pill.contains(".padding(.horizontal, 10)"))
     XCTAssertTrue(pill.contains(".padding(.vertical, 5)"))
-    XCTAssertTrue(pill.contains(".lineLimit(1)"), "a compact pill has no preview lines")
+    XCTAssertTrue(row.contains("size: 13 * textScale, weight: .semibold"))
+    XCTAssertTrue(row.contains(".lineLimit(1)"), "a compact row has no preview lines")
   }
 
   /// Every Intercom panel (header, group cards, and detached instances) owns
