@@ -15,8 +15,10 @@ SwiftUI split view extends beyond the window. The programmatic frame path may
 enlarge such a frame automatically and conceal that incorrect fitting floor.
 It does not simulate a pointer resize or certify the minimum enforced during a
 real drag; the recorded desktop gesture remains a separate acceptance check.
-The production owner supplies required width and height minima on the public
-hosting content view; it does not restore automatic SwiftUI sizing.
+The production owner supplies required width and readable-height minima on
+the public hosting content view and its safe-area guide, respectively; it does
+not restore automatic SwiftUI sizing. Native optical and physical-drag
+acceptance remain separate from these constraint tests.
 
 The header frame-mutation diagnostic watches only app-owned material and
 foreground views. It checks repeated native window-update notifications and
