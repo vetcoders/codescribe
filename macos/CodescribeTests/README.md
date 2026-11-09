@@ -51,6 +51,64 @@ are synthetic; the fixture does not edit the person's configuration or Keychain.
 These unordered-window bitmaps support layout review before the install build;
 they do not replace compositor screenshots or native functional acceptance.
 
+## App screen atlas
+
+`AppScreenAtlasTests` is the one owner of on-demand screen evidence: Light and
+Dark images of the production windows in their states, plus `manifest.json`
+and a self-contained `index.html` gallery (Light and Dark side by side per
+state, grouped by surface). One command runs it:
+
+```bash
+scripts/app-screen-atlas.sh                       # all surfaces, live + offscreen
+scripts/app-screen-atlas.sh --only Agent          # Overlay|Agent|Settings|Onboarding|Tray
+scripts/app-screen-atlas.sh --offscreen-only out  # no Screen Recording needed
+ATLAS_LANGUAGE=en ATLAS_REGION=US scripts/app-screen-atlas.sh
+```
+
+The default output is a timestamped directory under `$TMPDIR`; the script
+prints the `index.html` path. Without `CODESCRIBE_SCREEN_ATLAS_DIR` every
+method skips, so `make test-swift` is unaffected. Each surface is its own
+method (`testOverlayAtlas`, `testAgentAtlas`, `testSettingsAtlas`,
+`testOnboardingAtlas`, `testTrayAtlas`), and a run merges its cells into an
+existing manifest, so surfaces can be refreshed one at a time.
+
+Cells (per scheme):
+
+- Overlay: `DictationOverlayWindow.make` with every `OverlayState.preview*()`
+  state expanded, plus the mini bar.
+- Agent: `AgentWindowChrome.makeWindow` with `AgentChatView`; an empty new
+  conversation and a fixture conversation, at the window floor
+  (`AgentWindowMetrics.minWidth` × `minHeight`) and 1120 × 720, rail expanded
+  and collapsed, context card closed and open.
+- Settings: every `SettingsSection` at the scene's 1000 × 720 default, and
+  Creator at the floor (sidebar ideal + `SettingsView.detailMinWidth` × 620).
+- Onboarding: every `OnboardingStep`, plus the permissions step with missing
+  grants, in the same window `OnboardingWindowController` builds. The
+  controller builds its model from the real engines, so the atlas builds that
+  window around a model on mock engines.
+- Tray: `TrayMenuView` in `TrayPanelSurface` inside the production
+  `TrayPanel`, idle, recording and error (DEBUG builds only).
+
+Two images per cell:
+
+- **offscreen** (always): `cacheDisplay` of the window's frame view. AppKit
+  drawing only — layout, proportions, typography and ink, not Liquid Glass,
+  vibrancy or Dark-mode glass. SwiftUI lists and lazy stacks are missing from
+  it (the Agent rail's threads and the conversation's messages), so it is not
+  content evidence for those regions.
+- **live** (unless `--offscreen-only`): the window is ordered front and the
+  script's capture loop, a separate process holding Screen Recording, takes
+  `screencapture -x -o -l <windowNumber>`. This is the compositor truth. The
+  screen must be unlocked; when live captures are missing the script says so
+  and the gallery falls back to offscreen with a visible badge. Live windows
+  appear briefly on the desktop.
+
+Limits: states are synthetic fixtures, not a live engine; nothing reads or
+writes the person's configuration, Keychain or engine. The XCTest host cannot
+activate, so every window has the inactive (non-key) appearance; the paired
+active/inactive captures `docs/ADR/2026-11-08-WINDOW_GLASS_OWNERSHIP.md` asks
+for still need the installed app.
+
 The target lives in the root `Makefile`; read its comment block before invoking
 `xcodebuild` by hand, because two of the traps below cost this plan a stage.
 
