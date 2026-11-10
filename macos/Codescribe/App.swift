@@ -18,6 +18,32 @@ private let notesLog = Logger(
   category: "notes"
 )
 
+/// Product-facing names follow the bundle identity. X9bus and the legacy
+/// Codescribe build share implementation while keeping separate UI branding.
+enum AppBranding {
+  static let x9busBundleIdentifier = "com.vetcoders.x9bus"
+
+  static func isX9bus(bundleIdentifier: String? = Bundle.main.bundleIdentifier) -> Bool {
+    bundleIdentifier == x9busBundleIdentifier
+  }
+
+  static func productName(bundleIdentifier: String? = Bundle.main.bundleIdentifier) -> String {
+    isX9bus(bundleIdentifier: bundleIdentifier) ? "X9bus" : "Codescribe"
+  }
+
+  static func wordmark(bundleIdentifier: String? = Bundle.main.bundleIdentifier) -> String {
+    isX9bus(bundleIdentifier: bundleIdentifier) ? "X9bus" : "codescribe"
+  }
+
+  static func localized(
+    bundleIdentifier: String? = Bundle.main.bundleIdentifier,
+    x9bus: LocalizedStringResource,
+    codescribe: LocalizedStringResource
+  ) -> String {
+    String(localized: isX9bus(bundleIdentifier: bundleIdentifier) ? x9bus : codescribe)
+  }
+}
+
 /// Testable seam for the no-payload Agent command. AppDelegate remains the
 /// sole window owner; this action only sequences fronting that window and
 /// requesting composer focus on the existing store.
@@ -253,7 +279,10 @@ struct CodescribeApp: App {
   }
 
   private var settingsWindow: some Scene {
-    Window("Settings", id: SettingsView.windowID) {
+    Window(
+      AppBranding.localized(x9bus: "X9bus Settings", codescribe: "Settings"),
+      id: SettingsView.windowID
+    ) {
       Group {
         if QualityCaptureHost.isRunningTests {
           TestHostScenePlaceholder()
@@ -275,7 +304,9 @@ struct CodescribeApp: App {
     .windowToolbarStyle(.unified)
     .commands {
       CommandGroup(replacing: .appSettings) {
-        Button("Settings…") { openWindow.presentSettings() }
+        Button(AppBranding.localized(x9bus: "X9bus Settings…", codescribe: "Settings…")) {
+          openWindow.presentSettings()
+        }
           .keyboardShortcut(",", modifiers: .command)
       }
       // The tray's "Setup Wizard" row went without replacement (Settings
@@ -863,10 +894,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
       credits.append(privacy)
       credits.append(NSAttributedString(string: "\n", attributes: mono))
       credits.append(terms)
-      NSApp.orderFrontStandardAboutPanel(options: [
+      var aboutOptions: [NSApplication.AboutPanelOptionKey: Any] = [
+        .applicationName: AppBranding.productName(),
         .credits: credits,
         .version: info["CSBuildNumber"] as? String ?? "unknown",
-      ])
+      ]
+      let aboutIcon = AppBranding.isX9bus()
+        ? NSApp.applicationIconImage
+        : NSImage(named: "MenuBarIcon")
+      if let aboutIcon { aboutOptions[.applicationIcon] = aboutIcon }
+      NSApp.orderFrontStandardAboutPanel(options: aboutOptions)
     }
     model.tray.onHelp = {
       NSWorkspace.shared.open(Self.helpURL)
@@ -1271,12 +1308,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
   }
 
   private func statusItemImage() -> NSImage? {
-    // Brand mark from Assets.xcassets (template image → auto-tints for
-    // light/dark menu bars). Status is signaled by a colored dot composited
-    // into this icon's corner, never by swapping the glyph. A missing asset
-    // is a build bug to surface (empty item), not something to paper over.
-    let image = NSImage(named: "MenuBarIcon")
-    image?.isTemplate = true
+    let image: NSImage?
+    if AppBranding.isX9bus() {
+      // X9bus uses the exact bundle icon in both visible locations; keep its
+      // colors when the activity dot is composited in the corner.
+      image = NSApp.applicationIconImage.copy() as? NSImage
+      image?.size = NSSize(width: 18, height: 18)
+      image?.isTemplate = false
+    } else {
+      // Preserve Codescribe's template glyph and native menu-bar tinting.
+      image = NSImage(named: "MenuBarIcon")
+      image?.isTemplate = true
+    }
     return image
   }
 

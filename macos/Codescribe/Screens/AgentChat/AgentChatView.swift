@@ -106,12 +106,15 @@ enum AgentWindowMetrics {
   static let detailMinWidth: CGFloat = minWidth - CSSidebarWidth.navigation.ideal
 }
 
-/// One native titlebar for the Agent window. The title string stays "Agent"
+/// One native titlebar for the Agent window. The title string follows the app
 /// for Mission Control, Exposé, and the Window menu. It is not painted, so the
 /// replacement top accessory is the detail header's only owner.
 enum AgentWindowChrome {
-  static func title() -> String {
-    String(localized: "Agent", comment: "Agent window title")
+  static func title(bundleIdentifier: String? = Bundle.main.bundleIdentifier) -> String {
+    AppBranding.localized(
+      bundleIdentifier: bundleIdentifier,
+      x9bus: "X9bus Agent",
+      codescribe: "Agent")
   }
 
   /// The one Agent window, built the same way for the app and its tests.

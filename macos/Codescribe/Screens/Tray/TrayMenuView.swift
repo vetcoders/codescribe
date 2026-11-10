@@ -40,8 +40,16 @@ struct TrayMenuView: View {
           Task { await VoiceLabRuntime.shared.openConsole() }
         }
       }
-      TrayRow(icon: .help, title: String(localized: "Help")) { viewModel.onHelp() }
-      TrayRow(icon: .info, title: String(localized: "About x9bus")) { viewModel.onAbout() }
+      TrayRow(
+        icon: .help,
+        title: AppBranding.localized(x9bus: "X9bus Help", codescribe: "Help")) {
+          viewModel.onHelp()
+        }
+      TrayRow(
+        icon: .info,
+        title: AppBranding.localized(x9bus: "About X9bus", codescribe: "About x9bus")) {
+          viewModel.onAbout()
+        }
 
       TrayDivider()
       TrayRow(
@@ -183,7 +191,7 @@ struct TrayMenuView: View {
     VStack(spacing: 0) {
       TrayRow(
         icon: .settings,
-        title: String(localized: "Settings"),
+        title: AppBranding.localized(x9bus: "X9bus Settings", codescribe: "Settings"),
         disclosureExpanded: viewModel.quickSettingsExpanded,
         style: viewModel.quickSettingsExpanded ? .raised : .plain
       ) {

@@ -426,12 +426,12 @@ final class AgentWindowChromeTests: XCTestCase {
         pump(window) {
           self.rectangularHeaderGlass(in: window) != nil
             && (!expanded || self.nativeSidebarGlass(in: window) != nil)
-            && window.title == "Agent"
+            && window.title == AgentWindowChrome.title()
             && window.titleVisibility == .hidden
             && window.toolbarStyle == .unified
         }
 
-        XCTAssertEqual(window.title, "Agent", "width \(width) expanded \(expanded)")
+        XCTAssertEqual(window.title, AgentWindowChrome.title(), "width \(width) expanded \(expanded)")
         XCTAssertEqual(window.titleVisibility, .hidden, "width \(width) expanded \(expanded)")
         XCTAssertTrue(window.titlebarAppearsTransparent, "width \(width) expanded \(expanded)")
         XCTAssertEqual(window.toolbarStyle, .unified, "width \(width) expanded \(expanded)")

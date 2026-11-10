@@ -1269,10 +1269,9 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     else {
       throw AgentBridgeInstallationError.conflict(
         path: destination.path,
-        reason: String(
-          localized:
-            "the Codescribe-managed marker is missing or does not match this client and bridge root"
-        )
+        reason: AppBranding.localized(
+          x9bus: "the X9bus-managed marker is missing or does not match this client and bridge root",
+          codescribe: "the Codescribe-managed marker is missing or does not match this client and bridge root")
       )
     }
   }

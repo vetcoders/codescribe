@@ -2255,12 +2255,12 @@
         }
       }
     },
-    "About x9bus" : {
+    "About X9bus" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "O x9bus"
+            "value" : "O X9bus"
           }
         }
       }
@@ -23034,6 +23034,61 @@
         }
       }
     },
+    "X9bus Agent" : {
+      "comment" : "Agent window title",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Agent X9bus"
+          }
+        }
+      }
+    },
+    "X9bus Help" : {
+      "comment" : "Help action in the app tray",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pomoc X9bus"
+          }
+        }
+      }
+    },
+    "X9bus Settings" : {
+      "comment" : "Settings window and tray section title",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ustawienia X9bus"
+          }
+        }
+      }
+    },
+    "X9bus Settings…" : {
+      "comment" : "Settings menu command",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ustawienia X9bus…"
+          }
+        }
+      }
+    },
+    "X9bus Setup" : {
+      "comment" : "Setup wizard window title",
+      "localizations" : {
+        "pl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Konfiguracja X9bus"
+          }
+        }
+      }
+    },
     "Yellow" : {
       "comment" : "Recording light colour",
       "localizations" : {
@@ -27389,12 +27444,12 @@
         }
       }
     },
-    "the Codescribe-managed marker is missing or does not match this client and bridge root" : {
+    "the X9bus-managed marker is missing or does not match this client and bridge root" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Brakuje znacznika zarządzania Codescribe lub nie pasuje on do tej aplikacji agenta i lokalizacji Agent Bridge."
+            "value" : "Brakuje znacznika zarządzanego przez X9bus lub nie pasuje do tej aplikacji agenta i lokalizacji Agent Bridge."
           }
         }
       }
