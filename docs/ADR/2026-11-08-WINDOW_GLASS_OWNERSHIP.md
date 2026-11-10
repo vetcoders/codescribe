@@ -350,6 +350,16 @@ resize. Its existing window perimeter and outer clip stay full-size; the inset
 reading layers have a square top edge so they introduce neither an extra join
 border nor rounded holes. Other backdrop consumers retain the zero-inset default.
 
+The expanded header's own control-glass shape rounds only its outer top
+corners. Its straight lower edge joins the square-topped reading canvas across
+the full width. A four-corner rounded header left uncovered wedges at both
+ends once the reading backdrop correctly stopped below it. This is repaired
+in the existing `OverlayControlGlass` shape, without extending reading backing
+behind chrome. Compact modes retain the root canvas as their sole material;
+floating controls keep all four of their own rounded corners. Native material,
+tint, veil opacity and frozen-resize mechanics are unchanged. Shape coverage
+tests do not replace real compositor and transition acceptance of this join.
+
 Native tests exercise repeated mini → expanded → MIDI transitions in both
 appearances and verify reading/header separation. Resize coverage checks that
 the preview retains the source's inset and accessibility policy. These are

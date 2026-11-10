@@ -2,6 +2,12 @@
 
 Swift unit tests for the SwiftUI front-end, executed by `make test-swift`.
 
+The expanded-header junction checks in `OverlayChromeV3Tests` sample the actual
+control-glass shape used by the header: both lower corners must cover the join
+to the reading canvas, while the outer top corners remain rounded. Compact
+forms retain one canvas material and floating controls retain four rounded
+corners. These path checks do not establish native compositor acceptance.
+
 The Agent window-floor diagnostic in `AgentWindowChromeTests` also mounts the
 production `TextScaleRoot` and keeps `NSHostingController.sizingOptions = []`.
 That setting protects against a display-cycle crash and is not enabled merely
