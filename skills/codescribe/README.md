@@ -18,7 +18,7 @@ second owner of this package.
 See [FLOW.md](FLOW.md) and [examples](examples/example-prompt.md).
 
 First app launch and `make install-app` install the bundled runtime and expose
-`cs-bus` and `cs-say` in `~/.local/bin`. Existing managed client skills update
+`x9bus` and `x9say` in `~/.local/bin`. Existing managed client skills update
 with the app; choose new clients in Settings → Agent. An unowned skill is kept.
 If this shell does not include `~/.local/bin` on PATH, use those two stable full
 paths. No private checkout or hook script is required.
@@ -39,18 +39,22 @@ To install only helpers and update already selected skills from source, run
 restarting or replacing the app. Reattach the current session afterward; an
 existing follower retains its loaded code until reattachment.
 
-`cs-bus --version` and `cs-say --version` report the helper version plus the
+`x9bus --version` and `x9say --version` report the helper version plus the
 installed source commit slug, for example `0.16.0+g1ae953e1`. `.dirty` marks a
 payload staged from uncommitted source. The signed manifest retains the full
 commit; it is not inferred from the running app's version.
 
+`x9bus` and `x9say` are the primary names. `cs-bus` and `cs-say` remain
+compatibility aliases for agents and client configurations that already use
+them.
+
 ```bash
-cs-bus --attach --channel 2 --name lena --provider codex --session <thread-id> --voice eve
-cs-say "Jestem na szynie." --provider codex --session <thread-id>
-cs-bus --status --provider codex --session <thread-id>
+x9bus --attach --channel 2 --name lena --provider codex --session <thread-id> --voice eve
+x9say "Jestem na szynie." --provider codex --session <thread-id>
+x9bus --status --provider codex --session <thread-id>
 ```
 
-Every provider requires an output-notifying `cs-bus --watch` monitor. Its default
+Every provider requires an output-notifying `x9bus --watch` monitor. Its default
 bell carries the complete message without a preview limit. Keep it active and
 renew notification windows during tasks. Immediately ACK each complete owned
 message received by this conversation; that withdraws its exact Codex queue

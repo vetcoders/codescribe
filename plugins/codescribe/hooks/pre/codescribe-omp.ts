@@ -5,11 +5,11 @@
  * OMP loads this file as an extension module from the marketplace plugin's
  * `hooks/pre/` directory (Claude Code and Junie never read it; their wake is
  * `hooks/claude-code.json`). Reading, ACK and voice stay with the `codescribe_*`
- * MCP tools served by `cs-bus --mcp` from `.mcp.json`. This module only:
+ * MCP tools served by `x9bus --mcp` from `.mcp.json`. This module only:
  *
  * 1. tells the model the conversation's real identity (`provider=omp`,
  *    the OMP session id) once per session start;
- * 2. holds `cs-bus --omp-wake` while the conversation is idle and, when the
+ * 2. holds `x9bus --omp-wake` while the conversation is idle and, when the
  *    helper exits 75 with one announced delivery, injects that sentence as a
  *    turn-starting message, exactly like the Claude Code asyncRewake hook;
  * 3. re-arms after every agent turn and stops the waiter on shutdown.
@@ -26,7 +26,7 @@ const WAKE_TIMEOUT_MS = 21_660_000;
 /** Same launcher as `.mcp.json`: the verified helper, with the managed PATH first. */
 const WAKE_SCRIPT =
   'export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; ' +
-  'exec "$HOME/.local/bin/cs-bus" --omp-wake --provider omp --session "$1" --host-pid "$2"';
+  'exec "$HOME/.local/bin/x9bus" --omp-wake --provider omp --session "$1" --host-pid "$2"';
 
 function identityContext(session: string): string {
   return (
@@ -97,7 +97,7 @@ export default function codescribeOmp(pi: ExtensionAPI) {
     try {
       const result = await pi.exec(
         "/bin/sh",
-        ["-c", WAKE_SCRIPT, "cs-bus", owned, String(process.pid)],
+        ["-c", WAKE_SCRIPT, "x9bus", owned, String(process.pid)],
         {
           signal: controller.signal,
           timeout: WAKE_TIMEOUT_MS,

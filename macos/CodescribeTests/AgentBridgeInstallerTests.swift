@@ -1387,7 +1387,7 @@ final class AgentBridgeInstallerTests: XCTestCase {
         FileManager.default.fileExists(atPath: home.appendingPathComponent(folder).path),
         "no client folder appears without an explicit installation")
     }
-    for command in ["cs-bus", "x9bus", "x9-bus", "cs-say", "x9say", "x9-say"] {
+    for command in ["x9bus", "cs-bus", "x9say", "cs-say"] {
       let path = home.appendingPathComponent(".local/bin/" + command).path
       XCTAssertTrue(FileManager.default.isExecutableFile(atPath: path))
       let values = try URL(fileURLWithPath: path).resourceValues(
@@ -1400,6 +1400,23 @@ final class AgentBridgeInstallerTests: XCTestCase {
     XCTAssertTrue(
       FileManager.default.isExecutableFile(
         atPath: home.appendingPathComponent(".local/bin/cs-bus").path))
+  }
+
+  func testPrimaryBusCommandReplacesItsManagedCompatibilityAliasLink() throws {
+    let home = scratch.appendingPathComponent("sync-command-alias-home", isDirectory: true)
+    let installer = RealAgentBridgeInstaller(
+      resourceRoot: try makePayload(), homeDirectory: home, environment: [:])
+    _ = installer.synchronizeManagedPayload()
+    let primary = home.appendingPathComponent(".local/bin/x9bus")
+    try FileManager.default.removeItem(at: primary)
+    try FileManager.default.createSymbolicLink(
+      atPath: primary.path, withDestinationPath: "cs-bus")
+
+    _ = installer.synchronizeManagedPayload()
+
+    let values = try primary.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+    XCTAssertTrue(values.isRegularFile == true && values.isSymbolicLink != true)
+    XCTAssertTrue(FileManager.default.isExecutableFile(atPath: primary.path))
   }
 
   // The fresh-profile incident (2026-10-12): the bus wrote its ack cursor into
@@ -1825,7 +1842,7 @@ final class AgentBridgeInstallerTests: XCTestCase {
       "skills/codescribe/README.md",
       "skills/codescribe/SKILL.md",
     ]
-    for name in ["cs-bus", "cs-say"] {
+    for name in ["x9bus", "x9say", "cs-bus", "cs-say"] {
       let url = payload.appendingPathComponent("bin/" + name)
       try Data("#!/usr/bin/env python3\nprint('command')\n".utf8).write(to: url)
       try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)

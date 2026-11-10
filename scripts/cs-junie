@@ -225,7 +225,7 @@ class JuniePlugin:
                                 args.project, on_text=self._text, on_permission=permission_prompt)
         self.answer: list[str] = []
         self.in_turn = False
-        self.bus_command = [sys.executable, str(Path(__file__).resolve().with_name("cs-bus"))]
+        self.bus_command = [sys.executable, str(Path(__file__).resolve().with_name("x9bus"))]
         self.owner: list[str] = []
         self.watch = None
         self.watch_reader = None
@@ -250,7 +250,7 @@ class JuniePlugin:
             await process.wait()
             raise
         if process.returncode:
-            raise RuntimeError(f"cs-bus refused ({process.returncode}): {stderr.decode().strip()}")
+            raise RuntimeError(f"x9bus refused ({process.returncode}): {stderr.decode().strip()}")
         return [json.loads(line) for line in stdout.splitlines() if line.strip()]
 
     async def _watch(self) -> None:
@@ -285,10 +285,10 @@ class JuniePlugin:
             raise RuntimeError("Junie did not confirm reading and finish this delivery; evidence retained, replay refused")
         if self.args.speak and answer.strip():
             process = await asyncio.create_subprocess_exec(sys.executable,
-                str(Path(__file__).resolve().with_name("cs-say")), answer,
+                str(Path(__file__).resolve().with_name("x9say")), answer,
                 *self.owner, "--reply-to", payload["delivery_id"])
             if await process.wait():
-                emit("voice_unverified", delivery_id=payload["delivery_id"], reason="cs-say refused; text retained")
+                emit("voice_unverified", delivery_id=payload["delivery_id"], reason="x9say refused; text retained")
 
     async def run(self) -> None:
         previous = read_json(self.connection)
@@ -415,7 +415,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    # Started with -E; keep the host's PYTHON* variables from the cs-bus children.
+    # Started with -E; keep the host's PYTHON* variables from the x9bus children.
     for name in [name for name in os.environ if name.startswith("PYTHON")]:
         del os.environ[name]
     raise SystemExit(main())

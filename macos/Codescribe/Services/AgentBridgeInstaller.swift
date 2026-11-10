@@ -210,7 +210,7 @@ private struct AgentBridgeManagedMarker: Codable {
 /// directory itself is never renamed, so follower logs and ack cursors keep
 /// their inodes — and every rename forms one rollback-capable transaction;
 /// receipt replacement is the final commit point.
-/// The app-side callers of the installed `cs-bus` command live in
+/// The app-side callers of the installed `x9bus` command live in
 /// `AgentBridgeCommands.swift`; this file stays compilable on its own so
 /// `make install-bus` can build the installer from source.
 final class RealAgentBridgeInstaller: AgentBridgeInstalling {
@@ -413,7 +413,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
   private func automaticReplacementRefusal(
     receipt: AgentBridgeReceipt, manifest: AgentBridgeBundleManifest
   ) -> String? {
-    let commands = Set(["bin/cs-bus", "bin/cs-say"])
+    let commands = Set(["bin/x9bus", "bin/x9say", "bin/cs-bus", "bin/cs-say"])
     let installedCommands = Set(receipt.payloadFiles.map(\.path)).intersection(commands)
     let bundledCommands = Set(manifest.files.map(\.path)).intersection(commands)
     guard installedCommands.isSubset(of: bundledCommands) else {
@@ -1307,9 +1307,13 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
 
   private func commandManifestPath(for name: String) -> String {
     switch name {
-    case "x9bus", "x9-bus":
+    case "x9bus":
+      return "bin/x9bus"
+    case "cs-bus":
       return "bin/cs-bus"
-    case "x9say", "x9-say":
+    case "x9say":
+      return "bin/x9say"
+    case "cs-say":
       return "bin/cs-say"
     default:
       return "bin/" + name
@@ -1317,7 +1321,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
   }
 
   private func commandNames(manifest: AgentBridgeBundleManifest) -> [String] {
-    ["cs-bus", "x9bus", "x9-bus", "cs-say", "x9say", "x9-say", "cs-junie", "bus-mcp.py"].filter {
+    ["x9bus", "cs-bus", "x9say", "cs-say", "cs-junie", "bus-mcp.py"].filter {
       name in
       let manifestPath = commandManifestPath(for: name)
       return manifest.files.contains { $0.path == manifestPath }
@@ -1361,10 +1365,30 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     for name in commandNames(manifest: manifest) {
       let destination = commandURL(name)
       let link = try? fileManager.destinationOfSymbolicLink(atPath: destination.path)
+      let compatibilityName =
+        name == "x9bus" ? "cs-bus" : name == "x9say" ? "cs-say" : nil
+      let compatibilityURL = compatibilityName.map(commandURL)
+      let compatibilityLink = compatibilityURL.flatMap {
+        try? fileManager.destinationOfSymbolicLink(atPath: $0.path)
+      }
+      let compatibilityOwnedFile = compatibilityURL.flatMap { managedCommandID($0) }.map {
+        ownedCommandIDs.isEmpty || ownedCommandIDs.contains($0)
+      } == true
+      let compatibilityOwnedLink = compatibilityName.map { alias in
+        let runtimeTargets = [
+          runtimeDirectory.appendingPathComponent("bin/" + alias).path,
+          runtimeDirectory.appendingPathComponent(commandManifestPath(for: alias)).path,
+        ]
+        return runtimeTargets.contains(compatibilityLink ?? "")
+      } == true
+      let compatibilityAliasOwned =
+        compatibilityURL != nil && (compatibilityOwnedFile || compatibilityOwnedLink)
       if fileManager.fileExists(atPath: destination.path) || link != nil {
         let ownedLink =
           link == runtimeDirectory.appendingPathComponent(commandManifestPath(for: name)).path
           || link == runtimeDirectory.appendingPathComponent("bin/" + name).path
+          || (compatibilityAliasOwned
+            && (link == compatibilityName || link == compatibilityURL?.path))
         let ownedFile =
           link == nil
           && managedCommandID(destination).map {
@@ -1386,12 +1410,12 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     try requireCommandOwnership(manifest: manifest, ownedCommandIDs: ownedCommandIDs)
     for name in commandNames(manifest: manifest) {
       let destination = commandURL(name)
-      // cs-bus receives the complete verified helper, so neither entrypoint
-      // depends on the replaceable runtime/bin payload after publication.
+      // x9bus and its compatibility alias receive the complete verified helper,
+      // so neither depends on the replaceable runtime/bin payload afterward.
       let mode = name.hasSuffix(".py") ? 0o644 : 0o755
       let manifestPath = commandManifestPath(for: name)
       let source = runtimeDirectory.appendingPathComponent(
-        manifestPath == "bin/cs-bus" ? manifest.helper : manifestPath)
+        (name == "x9bus" || name == "cs-bus") ? manifest.helper : manifestPath)
       let script = try String(contentsOf: source, encoding: .utf8)
       let body = script.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
         .dropFirst().joined(separator: "\n")

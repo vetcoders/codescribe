@@ -2201,7 +2201,7 @@ final class OverlayState {
       switch error.code {
       case .fileNoSuchFile:
         return String(
-          localized: "the cs-bus helper is not installed",
+          localized: "the x9bus helper is not installed",
           comment: "Archive refusal reason: managed helper missing")
       case .fileReadCorruptFile:
         return String(

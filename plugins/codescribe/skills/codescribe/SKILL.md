@@ -44,6 +44,9 @@ and automatic voice instructions below. The remaining sections apply to their
 named clients. See `docs/OPENAI_PLUGIN.md` in the source distribution for install,
 upgrade, rollback and evidence limits.
 
+Use `x9bus` and `x9say` as the installed command names. `cs-bus` and `cs-say`
+remain compatibility aliases for existing client setups.
+
 In Claude Code, use `provider=claude-code` and the real session_id injected by
 the native Codescribe session hook. In OMP (oh-my-pi), use `provider=omp` and
 the real session_id injected by the bundled Codescribe extension.
@@ -89,7 +92,7 @@ does not end bus tenure; keep the existing native wake mechanism armed.
 
 ## Anti-patterns
 
-Do not poll `codescribe_read` or `cs-bus --read-pending` on a timer beside the
+Do not poll `codescribe_read` or `x9bus --read-pending` on a timer beside the
 native waiter or watch (for example every 2 seconds). Handle its actual
 notification at the next work boundary, then perform the bounded read/ACK/drain.
 Keep a quiet waiter or `--watch --bell` waiting; silence does not authorize
@@ -108,7 +111,7 @@ cancelling it, restarting its follower or adding a second reader.
    with its exact owned ID and concise text. Check `spoken` and `reason`. Do not
    claim failed playback succeeded, change providers/credentials to hide failure,
    or replay an uncertain reply.
-   For requested peer conversation use cs-bus --send with this same provider/session.
+   For requested peer conversation use x9bus --send with this same provider/session.
 
 ## Claude Code: end the turn, the hook wakes you
 
@@ -117,7 +120,7 @@ After connecting and after each drained batch, **end the turn**. The plugin's
 this conversation once per new delivery with a `codescribe_mailbox_ready` notice;
 then do the steps above. It re-arms on every turn end and after every tool call,
 so an interrupted turn (Claude Code runs no `Stop` then) does not leave you deaf
-and there is no watcher to remember. A `cs-bus --watch --until-event` background
+and there is no watcher to remember. A `x9bus --watch --until-event` background
 task of this session may run beside it: the waiter then leaves the wake to that
 task and takes over when it is gone. A `codescribe_listener_problem` notice (lost follower, refused mailbox)
 means nothing was read: inspect `codescribe_status` and connect again with the same
@@ -139,25 +142,25 @@ reads, ACKs or replies; the Stop waiter does not announce a probed delivery agai
 
 Another Mac with Codescribe (an ssh host such as `host-a`) has its own bus.
 Attach there under this same identity:
-`cs-bus --remote HOST --attach --channel N --name NAME --provider claude-code`
+`x9bus --remote HOST --attach --channel N --name NAME --provider claude-code`
 (the helper sends this session's id). The Stop hook then also waits on HOST,
 through HOST's own waiter, and wakes this conversation with the same notice
 followed by `[Mailbox on HOST, over ssh …]`. The `codescribe_*` tools read only
-this Mac: read, ACK, send and detach there with `cs-bus --remote HOST --read-pending | --ack ID | --send … | --detach --provider claude-code`. The
+this Mac: read, ACK, send and detach there with `x9bus --remote HOST --read-pending | --ack ID | --send … | --detach --provider claude-code`. The
 in-turn probe does not reach HOST; its messages arrive with the waiter's wake,
 which can also land inside a running turn. Needs ssh key access (BatchMode)
-and the managed helper at `~/.local/bin/cs-bus` on HOST.
+and the managed helper at `~/.local/bin/x9bus` on HOST.
 
 Use `codescribe_wait` in Claude Code only when the Founder asks you to hold an
 active listening turn: it blocks typed prompts until it returns, at most 15 min,
 with a `wait_idle` receipt. Without the plugin hook, use the CLI lane of the
-foundation `codescribe` skill (`cs-bus --watch --until-event` as a background task).
+foundation `codescribe` skill (`x9bus --watch --until-event` as a background task).
 
 ## OMP: end the turn, the extension wakes you
 
 Same contract as Claude Code with a different carrier. The plugin's
 `hooks/pre/codescribe-omp.ts` extension injects this conversation's identity
-(`provider=omp`, the OMP session id) at session start, serves `/codescribe NAME CHANNEL [VOICE]`, and after every turn end holds `cs-bus --omp-wake` in the
+(`provider=omp`, the OMP session id) at session start, serves `/codescribe NAME CHANNEL [VOICE]`, and after every turn end holds `x9bus --omp-wake` in the
 background with no model turn. A new delivery or listener problem returns as
 `codescribe_mailbox_ready` or `codescribe_listener_problem` and starts a turn;
 then do the steps above and end the turn again. After six silent hours, the

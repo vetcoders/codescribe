@@ -564,7 +564,7 @@ class MailboxTests(MailboxFixture):
                 self.call("reply", {"delivery_id": self.ids[0], "text": text})
         tts.assert_called_once()
         command = tts.call_args.args[0]
-        self.assertEqual(command[:2], [sys.executable, str(SCRIPTS / "cs-bus")])
+        self.assertEqual(command[:2], [sys.executable, str(SCRIPTS / "x9bus")])
         self.assertEqual(command[command.index("--bridge-home") + 1], str(self.root))
         self.assertEqual(command[command.index("--bus") + 1], str(self.bus))
         self.assertEqual(command[command.index("--provider") + 1], self.PROVIDER)
@@ -1209,7 +1209,7 @@ class ClaudeCodeWakeTests(MailboxFixture):
 
     def hook(self, shell, command=None, environ=None):
         entry = json.loads(self.HOOK.read_text())["hooks"]["Stop"][0]["hooks"][0]
-        script = (command or entry["command"]).replace('"$HOME/.local/bin/cs-bus"', f'"{SCRIPTS / "cs-bus"}"')
+        script = (command or entry["command"]).replace('"$HOME/.local/bin/x9bus"', f'"{SCRIPTS / "x9bus"}"')
         env = {key: value for key, value in os.environ.items() if not key.startswith("CLAUDE_CODE")}
         env.update({"CODESCRIBE_AGENT_BRIDGE_HOME": str(self.root), "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"})
         env.update(self.environ if environ is None else environ)
@@ -1250,13 +1250,13 @@ class ClaudeCodeWakeTests(MailboxFixture):
         return {"PYTHONHOME": str(home), "PYTHONPATH": str(home / "lib/python3.14")}
 
     def installed_helper(self):
-        """cs-bus exactly as the app installer writes it: its generated header, then the helper body."""
+        """x9bus exactly as the app installer writes it: its generated header, then the helper body."""
         installer = (SCRIPTS.parent / "macos/Codescribe/Services/AgentBridgeInstaller.swift").read_text()
         shebang = re.search(r'let header =\s*"(#![^"]*)\\n" \+ Self\.commandMarker', installer)[1]
         directory = Path(self.temp.name) / "installed bin"
         directory.mkdir(exist_ok=True)
         body = (SCRIPTS / "bus-demux.py").read_text().split("\n", 1)[1]
-        helper = directory / "cs-bus"
+        helper = directory / "x9bus"
         helper.write_text(f'{shebang}\n# codescribe-managed-command: {{"managed_id":"test"}}\n{body}')
         helper.chmod(0o755)
         shutil.copy2(SCRIPTS / "bus-mcp.py", directory / "bus-mcp.py")
@@ -1283,7 +1283,7 @@ class ClaudeCodeWakeTests(MailboxFixture):
                 for path in (self.root / "runtime" / "native-wake").glob("*"):
                     path.unlink()
                 entry = json.loads(self.HOOK.read_text())["hooks"]["Stop"][0]["hooks"][0]
-                result = self.hook(shell, command=entry["command"].replace('"$HOME/.local/bin/cs-bus"', f'"{helper}"'),
+                result = self.hook(shell, command=entry["command"].replace('"$HOME/.local/bin/x9bus"', f'"{helper}"'),
                                    environ={**self.environ, **poison})
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn("new message(s) for fable, connected on channel 7", result.stderr)
@@ -1301,12 +1301,12 @@ class ClaudeCodeWakeTests(MailboxFixture):
                 log = self.root / "runtime/hook-failures.log"
                 log.unlink(missing_ok=True)
                 wake = self.hook(shell, command=hooks["Stop"][0]["hooks"][0]["command"].replace(
-                    '"$HOME/.local/bin/cs-bus"', f'"{crash}"'))
+                    '"$HOME/.local/bin/x9bus"', f'"{crash}"'))
                 self.assertEqual(wake.returncode, 1, wake.stderr)
                 self.assertIn("No module named '_struct'", wake.stderr)
                 self.assertIn("Codescribe: wake helper failed (exit 1)", wake.stderr)
                 probe = self.hook(shell, command=hooks["PostToolUse"][0]["hooks"][0]["command"].replace(
-                    '"$HOME/.local/bin/cs-bus"', f'"{crash}"'))
+                    '"$HOME/.local/bin/x9bus"', f'"{crash}"'))
                 self.assertEqual((probe.returncode, probe.stdout), (0, ""))
                 lines = log.read_text().splitlines()
                 self.assertEqual(len(lines), 2, lines)
@@ -1509,10 +1509,12 @@ class RemoteMailboxTests(MailboxFixture):
             bindings["7"] = {"audience": "fable", "provider": self.PROVIDER,
                              "provider_session_id": self.session, "bus": str(self.bus)}
         home = self.root / "remote-home"
-        helper = home / ".local/bin/cs-bus"
-        helper.parent.mkdir(parents=True)
-        helper.write_text(FAKE_REMOTE_HELPER)
-        helper.chmod(0o755)
+        helper_directory = home / ".local/bin"
+        helper_directory.mkdir(parents=True)
+        for name in ("x9bus", "cs-bus"):
+            helper = helper_directory / name
+            helper.write_text(FAKE_REMOTE_HELPER)
+            helper.chmod(0o755)
         ssh = self.root / "fake-ssh"
         ssh.write_text(FAKE_SSH)
         ssh.chmod(0o755)
@@ -1559,7 +1561,7 @@ class RemoteMailboxTests(MailboxFixture):
         self.assertTrue(relayed[-1].startswith("Codescribe: 1 new message(s) for agent-host-b"),
                         "the remote waiter's own notice is relayed word for word")
         self.assertIn("a" * 24, relayed[-1])
-        self.assertIn("cs-bus --remote host-a --provider claude-code --ack ID", said)
+        self.assertIn("x9bus --remote host-a --provider claude-code --ack ID", said)
         payload = json.dumps({"session_id": self.session})
         self.assertIn(f"wake {self.session} {payload}", self.remote_lines())
         self.assertEqual(json.loads(self.ssh_log.read_text().splitlines()[0])["host"], "host-a")
@@ -1674,8 +1676,8 @@ class PluginContractTests(unittest.TestCase):
         # not appear there, and it must launch the same verified helper as .mcp.json.
         extension = (self.PLUGIN / "hooks/pre/codescribe-omp.ts").read_text()
         launcher = self.load(".mcp.json")["mcpServers"]["codescribe"]["args"][-1]
-        self.assertIn('"$HOME/.local/bin/cs-bus"', launcher)
-        self.assertIn('exec "$HOME/.local/bin/cs-bus" --omp-wake --provider omp --session "$1" --host-pid "$2"', extension)
+        self.assertIn('"$HOME/.local/bin/x9bus"', launcher)
+        self.assertIn('exec "$HOME/.local/bin/x9bus" --omp-wake --provider omp --session "$1" --host-pid "$2"', extension)
         self.assertIn('export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"', extension)
         self.assertEqual(int(re.search(r"const WAKE_EXIT = (\d+)", extension)[1]), MCP.WAKE_EXIT)
         self.assertGreater(int(re.search(r"const WAKE_TIMEOUT_MS = ([\d_]+)", extension)[1].replace("_", "")),
@@ -1708,7 +1710,7 @@ class AgyProtocolTests(MCPProtocolTests):
         self.assertEqual(connect["events_target"]["wakeup_mode"], "watch_until_event")
         self.assertIs(connect["wakeup_supported"], False)
         self.assertIs(connect["native_wake_armed"], False)
-        self.assertIn(f"cs-bus --watch --until-event --provider agy --session {self.session}",
+        self.assertIn(f"x9bus --watch --until-event --provider agy --session {self.session}",
                       connect["wakeup_instructions"])
         status = self.tool(11, "status")
         self.assertIs(status["native_wake_armed"], False)
@@ -1931,7 +1933,7 @@ class SessionHookTests(unittest.TestCase):
 
 class NativeLaunchTests(unittest.TestCase):
     def test_every_helper_entrypoint_starts_isolated_from_host_interpreter_variables(self):
-        for name in ("cs-bus", "cs-say", "cs-junie", "bus-demux.py", "bus-mcp.py"):
+        for name in ("x9bus", "x9say", "cs-bus", "cs-say", "cs-junie", "bus-demux.py", "bus-mcp.py"):
             with self.subTest(entrypoint=name):
                 self.assertEqual((SCRIPTS / name).read_text().split("\n", 1)[0], "#!/usr/bin/env -S python3 -E")
         session = json.loads((SCRIPTS.parent / "plugins/codescribe/hooks/hooks.json").read_text())
@@ -1939,14 +1941,14 @@ class NativeLaunchTests(unittest.TestCase):
                       session["hooks"]["SessionStart"][0]["hooks"][0]["command"])
 
     def test_helper_children_never_inherit_a_foreign_python_home(self):
-        # cs-say re-runs sys.executable on cs-bus without -E; the parent must hand
+        # x9say re-runs sys.executable on x9bus without -E; the parent must hand
         # it an environment without the host's interpreter variables.
         with tempfile.TemporaryDirectory(prefix=".helper-child-", dir=Path(__file__).parent) as temporary:
             foreign = Path(temporary) / "foreign-python"
             (foreign / "lib/python3.14").mkdir(parents=True)
             env = {**os.environ, "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
                    "PYTHONHOME": str(foreign), "PYTHONPATH": str(foreign / "lib/python3.14")}
-            for name in ("cs-say", "cs-bus"):
+            for name in ("x9say", "x9bus", "cs-say", "cs-bus"):
                 with self.subTest(entrypoint=name):
                     result = subprocess.run([str(SCRIPTS / name), "--version"], env=env,
                                             capture_output=True, text=True, timeout=10)
@@ -1958,11 +1960,11 @@ class NativeLaunchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix=".mcp-launch-", dir=Path(__file__).parent) as temporary:
             installed = Path(temporary) / "managed bin"
             installed.mkdir()
-            for name in ("cs-bus", "bus-demux.py", "bus-mcp.py"):
+            for name in ("x9bus", "bus-demux.py", "bus-mcp.py"):
                 shutil.copy2(SCRIPTS / name, installed / name)
             foreign = Path(temporary) / "foreign-python"
             (foreign / "lib/python3.14").mkdir(parents=True)
-            arguments = [value.replace('"$HOME/.local/bin/cs-bus"', f'"{installed / "cs-bus"}"')
+            arguments = [value.replace('"$HOME/.local/bin/x9bus"', f'"{installed / "x9bus"}"')
                          for value in config["args"]]
             env = {**os.environ, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "PYTHONHOME": str(foreign),
                    "PYTHONPATH": str(foreign / "lib/python3.14")}
@@ -1978,11 +1980,11 @@ class NativeLaunchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix=".mcp-launch-", dir=Path(__file__).parent) as temporary:
             installed = Path(temporary) / "managed bin"
             installed.mkdir()
-            for name in ("cs-bus", "bus-demux.py", "bus-mcp.py"):
+            for name in ("x9bus", "bus-demux.py", "bus-mcp.py"):
                 shutil.copy2(SCRIPTS / name, installed / name)
             # Translate only the managed installation path into this fixture;
             # production helper bytes and the real HOME remain unchanged.
-            arguments = [value.replace('"$HOME/.local/bin/cs-bus"', f'"{installed / "cs-bus"}"')
+            arguments = [value.replace('"$HOME/.local/bin/x9bus"', f'"{installed / "x9bus"}"')
                          for value in config["args"]]
             env = {**os.environ, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
             request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}) + "\n"

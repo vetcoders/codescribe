@@ -5,7 +5,7 @@
 With a known name and channel, one call replaces the manual saga below:
 
 ```bash
-cs-bus \
+x9bus \
   --attach --channel <1-9> --name <name> \
   --provider <claude-code|codex|...> --session <provider-session-id> \
   [--voice <voice-id>] [--speed <factor>] [--tts-vendor xai|openai]
@@ -55,7 +55,7 @@ A follower outlives the session that spawned it, and the binding stays with it.
 Two flags move a channel from an ended session to the next one of the same name.
 
 ```bash
-cs-bus \
+x9bus \
   --detach --provider <provider> --session <provider-session-id>
 ```
 
@@ -85,7 +85,7 @@ unverifiable (`unverified_retained`) or does not exit (`did_not_exit`) refuses
 the detach with a non-zero exit and leaves the bindings untouched.
 
 ```bash
-cs-bus \
+x9bus \
   --attach --channel <channel> --name <same-name> \
   --provider <provider> --session <provider-session-id> --takeover
 ```
@@ -149,7 +149,7 @@ The previous lease is never moved, replayed, acknowledged or rewound. Read one
 inherited envelope explicitly, only when the Founder asks for it:
 
 ```bash
-cs-bus \
+x9bus \
   --read-delivery <delivery-id> --lease <previous-lease-id> \
   --provider <provider> --session <provider-session-id>
 ```
@@ -165,7 +165,7 @@ supported.
 Read the channel's one truthful state at any time:
 
 ```bash
-cs-bus \
+x9bus \
   --status --provider <provider> --session <provider-session-id>
 ```
 
@@ -205,9 +205,9 @@ Confirm the app is running and inspect the installed helper:
 
 ```bash
 pgrep -x 'X9bus|Codescribe'  # Codescribe: still started from the pre-X9bus.app bundle
-cs-bus --help
-cs-bus --print-bus-path
-cs-bus --active-names
+x9bus --help
+x9bus --print-bus-path
+x9bus --active-names
 ```
 
 Use the printed bus path. Resolution is explicit override, then
@@ -238,7 +238,7 @@ session context. Do not invent an id or reuse another conversation's lease.
 With a known name, attach directly:
 
 ```bash
-cs-bus \
+x9bus \
   --provider codex --session <provider-session-id> \
   --name roman --drafts --follow
 ```
@@ -252,7 +252,7 @@ instead of `--name`. Before binding the name, stop that follower and wait for
 its handle to close. Reattach with the same provider session and receipt:
 
 ```bash
-cs-bus \
+x9bus \
   --provider codex --session <provider-session-id> --lease <lease-id> \
   --name roman --drafts --follow
 ```

@@ -29,14 +29,14 @@ WAIT_SECONDS = {"claude-code": 900, "junie": 150, "omp": 900, "codex": 60, "agy"
 
 #: Hosts whose idle wakeup is a hook process holding the lease's wake lock:
 #: Claude Code through its asyncRewake Stop hook, OMP through the bundled
-#: extension running `cs-bus --omp-wake`. Junie has no idle wakeup.
+#: extension running `x9bus --omp-wake`. Junie has no idle wakeup.
 NATIVE_WAKE_PROVIDERS = frozenset({"claude-code", "omp"})
 
 #: How an idle conversation of each provider learns about a new delivery.
 #: `stop_hook` and `omp_extension` hold the wake lock above; `codex_queue` is
 #: the follower submitting to Codex's own queue. `mcp_wait` and
 #: `watch_until_event` wake nobody: a model turn must be listening, through
-#: codescribe_wait or a background `cs-bus --watch --until-event` task.
+#: codescribe_wait or a background `x9bus --watch --until-event` task.
 WAKEUP_MODE = {"claude-code": "stop_hook", "omp": "omp_extension", "codex": "codex_queue",
                "junie": "mcp_wait", "agy": "watch_until_event", "acp": "watch_until_event"}
 NATIVE_WAKEUP_MODES = frozenset({"stop_hook", "omp_extension", "codex_queue"})
@@ -98,7 +98,7 @@ TOOLS = [
                             "channel": {"type": "string", "pattern": "^[1-9]$"},
                             "voice": {"type": "string"}, "tts_vendor": {"type": "string", "enum": ["xai", "openai"]}},
                            ["provider", "session_id", "name", "channel"])},
-    {"name": "codescribe_wait", "description": "Wait for one complete owned message without ACKing. Ends with an explicit wait_idle receipt before the host's tool deadline (Junie 150 s, Claude Code 900 s); this is not indefinite idle wakeup. Providers without a native wake hook, including agy and acp, must call codescribe_wait again or run cs-bus --watch --until-event. A newer wait supersedes this one; cancel to stop waiting. After read, ACK before acting.",
+    {"name": "codescribe_wait", "description": "Wait for one complete owned message without ACKing. Ends with an explicit wait_idle receipt before the host's tool deadline (Junie 150 s, Claude Code 900 s); this is not indefinite idle wakeup. Providers without a native wake hook, including agy and acp, must call codescribe_wait again or run x9bus --watch --until-event. A newer wait supersedes this one; cancel to stop waiting. After read, ACK before acting.",
      "inputSchema": schema({"timeout_seconds": {"type": "integer", "minimum": 1}})},
     {"name": "codescribe_read", "description": "Read one complete pending message without ACKing. Drain before waiting; preserve sender and attachment pointers.", "inputSchema": schema()},
     {"name": "codescribe_ack", "description": "Acknowledge ONLY exact delivery IDs completely read through this MCP connection, immediately before work. ACK means read, not completed.",
@@ -258,7 +258,7 @@ def connection_identities(demux, root, provider, session, result, status=None):
     if mode == "watch_until_event":
         identities["wakeup_instructions"] = (
             f"{provider} has no native wakeup: keep a turn listening with codescribe_wait, or run "
-            f"`cs-bus --watch --until-event --provider {provider} --session {session}` as a background "
+            f"`x9bus --watch --until-event --provider {provider} --session {session}` as a background "
             "task; it ends on the next message.")
     elif mode == "mcp_wait":
         identities["wakeup_instructions"] = (
@@ -436,7 +436,7 @@ def claude_code_wake(demux, root, bus, payload, environ, *, window=WAKE_SECONDS,
     after an API error, so the plugin also arms after every tool call: a turn
     the wake started cannot end without a waiter. Announced IDs are kept until
     acknowledged, so a message left unread does not wake every turn.
-    A channel attached on another Mac (`cs-bus --remote HOST --attach`) is
+    A channel attached on another Mac (`x9bus --remote HOST --attach`) is
     waited on there, by that Mac's own waiter, in parallel with this one.
     """
     session = payload.get("session_id") if isinstance(payload, dict) else None
@@ -458,7 +458,7 @@ REMOTE_RETRY_SECONDS = 30.0
 
 
 def remote_wake_command(session):
-    """The remote half: that Mac's own `cs-bus --claude-code-wake` for this
+    """The remote half: that Mac's own `x9bus --claude-code-wake` for this
     session (its lock, announced ledger and notice), plus a guard on ssh stdin.
     When this side goes away, stdin ends and the guard stops the waiter, so no
     orphan keeps the remote lock and announces a message nobody hears."""
@@ -467,7 +467,7 @@ def remote_wake_command(session):
         "(",
         f"  CLAUDE_CODE_SESSION_ID={shlex.quote(session)}",
         "  export CLAUDE_CODE_SESSION_ID",
-        "  exec \"$HOME/.local/bin/cs-bus\" --claude-code-wake 3<&- <<'CODESCRIBE_WAKE'",
+        "  exec \"$HOME/.local/bin/x9bus\" --claude-code-wake 3<&- <<'CODESCRIBE_WAKE'",
         json.dumps({"session_id": session}),
         "CODESCRIBE_WAKE",
         ") &",
@@ -525,8 +525,8 @@ def release_remote(proc):
 def describe_remote_wake(host, text):
     said = [line.strip() for line in text.splitlines() if line.strip().startswith("Codescribe:")]
     head = said[-1] if said else "Codescribe: the waiter answered without a notice."
-    return (f"{head} [Mailbox on {host}, over ssh: read it with `cs-bus --remote {host} --read-pending "
-            f"--provider claude-code` and ACK with `cs-bus --remote {host} --provider claude-code --ack ID`; "
+    return (f"{head} [Mailbox on {host}, over ssh: read it with `x9bus --remote {host} --read-pending "
+            f"--provider claude-code` and ACK with `x9bus --remote {host} --provider claude-code --ack ID`; "
             "codescribe_read reads only this Mac.]\n")
 
 
@@ -593,7 +593,7 @@ def wake_here_and_remote(demux, root, bus, session, environ, hosts, *, window, i
 
 
 def omp_wake(demux, root, bus, session, host_pid, *, window=WAKE_SECONDS, interval=1.0):
-    """OMP extension waiter: `cs-bus --omp-wake --provider omp --session ID --host-pid PID`.
+    """OMP extension waiter: `x9bus --omp-wake --provider omp --session ID --host-pid PID`.
 
     OMP exports no session id to child processes, so the bundled extension
     passes the id it read from its own session manager and its host pid. The
@@ -678,7 +678,7 @@ def native_wake(demux, root, bus, provider, session, host, *, window=WAKE_SECOND
                         notice = {"kind": "codescribe_mailbox_ready", "pending_count": len(unread),
                                   "new_delivery_ids": fresh, "addressed": addressed(rows, fresh, demux),
                                   **({"problem": problem} if problem else {}),
-                                  "instructions": f"Read every pending message (codescribe_read, or cs-bus --read-pending --provider {provider}), ACK exactly its read_delivery_ids before acting, answer, then end the turn. This hook re-arms itself."}
+                                  "instructions": f"Read every pending message (codescribe_read, or x9bus --read-pending --provider {provider}), ACK exactly its read_delivery_ids before acting, answer, then end the turn. This hook re-arms itself."}
                     elif problem and problem not in prior:
                         notice = {"kind": "codescribe_listener_problem", "problem": problem,
                                   "instructions": "Nothing was read or acknowledged. Inspect codescribe_status; connect again with the same name and channel to restart a lost follower."}
@@ -687,7 +687,7 @@ def native_wake(demux, root, bus, provider, session, host, *, window=WAKE_SECOND
                         notice = {"kind": "codescribe_mailbox_reminder", "pending_count": len(unread),
                                   "unacked_delivery_ids": due, "addressed": addressed(rows, due, demux),
                                   "announced_minutes": max(1, round(REMIND_SECONDS / 60)),
-                                  "instructions": f"Their first notice may not have reached you. Read every pending message (codescribe_read, or cs-bus --read-pending --provider {provider}), ACK exactly its read_delivery_ids before acting, answer, then end the turn. Each delivery is reminded once."}
+                                  "instructions": f"Their first notice may not have reached you. Read every pending message (codescribe_read, or x9bus --read-pending --provider {provider}), ACK exactly its read_delivery_ids before acting, answer, then end the turn. Each delivery is reminded once."}
                     elif time.monotonic() >= deadline:
                         if watched:
                             # The task keeps waking this conversation; an idle
@@ -765,7 +765,7 @@ def claude_code_probe(demux, root, bus, payload, environ):
         write_ledger(demux, record, lease_id, announced, reminded)
     notice = {"kind": "codescribe_mailbox_ready", "pending_count": len(unread), "new_delivery_ids": fresh,
               "addressed": addressed(rows, fresh, demux),
-              "instructions": "Read every pending message now (codescribe_read, or cs-bus --read-pending --provider claude-code), ACK exactly its read_delivery_ids, then act on it before continuing the current work."}
+              "instructions": "Read every pending message now (codescribe_read, or x9bus --read-pending --provider claude-code), ACK exactly its read_delivery_ids, then act on it before continuing the current work."}
     sys.stdout.write(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PostToolUse",
         "additionalContext": describe_wake(notice, provider, session, channel, name)}}) + "\n")
@@ -784,7 +784,7 @@ class Mailbox:
         self.lock = threading.RLock()
         self.wait_guard = threading.Lock()
         self.active_wait = None
-        self.command = [sys.executable, str(Path(demux.__file__).with_name("cs-bus"))]
+        self.command = [sys.executable, str(Path(demux.__file__).with_name("x9bus"))]
         # None inherits this process's environment; a client may pin an exact one.
         self.environment = None
 
@@ -886,7 +886,7 @@ class Mailbox:
                                  f"the Codescribe {'Stop hook' if self.provider == 'claude-code' else 'OMP extension'} "
                                  "wakes this conversation on the next message."
                                  if self.provider in NATIVE_WAKE_PROVIDERS else
-                                 "Call codescribe_wait again to keep listening, or run `cs-bus --watch --until-event "
+                                 "Call codescribe_wait again to keep listening, or run `x9bus --watch --until-event "
                                  f"--provider {self.provider} --session {self.owner}` as a background task."
                                  if WAKEUP_MODE[self.provider] == "watch_until_event" else
                                  "Call codescribe_wait again to keep listening.")

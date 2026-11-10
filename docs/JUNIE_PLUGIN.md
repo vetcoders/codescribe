@@ -21,10 +21,10 @@ In ordinary Junie, register and install through its native extension manager:
 Junie owns marketplace identity and caching. No private registry hash is
 reimplemented by Codescribe. Installation is hot-loadable and does not require
 an app or CLI restart. For an already registered local marketplace,
-`cs-bus --install-junie-extension` can enable Codescribe in Junie's user scope;
+`x9bus --install-junie-extension` can enable Codescribe in Junie's user scope;
 it preserves unrelated configuration and refuses to invent a marketplace ID.
 
-The MCP launcher resolves the verified helper at `$HOME/.local/bin/cs-bus` and
+The MCP launcher resolves the verified helper at `$HOME/.local/bin/x9bus` and
 adds the standard macOS helper/interpreter directories to its own PATH. It also
 works when Junie is launched from an app or launchd without a terminal PATH;
 HOME, credentials and the user's shell configuration are never changed.
@@ -81,7 +81,7 @@ stops an active wait before releasing the channel.
 Distinct IDs remain distinct even when all five messages say “Iwo”. A canceled
 wait or a disconnected client leaves the durable mailbox untouched.
 
-For requested voice replies, `codescribe_reply` delegates to the same `cs-say`
+For requested voice replies, `codescribe_reply` delegates to the same `x9say`
 lane with the owned, read and acknowledged ID. It retains recording interlocks
 and reports `spoken`/`reason`; credentials are never changed to conceal a failed
 attempt. An uncertain or already attempted reply is not replayed automatically.
@@ -137,7 +137,7 @@ Starting a second plugin for the same project/name/channel is also refused.
 cs-junie --name junie --channel 6 --project /path/to/repo --speak
 ```
 
-`--speak` passes the final answer and the exact delivery ID to `cs-say`. It keeps
+`--speak` passes the final answer and the exact delivery ID to `x9say`. It keeps
 the existing voice profile, credentials and recording/playback interlocks.
 Missing TTS credentials do not undo the durable text answer; inspect the helper's
 `spoken` and `reason` result. No voice vendor or credentials are changed.
@@ -151,7 +151,7 @@ no model request. Only agent-message chunks from the owned session become answer
 text; thought chunks and loaded-session history are not spoken.
 
 Every prompt instructs Junie to read the full envelope and run its exact
-`cs-bus --ack` command **before work**. The plugin itself never acknowledges on
+`x9bus --ack` command **before work**. The plugin itself never acknowledges on
 stdout, prompt submission or provider acceptance. A completed turn requires a
 matching read receipt and ACP `end_turn`; otherwise it stops and preserves the
 execution evidence. Five identical utterances with distinct IDs remain five tasks.
@@ -204,5 +204,5 @@ bash scripts/tests/agent-bridge-payload-test.sh
 The deterministic ACP peer proves transport boundaries, not live agent delivery.
 A live acceptance check uses a fresh message after the plugin has become idle:
 canonical mailbox → same Junie session → explicit ACK → answer, without a typed
-nudge to Junie. Voice acceptance additionally requires successful `cs-say`
+nudge to Junie. Voice acceptance additionally requires successful `x9say`
 playback. An attach receipt alone remains `attached_unverified`.

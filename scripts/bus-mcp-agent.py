@@ -28,7 +28,7 @@ PROTOCOL_VERSION = "2026-07-28"
 BUS_SLOTS = tuple(str(n) for n in range(1, 10))
 
 #: `bus-demux` keys every lease on `provider_token(provider)` (the one rule,
-#: stated there) and this value goes straight to `cs-bus --provider`, so a
+#: stated there) and this value goes straight to `x9bus --provider`, so a
 #: provider here is already that token: an ASCII client id such as `codex` or
 #: `claude-code`. No provider list is compiled in here: the lease, binding and
 #: reply checks below decide ownership.
@@ -37,7 +37,7 @@ PROVIDER_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 #: One reviewed per-connection directory directly under `<bridge_home>/runtime`.
 STATE_DIRECTORY_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,62}-mcp")
 
-#: The only variables BUS helper children (cs-bus and what it starts) receive,
+#: The only variables BUS helper children (x9bus and what it starts) receive,
 #: besides the canonical bus location keys `bus-demux` itself declares
 #: (`BUS_PATH_ENV_KEYS`): the capture guard resolves the app's transcript bus
 #: from those, not from the mailbox `--bus`. Bridge home, bus, provider and
@@ -544,7 +544,7 @@ def main(argv=None, *, runtime_factory=None):
     demux = load_module("codescribe_agent_demux", scripts / "bus-demux.py")
     native = load_module("codescribe_agent_native", scripts / "bus-mcp.py")
     mailbox = native.Mailbox(demux, scope.root, scope.bus)
-    mailbox.command = [sys.executable, "-E", str(scripts / "cs-bus")]
+    mailbox.command = [sys.executable, "-E", str(scripts / "x9bus")]
     server = AgentMailbox(demux, mailbox, scope)
     pump = runtime_factory(server) if runtime_factory is not None else None
     try:

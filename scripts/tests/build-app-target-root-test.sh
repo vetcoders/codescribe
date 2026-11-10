@@ -254,7 +254,7 @@ def run_case(base, profile, layout, mode="success", skip=False, signing_identity
     # The agent bridge sources stage_agent_bridge in build-app.sh refuses to
     # stage without: every bin/ entrypoint, the Claude marketplace manifest and
     # the codescribe plugin directory that receives the server/ copies.
-    for entry in ["bus-demux.py", "cs-bus", "cs-say", "cs-junie", "bus-mcp.py", "bus-mcp-agent.py", "bus-mcp-events.py", "bus-mcp-runtime.py", "bus-mcp-key-store.py", "bus-mcp-sessions.py"]:
+    for entry in ["bus-demux.py", "x9bus", "x9say", "cs-bus", "cs-say", "cs-junie", "bus-mcp.py", "bus-mcp-agent.py", "bus-mcp-events.py", "bus-mcp-runtime.py", "bus-mcp-key-store.py", "bus-mcp-sessions.py"]:
         (repo / "scripts" / entry).write_text("# fixture helper\n")
     (repo / "plugins/.claude-plugin").mkdir(parents=True)
     (repo / "plugins/.claude-plugin/marketplace.json").write_text('{"name":"fixture","plugins":[]}\n')

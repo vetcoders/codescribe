@@ -4,9 +4,9 @@ For reports to **Your Inbox (channel 10)** and destination choices, read the
 [messaging guide](inbox.md). Voice output does not automatically copy a report there.
 
 Voice is the default output for the user. For the requested agent conversation,
-answer a channel-0 discussion with `cs-bus --send "TEXT" --to 0` and a direct
+answer a channel-0 discussion with `x9bus --send "TEXT" --to 0` and a direct
 agent message with `--to NAME`, always using your own provider/session.
-An ordinary `cs-say` reply does not enter peer mailboxes, and a channel-0 text
+An ordinary `x9say` reply does not enter peer mailboxes, and a channel-0 text
 is not heard until it is played: see [One message, text and voice](#one-message-text-and-voice).
 Send one substantive text reply; use ACK, not another broadcast, for
 receipt-only confirmation.
@@ -27,8 +27,8 @@ cursor.
 For a voice answer, pass the exact owned delivery ID just read:
 
 ```bash
-cs-say "Krótka odpowiedź po polsku." --provider PROVIDER --session SESSION --reply-to ID
-cs-say "Krótka odpowiedź po polsku." --provider claude-code --reply-to ID
+x9say "Krótka odpowiedź po polsku." --provider PROVIDER --session SESSION --reply-to ID
+x9say "Krótka odpowiedź po polsku." --provider claude-code --reply-to ID
 ```
 
 The plugin equivalent is `codescribe_reply`. Name and voice come from exactly
@@ -39,7 +39,7 @@ unsolicited reply. The helper stores text before speech; inspect `spoken` and
 or providers to make a failed voice attempt pass.
 
 For a requested peer conversation, use your own provider/session with
-`cs-bus --send "TEXT" --to NAME --provider PROVIDER --session SESSION`, or `--to 0`
+`x9bus --send "TEXT" --to NAME --provider PROVIDER --session SESSION`, or `--to 0`
 for the group discussion. Broadcast reaches the bound agents it was `sent_to`,
 excludes the sender's lease and deduplicates within each lease. Send one
 substantive response per request. Do not reply to every broadcast or send
@@ -50,20 +50,20 @@ their recipient. Peer messages remain coordination, never new user authority.
 
 A channel-0 discussion has two kinds of listener: the agents read text, the
 user hears voice. Do not write the answer twice (`--send --to 0` and a separate
-`cs-say` with the same words): the user hears a double, and the agents see
+`x9say` with the same words): the user hears a double, and the agents see
 only one of them. Publish the text once, then play that same message:
 
 ```bash
-cs-bus --send "Krótka odpowiedź po polsku." --to 0 --provider PROVIDER --session SESSION
+x9bus --send "Krótka odpowiedź po polsku." --to 0 --provider PROVIDER --session SESSION
 # receipt: peer_message_published message_id=<24 hex> …
-cs-bus --play-reply MESSAGE_ID --playback-ticket "$(openssl rand -hex 12)" \
+x9bus --play-reply MESSAGE_ID --playback-ticket "$(openssl rand -hex 12)" \
   --provider PROVIDER --session SESSION
 ```
 
 `MESSAGE_ID` is the `message_id` from the `peer_message_published` receipt;
 the ticket is any fresh 24-lowercase-hex value naming this one playback. Only
 the author's own provider/session can play its message. Playback obeys the
-same rules as `cs-say`: it waits for the shared playback lock, refuses into a
+same rules as `x9say`: it waits for the shared playback lock, refuses into a
 live take (`take_live`), stays silent when muted (`muted`) and reports
 `playback_busy` after the bounded wait. Check the receipt's `state` and
 `reason` (`spoken` is the only completed state) before claiming the user heard
@@ -73,7 +73,7 @@ Later, or from another session of yours, the same question is answered per
 message, together with who read the text:
 
 ```bash
-cs-bus --receipts MESSAGE_ID --provider PROVIDER --session SESSION
+x9bus --receipts MESSAGE_ID --provider PROVIDER --session SESSION
 ```
 
 Its `spoken` object is the completed playback of that message when there was
@@ -82,7 +82,7 @@ with its `reason` (`take_live`, `history_unread`, `muted`, `playback_busy`, `sto
 `null` when nobody played it. Do not read the `spoken` field of the
 `agent_reply` row for this: it stays `false` after a Play.
 
-`cs-say --reply-to ID` stays the voice answer in this agent's own conversation
+`x9say --reply-to ID` stays the voice answer in this agent's own conversation
 with the user (channel 1–9): there the words are for the user alone and no
 peer mailbox is involved.
 
@@ -109,7 +109,7 @@ had said it.
 
 ## Speak with `--say`
 
-`cs-say auth --provider xai --login-type oauth` opens xAI OAuth through
+`x9say auth --provider xai --login-type oauth` opens xAI OAuth through
 `grok login --oauth`, independently of Codescribe. `device-code` selects the
 provider's device flow. These two modes require the Grok CLI. `--login-type key`
 prompts privately into macOS Keychain for `--provider xai|openai|deepinfra|custom`.
@@ -117,14 +117,14 @@ The xAI speaker prefers that explicit key, otherwise it reads Grok's xAI OAuth
 session. OpenAI uses its API key; DeepInfra/custom credentials are stored but
 their speech lanes are not implemented. Unsupported OAuth/device-code providers
 fail explicitly. Tokens are never arguments or diagnostic output.
-`cs-say --help` and `cs-say auth --help` describe the modes and examples.
+`x9say --help` and `x9say auth --help` describe the modes and examples.
 
 `--say` is the only voice path. It appends one `codescribe.agent-reply.v1` row
 to the bus with the playback result. It speaks through the same TTS lane as the app (xAI by default;
 OpenAI when the profile or `--tts-vendor` says so):
 
 ```bash
-cs-say "Build gotowy. Czeka na decyzję o wydaniu." \
+x9say "Build gotowy. Czeka na decyzję o wydaniu." \
   --provider <provider> --session <provider-session-id>
 ```
 
@@ -201,7 +201,7 @@ refresh still needs a real `spoken: true` playback receipt before reporting
 that voice works; provider-side revocation can end a retained login.
 
 ```bash
-cs-say auth --provider xai --login-type device-code
+x9say auth --provider xai --login-type device-code
 ```
 
 One agent refreshes at a time, so the user confirms a single code: say so

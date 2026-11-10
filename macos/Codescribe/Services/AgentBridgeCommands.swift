@@ -318,7 +318,7 @@ enum OverlayDeliveryControl: String, CaseIterable, Sendable {
   case revise, withdraw, release
 }
 
-/// One bound channel skipped by `cs-bus --send-text` during a channel-0 broadcast.
+/// One bound channel skipped by `x9bus --send-text` during a channel-0 broadcast.
 struct AgentBusSkippedRecipient: Codable, Equatable, Sendable {
   let channel: String
   let reason: String
@@ -403,7 +403,7 @@ struct AgentBusSkippedRecipient: Codable, Equatable, Sendable {
   }
 }
 
-/// Receipt decoded from `cs-bus --send-text` stdout (`kind == "message_published"`).
+/// Receipt decoded from `x9bus --send-text` stdout (`kind == "message_published"`).
 struct AgentBusTextPublication: Equatable, Sendable {
   let messageID: String
   let holdUntil: String?
@@ -476,7 +476,7 @@ private struct AgentBroadcastPolicyReceipt: Decodable, Sendable {
   }
 }
 
-/// App-side invocations of the installed managed `cs-bus` command. They live
+/// App-side invocations of the installed managed `x9bus` command. They live
 /// apart from `AgentBridgeInstaller.swift` because they reference app types,
 /// and that file is also compiled on its own by `make install-bus`.
 extension RealAgentBridgeInstaller {
@@ -493,7 +493,7 @@ extension RealAgentBridgeInstaller {
     guard let channel = UInt8(owner.channel), (1...9).contains(channel) else {
       throw CocoaError(.fileReadCorruptFile)
     }
-    let executable = installer.commandURL("cs-bus")
+    let executable = installer.commandURL("x9bus")
     guard installer.fileManager.isExecutableFile(atPath: executable.path),
       installer.managedCommandID(executable) != nil
     else { throw CocoaError(.fileNoSuchFile) }
@@ -774,7 +774,7 @@ extension RealAgentBridgeInstaller {
     channel: String, agentOnly: Bool = false,
     installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
   ) async throws -> String {
-    let executable = installer.commandURL("cs-bus")
+    let executable = installer.commandURL("x9bus")
     guard installer.fileManager.isExecutableFile(atPath: executable.path),
       installer.managedCommandID(executable) != nil
     else {
@@ -828,7 +828,7 @@ extension RealAgentBridgeInstaller {
   private static func runPlaybackMuteCommand(
     _ arguments: [String], installer: RealAgentBridgeInstaller
   ) async throws {
-    let executable = installer.commandURL("cs-bus")
+    let executable = installer.commandURL("x9bus")
     guard installer.fileManager.isExecutableFile(atPath: executable.path),
       installer.managedCommandID(executable) != nil
     else {
@@ -881,7 +881,7 @@ extension RealAgentBridgeInstaller {
   static func acquireIdleLanguageRestartLease(
     installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
   ) async throws -> FileHandle {
-    let executable = installer.commandURL("cs-bus")
+    let executable = installer.commandURL("x9bus")
     guard installer.fileManager.isExecutableFile(atPath: executable.path),
       installer.managedCommandID(executable) != nil
     else { throw InterfaceLanguageRestartError.unavailable }
@@ -972,7 +972,7 @@ extension RealAgentBridgeInstaller {
     alsoSentTo: [OverlayConversationOwner] = [],
     installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
   ) async throws -> AgentBusTextPublication {
-    let executable = installer.commandURL("cs-bus")
+    let executable = installer.commandURL("x9bus")
     guard installer.fileManager.isExecutableFile(atPath: executable.path),
       installer.managedCommandID(executable) != nil
     else {
@@ -1026,7 +1026,7 @@ extension RealAgentBridgeInstaller {
           String(data: refusalData.suffix(4096), encoding: .utf8)?
           .trimmingCharacters(in: .whitespacesAndNewlines)
           .components(separatedBy: "\n").last?
-          .replacingOccurrences(of: "cs-bus: ", with: "") ?? ""
+          .replacingOccurrences(of: "x9bus: ", with: "") ?? ""
         throw NSError(
           domain: "Codescribe.BusText", code: Int(process.terminationStatus),
           userInfo: [
@@ -1054,7 +1054,7 @@ extension RealAgentBridgeInstaller {
       target.sampleEnd > target.sampleStart,
       !target.recipientIDs.isEmpty
     else { throw AgentBusMessageValidationError.invalidAttachment }
-    let executable = installer.commandURL("cs-bus")
+    let executable = installer.commandURL("x9bus")
     guard installer.fileManager.isExecutableFile(atPath: executable.path),
       installer.managedCommandID(executable) != nil
     else {
@@ -1089,7 +1089,7 @@ extension RealAgentBridgeInstaller {
           String(data: diagnosticData.suffix(4096), encoding: .utf8)?
           .trimmingCharacters(in: .whitespacesAndNewlines)
           .components(separatedBy: "\n").last?
-          .replacingOccurrences(of: "cs-bus: ", with: "") ?? ""
+          .replacingOccurrences(of: "x9bus: ", with: "") ?? ""
         // The helper's refusal names the actual cause (stale epoch, closed
         // capture, unreadable file); a bare generic sentence left the person
         // guessing (Maciej, 2026-10-28). Show both.
@@ -1195,7 +1195,7 @@ extension RealAgentBridgeInstaller {
     busPath: String, text: String? = nil,
     installer: RealAgentBridgeInstaller = RealAgentBridgeInstaller()
   ) async throws {
-    let executable = installer.commandURL("cs-bus")
+    let executable = installer.commandURL("x9bus")
     guard installer.fileManager.isExecutableFile(atPath: executable.path),
       installer.managedCommandID(executable) != nil
     else {
@@ -1251,7 +1251,7 @@ extension RealAgentBridgeInstaller {
     busPath: String, stop: Bool
   ) async throws {
     let installer = RealAgentBridgeInstaller()
-    let executable = installer.commandURL("cs-bus")
+    let executable = installer.commandURL("x9bus")
     guard installer.fileManager.isExecutableFile(atPath: executable.path),
       installer.managedCommandID(executable) != nil
     else {
@@ -1300,7 +1300,7 @@ extension RealAgentBridgeInstaller {
     }.value
   }
 
-  /// `cs-bus --play-reply` exits 5 when the reply was not spoken and its
+  /// `x9bus --play-reply` exits 5 when the reply was not spoken and its
   /// outcome (stopped, take began, refused, failed) is already published on
   /// the reply's playback record (`speak_published_reply`). The record is
   /// what the conversation shows, so the exit is not a second error.

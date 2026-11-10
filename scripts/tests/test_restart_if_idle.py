@@ -75,11 +75,11 @@ class RestartIfIdleTests(unittest.TestCase):
         output = ""
         if executable == "pgrep":
             output = "\n".join(str(pid) for pid in sorted(self.running))
-        elif executable == "cs-bus":
+        elif executable == "x9bus":
             output = str(self.root / "agent-turn.lock")
         elif executable == "afplay":
             pass
-        elif executable == "cs-say":
+        elif executable == "x9say":
             self.spoken.append(arguments[1])
         elif executable == "codesign":
             pass
@@ -355,7 +355,7 @@ class RestartIfIdleTests(unittest.TestCase):
             fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
             code, result, _ = self.invoke_main("--newer-only", "--wait", "600")
         self.assertEqual((code, result["status"]), (0, "deferred_to_active_waiter"))
-        self.assertEqual([Path(call[0]).name for call in self.calls], ["cs-bus"])
+        self.assertEqual([Path(call[0]).name for call in self.calls], ["x9bus"])
 
     def test_unattended_run_without_an_application_has_nothing_to_do(self):
         self.running = set()
@@ -369,7 +369,7 @@ class RestartIfIdleTests(unittest.TestCase):
             code, result, _ = self.invoke_main("--newer-only", "--announce")
         self.assertEqual((code, result["status"]), (0, "restarted"))
         self.assertEqual(self.spoken, ["Zrobione"])
-        self.assertEqual(Path(self.calls[-1][0]).name, "cs-say")
+        self.assertEqual(Path(self.calls[-1][0]).name, "x9say")
         self.assertEqual(self.calls[-1][1:], ["Zrobione"])
         self.assertEqual(Path(self.calls[-2][0]).name, "afplay")
         self.assertNotIn("say", [Path(call[0]).name for call in self.calls])
@@ -381,14 +381,14 @@ class RestartIfIdleTests(unittest.TestCase):
         self.assertEqual((code, result["status"]), (0, "restarted"))
         self.assertEqual(self.calls[-1][1:], ["Zrobione", "--voice", "TestVoice"])
 
-    def test_announce_uses_local_bin_when_cs_say_is_not_on_path(self):
+    def test_announce_uses_local_bin_when_x9say_is_not_on_path(self):
         self.stale_pids = {123}
         with patch.dict(os.environ, {"RESTART_ANNOUNCE_VOICE": ""}), \
                 patch.object(restart.shutil, "which", return_value=None):
             code, result, _ = self.invoke_main("--newer-only", "--announce")
         self.assertEqual((code, result["status"]), (0, "restarted"))
         self.assertEqual(
-            self.calls[-1], [str(Path.home() / ".local/bin/cs-say"), "Zrobione"]
+            self.calls[-1], [str(Path.home() / ".local/bin/x9say"), "Zrobione"]
         )
 
     def test_announce_speaks_failure_after_a_refused_restart(self):

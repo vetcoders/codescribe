@@ -44,19 +44,20 @@ Use the current provider token and its real session ID: `codex` with the current
 thread ID; `claude-code` in Claude Code, where the helper reads
 `CLAUDE_CODE_SESSION_ID` (never `claude`); `kimi-code`; `junie`. Keep the same
 token on every command of the connection: another token is another lease, so
-`cs-say --provider claude` against a `claude-code` attachment fails with
+`x9say --provider claude` against a `claude-code` attachment fails with
 `--say needs --name`. Fix the identity; do not add another lease's name.
 Never invent a session or borrow another chat's identity. Reuse an established
 name. Ask for a name/channel only when the request and session do not supply them.
 Validate the channel as one digit 1–9. Quote arguments as data.
 
-Check `cs-bus --version` and `cs-say --version` at connect or when diagnosing;
-if absent from PATH, use `~/.local/bin/cs-bus` and `~/.local/bin/cs-say`.
+Check `x9bus --version` and `x9say --version` at connect or when diagnosing;
+if absent from PATH, use `~/.local/bin/x9bus` and `~/.local/bin/x9say`.
+`cs-bus` and `cs-say` remain compatibility aliases for existing client setups.
 Missing helpers authorize no installation or app restart.
 
 ```bash
-cs-bus --attach --channel CHANNEL --name NAME --provider PROVIDER --session SESSION
-cs-bus --status --provider PROVIDER --session SESSION
+x9bus --attach --channel CHANNEL --name NAME --provider PROVIDER --session SESSION
+x9bus --status --provider PROVIDER --session SESSION
 ```
 
 Use this chat's values. Add `--voice VOICE` only when requested;
@@ -79,7 +80,7 @@ recovery and inherited messages. An undrained reader must resume, not be killed.
 
 Follow [Monitor and agent wakeup](references/monitor.md) before ending the turn.
 Claude Code uses the Codescribe plugin or a completion-notifying background
-task; so do Kimi and agy. Codex runs `cs-bus --watch --until-event` in one `tty`
+task; so do Kimi and agy. Codex runs `x9bus --watch --until-event` in one `tty`
 exec cell beside `codex-queue`; other output-notifying providers reuse one
 `--watch --bell` monitor. A queue, bare shell or `tail -F` alone proves no wakeup.
 Verify the provider's actual notification mechanism; never start a second follower.
@@ -124,7 +125,7 @@ queued copy, an incomplete notification or missing owner coordinates, read
 the current mailbox before acting:
 
 ```bash
-cs-bus --read-pending --read-limit 2 --provider PROVIDER --session SESSION
+x9bus --read-pending --read-limit 2 --provider PROVIDER --session SESSION
 ```
 
 1. Read the complete returned messages and their provenance. Retain the exact
@@ -132,7 +133,7 @@ cs-bus --read-pending --read-limit 2 --provider PROVIDER --session SESSION
 2. Immediately acknowledge only those IDs, before work, replies or waits:
 
    ```bash
-   cs-bus --provider PROVIDER --session SESSION --ack ID1 ID2
+   x9bus --provider PROVIDER --session SESSION --ack ID1 ID2
    ```
 
 3. Read again until `remaining` is zero, then perform one extra read for arrivals
@@ -168,15 +169,15 @@ for the complete text; a notice or truncated output is not complete receipt.
 Write concise prose for the user: result and next concrete action. Keep raw
 JSON, PCM receipts and command logs in diagnostics. Choose the destination:
 
-- **Your Inbox:** `cs-bus --send "TEXT" --to 10 --provider PROVIDER --session SESSION`.
+- **Your Inbox:** `x9bus --send "TEXT" --to 10 --provider PROVIDER --session SESSION`.
   This is the user's retained text inbox, without a microphone or agent lease.
 - **Voice / reply in this agent's conversation:** unless asked for quiet, use
-  `cs-say "TEXT" --provider PROVIDER --session SESSION --reply-to ID` with the
+  `x9say "TEXT" --provider PROVIDER --session SESSION --reply-to ID` with the
   exact owned ID read and ACKed. Keep the retained voice and mute choice.
-- **Requested agent coordination:** use `cs-bus --send "TEXT" --to NAME`
+- **Requested agent coordination:** use `x9bus --send "TEXT" --to NAME`
   (or `--to 0` for the group), with your provider/session. On channel 0, send
-  one text, then `cs-bus --play-reply MESSAGE_ID --playback-ticket TICKET`
-  speaks that same message to the user; do not add a separate `cs-say`.
+  one text, then `x9bus --play-reply MESSAGE_ID --playback-ticket TICKET`
+  speaks that same message to the user; do not add a separate `x9say`.
 
 The [messaging guide](references/inbox.md) explains inbox history, channel
 selection, co-audience and how to verify the destination. Follow [Voice reply](references/voice-reply.md)
@@ -192,7 +193,7 @@ and monitor; restarting a reader never authorizes replay of completed tasks.
 For an explicit stop, close the owned monitor and run:
 
 ```bash
-cs-bus --detach --provider PROVIDER --session SESSION
+x9bus --detach --provider PROVIDER --session SESSION
 ```
 
 At a handoff either detach or record which provider/session retains the channel.

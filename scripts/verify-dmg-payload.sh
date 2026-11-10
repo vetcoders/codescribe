@@ -479,6 +479,8 @@ if actual != listed:
 required = {
     "bin/bus-demux.py",
     "bin/codescribe",
+    "bin/x9bus",
+    "bin/x9say",
     "bin/cs-bus",
     "bin/cs-say",
     "skills/codescribe/SKILL.md",

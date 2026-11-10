@@ -42,7 +42,7 @@ class SayEntryTests(unittest.TestCase):
         self.grok.chmod(0o755)
         self.command = [
             sys.executable,
-            str(Path(__file__).resolve().parents[1] / "cs-say"),
+            str(Path(__file__).resolve().parents[1] / "x9say"),
         ]
         self.environment = dict(os.environ, PATH=str(self.root))
 
@@ -60,7 +60,7 @@ class SayEntryTests(unittest.TestCase):
             with self.assertRaises(ExecCaptured):
                 runpy.run_path(self.command[1], run_name="__main__")
             forwarded = execute.call_args.args[1]
-            self.assertEqual(Path(forwarded[1]).name, "cs-bus")
+            self.assertEqual(Path(forwarded[1]).name, "x9bus")
             with (
                 patch.object(sys, "argv", forwarded[1:]),
                 patch.object(DEMUX, "bridge_home", return_value=self.root / "bridge"),
@@ -212,7 +212,7 @@ class SayEntryTests(unittest.TestCase):
     def test_help_starts_with_the_system_voice_form(self):
         result = subprocess.run(self.command + ["--help"], env=self.environment,
                                 capture_output=True, text=True, check=True)
-        self.assertTrue(result.stdout.startswith("cs-say TEXT — Codescribe system voice"))
+        self.assertTrue(result.stdout.startswith("x9say TEXT — X9bus system voice"))
         for word in ("Carina", "1.0", "CS_SAY_VOICE", "CS_SAY_SPEED", "CS_SAY_TTS_VENDOR"):
             self.assertIn(word, result.stdout)
 

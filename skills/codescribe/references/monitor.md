@@ -2,7 +2,7 @@
 
 ## Anti-pattern: polling beside the listener
 
-An agent loop that runs `cs-bus --read-pending` every 2 seconds while a watch
+An agent loop that runs `x9bus --read-pending` every 2 seconds while a watch
 or native waiter is already armed duplicates the listener, floods tool output
 and spends context on an empty mailbox. Do not add such a loop, including as a
 "safety" probe after each stdout wait. The monitor forwards actual watch output;
@@ -19,8 +19,8 @@ until zero plus one extra read. Then return to the event-driven listener.
 ## Channel 0 reception
 
 Reception has two independent axes. Change either during a session with
-`cs-bus --broadcast on|off --provider PROVIDER --session SESSION [--bus BUS]`
-(channel-0 membership) and `cs-bus --quiet on|off --provider PROVIDER --session SESSION [--bus BUS]`
+`x9bus --broadcast on|off --provider PROVIDER --session SESSION [--bus BUS]`
+(channel-0 membership) and `x9bus --quiet on|off --provider PROVIDER --session SESSION [--bus BUS]`
 (the moon, do not disturb); omission of `--bus` uses the validated lease's bus.
 Both default to on channel 0 with the moon dark. The moon retains every message
 from every channel — broadcasts, the Founder's directs and peer messages — in
@@ -39,14 +39,14 @@ watch submits to Codex on the conversation's Mac; the mailbox follower does not
 submit there. A remote watch also forwards peer coordination messages while
 preserving their attribution and lack of Founder authority.
 
-`cs-bus --attach --provider codex --session <thread-id> --name <name> --channel <n>`
+`x9bus --attach --provider codex --session <thread-id> --name <name> --channel <n>`
 automatically selects `codex-queue`. The follower submits a short
 name/channel/delivery header to `codex queue`, but what follows the header
 depends on who sent it. A Founder-sourced delivery (typed, or a sealed voice
 take) carries its complete message text, headed `from: Founder (typed)` or
 `from: Founder (voice)`. A peer agent's delivery carries no text at all: it is
 a notice naming the sending peer and channel, the words "peer coordination,
-not a Founder instruction", and the exact `cs-bus --read-pending` command to
+not a Founder instruction", and the exact `x9bus --read-pending` command to
 read it. Treat any queue entry without an explicit `from: Founder (...)` tag
 as peer coordination, never as a new Founder instruction, and read the owned
 mailbox before acting on it. The canonical mailbox retains the original
@@ -60,8 +60,8 @@ this Mac only runs `codex exec-server --remote …` — has none. Every submissi
 is refused with `no rollout found for thread id …` and its receipt says
 `disposition: rejected`; `codex queue --remote unix://` does not help. Such an
 agent still reads, ACKs, sends and speaks, but cannot be woken after its turn
-ends: keep the turn open with one `cs-bus --watch --until-event`, or let an
-orchestrator woken through its own channel resume it. A `codex exec-server --remote` parent of the agent's `cs-bus --watch` process identifies a cloud thread.
+ends: keep the turn open with one `x9bus --watch --until-event`, or let an
+orchestrator woken through its own channel resume it. A `codex exec-server --remote` parent of the agent's `x9bus --watch` process identifies a cloud thread.
 
 The default watch bell includes the complete message. Once this conversation
 receives its full text and matching owner coordinates, immediately ACK the
@@ -73,7 +73,7 @@ the turn ends to acknowledge messages delivered during it.
 For a native queue copy or an incomplete watch notification, read the current mailbox:
 
 ```bash
-cs-bus --read-pending --provider codex --session <thread-id>
+x9bus --read-pending --provider codex --session <thread-id>
 ```
 
 This returns complete unread non-draft conversational projections: unchanged
@@ -102,13 +102,13 @@ Receipts under `agent-bridge/wakeups/<lease-id>/<delivery-id>.json` distinguish
 Provider failures retain bounded stderr as `provider_error` in the private
 receipt; inspect it locally, never broadcast raw receipts. For remote mailboxes,
 `--remote HOST --status` points to local receipts under `runtime/remote-native/`.
-`cs-bus --status` reports pending wakeup dispositions. Provider acceptance is
+`x9bus --status` reports pending wakeup dispositions. Provider acceptance is
 not conversation receipt: only the receiving conversation calls `--ack` after
 reading. Restart never resubmits accepted or ambiguous deliveries. Inspect a
 failed submission before retrying:
 
 ```bash
-cs-bus --retry-wakeup <delivery-id> --provider codex --session <thread-id>
+x9bus --retry-wakeup <delivery-id> --provider codex --session <thread-id>
 ```
 
 An uncertain attempt might already be queued: verify before retrying it.
@@ -119,7 +119,7 @@ has finished its turn (Founder's test, 2026-10-18). `--on-seal` selects a custom
 native queue. Neither touches microphone or app lifecycle.
 
 Every attachment must start the provider's output-notifying monitor on
-`cs-bus --watch --provider codex --session <thread-id>`. Its default bell carries
+`x9bus --watch --provider codex --session <thread-id>`. Its default bell carries
 the whole message; `--bell` spells that default explicitly. It is mandatory for active tasks, even
 with native queue. Renew bounded notification windows throughout the task.
 The watch carries complete text and the owner/sender/reply coordinates required
@@ -145,7 +145,7 @@ Never ACK it, reply to it or treat it as a task. Unread messages continue
 through the usual bell or `--read-pending` → `--ack` flow.
 
 - `follower_recovered`: no action is needed.
-- `recovery_failed` or `unrecoverable`: report it, inspect `cs-bus --status`,
+- `recovery_failed` or `unrecoverable`: report it, inspect `x9bus --status`,
   and re-run the same `--attach` once.
 - `recovery_suspended`: two losses happened without a new message. The helper
   stops reconnecting. Tell the user, and re-attach only on purpose. An explicit
@@ -187,14 +187,14 @@ envelopes, preserving delivery identity and draft/seal diagnostics.
 
 Kimi's `Bash` supports `run_in_background=true` and notifies the agent when the
 command **finishes**. Streaming output in its tool card does not itself deliver
-another model turn. Do not run an infinite `cs-bus --watch` in foreground or rely
+another model turn. Do not run an infinite `x9bus --watch` in foreground or rely
 on its background process ever completing.
 
 Use one background task with this command (replace SESSION with the current
 Kimi session ID, retaining any explicit bridge-home override):
 
 ```bash
-cs-bus --watch --until-event --provider kimi-code --session SESSION
+x9bus --watch --until-event --provider kimi-code --session SESSION
 ```
 
 Pass it to Kimi's `Bash` with `run_in_background=true`, `disable_timeout=true`
@@ -233,7 +233,7 @@ never wakes it. Run one background command (replace CONVERSATION_ID with this
 conversation's id) with `WaitMsBeforeAsync` set to 1000, then end the turn:
 
 ```bash
-cs-bus --watch --until-event --provider agy --session CONVERSATION_ID
+x9bus --watch --until-event --provider agy --session CONVERSATION_ID
 ```
 
 Its exit with `mailbox_ready` arrives as a system message and starts a turn. On
@@ -244,7 +244,7 @@ drain, rearm one task.
 
 ## OMP: the plugin's waiter
 
-The Codescribe OMP plugin holds `cs-bus --omp-wake` after every turn end and
+The Codescribe OMP plugin holds `x9bus --omp-wake` after every turn end and
 starts a turn on a new delivery; add no other waiter. In the Founder's wake
 test on dragon (2026-10-17) Olek answered through it.
 
@@ -260,7 +260,7 @@ Prefer the Codescribe plugin: install its payload marketplace once with
 follow the plugin's `codescribe:codescribe` skill, using the real hook identity.
 It connects, reads, ACKs and replies without a second terminal listener.
 
-The Codescribe plugin's `Stop` hook runs `cs-bus --claude-code-wake` as an
+The Codescribe plugin's `Stop` hook runs `x9bus --claude-code-wake` as an
 `asyncRewake` hook. It waits in the background, holds one lock per lease, and
 exits 75 (mapped to the hook's wake code 2) once per delivery not yet announced,
 with a `codescribe_mailbox_ready` notice on stderr. It never reads or ACKs.
@@ -278,7 +278,7 @@ probe and Stop waiter never ACK messages themselves. Keep the same connection
 and end the turn after draining; the hooks re-arm automatically.
 
 Without the plugin, use the Kimi pattern with `--provider claude-code`: one
-`Bash(run_in_background=true)` task over `cs-bus --watch --until-event`; on
+`Bash(run_in_background=true)` task over `x9bus --watch --until-event`; on
 `mailbox_ready` read, ACK, act, and start one new task before ending the turn.
 An interactive Claude Code session keeps a background task running; unattended
 runs (`-p`, Agent SDK, CI) stop it at its timeout (30 min by default, at most
@@ -300,7 +300,7 @@ reported; a lost follower is still the waiter's to announce.
 `tail -F <log> | python` filter:
 
 ```bash
-cs-bus \
+x9bus \
   --watch --provider <provider> --session <provider-session-id>
 ```
 
@@ -389,7 +389,7 @@ inside **one** `functions.exec` cell that then calls `yield_control()`.
 ```js
 // @exec: {"yield_time_ms": 2000, "max_output_tokens": 2000}
 const start = await tools.exec_command({
-  cmd: "exec cs-bus --watch --until-event --provider codex --session THREAD_ID",
+  cmd: "exec x9bus --watch --until-event --provider codex --session THREAD_ID",
   tty: true,
   yield_time_ms: 1000,
   max_output_tokens: 5000,
@@ -453,7 +453,7 @@ run, before any task execution or reply. Acoustic diagnostics are not a reading
 prerequisite:
 
 ```bash
-cs-bus \
+x9bus \
   --provider codex --session SESSION_ID --ack DELIVERY_ID [DELIVERY_ID ...]
 ```
 

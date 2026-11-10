@@ -307,7 +307,7 @@ install-app: install-voice-lab
 	@version=$$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "/Applications/$(CODESCRIBE_APP_NAME).app/Contents/Info.plist" 2>/dev/null || true); \
 	if [ -n "$$version" ]; then \
 		echo "Build $$version zainstalowany"; \
-		if [ "$(INSTALL_ANNOUNCE)" = "1" ]; then "$(HOME)/.local/bin/cs-say" "Build $$version zainstalowany" >/dev/null 2>&1 || true; fi; \
+		if [ "$(INSTALL_ANNOUNCE)" = "1" ]; then "$(HOME)/.local/bin/x9say" "Build $$version zainstalowany" >/dev/null 2>&1 || true; fi; \
 	fi
 	@CODESCRIBE_INSTALL_LANE=1 "$(HOME)/.codescribe/bin/stt-probe" --post-install
 	@if [ "$(RESTART_AFTER_INSTALL)" = "1" ]; then \

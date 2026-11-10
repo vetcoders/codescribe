@@ -13,7 +13,7 @@ detach a session, open a shell, read arbitrary files, start a recorder or
 reach any mailbox but its own.
 
 Four files make up the connector, all shipped in the managed agent-bridge
-payload next to `bus-demux.py`, `bus-mcp.py` and `cs-bus`:
+payload next to `bus-demux.py`, `bus-mcp.py` and `x9bus`:
 
 | File                           | Role                                                                                      |
 | ------------------------------ | ----------------------------------------------------------------------------------------- |
@@ -32,7 +32,7 @@ behind a transport that proves who is calling, and give that transport no
 broader reach than the agent needs.
 
 Credentials the transport or its launcher holds in this process's environment
-never reach the BUS helpers it starts: `cs-bus` and everything `cs-bus` starts
+never reach the BUS helpers it starts: `x9bus` and everything `x9bus` starts
 receive only `PATH`, `HOME`, `USER`, `LOGNAME`, `LANG`, `LC_*`, `TMPDIR`, `TZ`,
 `SPEECH_TTS_MODEL_OPENAI`, `LLM_OPENAI_API_KEY`, `CODESCRIBE_ENV_PATH` and the
 bus location keys `bus-demux` declares in `BUS_PATH_ENV_KEYS`
@@ -41,7 +41,7 @@ see `CHILD_ENVIRONMENT` in `bus-mcp-agent.py`. The location keys let the speech
 capture guard find the same transcript bus the app writes, which it resolves on
 its own rather than from the mailbox `--bus`. `LLM_OPENAI_API_KEY` is the one
 credential the BUS helper itself reads: OpenAI speech takes it before Keychain,
-exactly as for `cs-say`. Bridge home, bus, provider and session travel as
+exactly as for `x9say`. Bridge home, bus, provider and session travel as
 explicit arguments. The native key helper has its own, narrower allowlist. Still
 start the process with the smallest environment your transport allows.
 
@@ -238,7 +238,7 @@ equivalent in-process entry point for embedding.
 ## Managed updates
 
 The agent-bridge payload carries these four files alongside `bus-mcp.py`,
-`bus-demux.py` and `cs-bus`. `make install-bus` stages, verifies and atomically
+`bus-demux.py` and `x9bus`. `make install-bus` stages, verifies and atomically
 replaces that code through the existing installer. Lease, cursor, acknowledgment
 and Events state live outside the replaceable payload. The regression in
 `scripts/tests/test_install_bus_payload.py` stages the payload, reads and

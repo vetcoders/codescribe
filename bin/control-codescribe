@@ -55,7 +55,7 @@ SURFACES: dict[str, dict[str, str]] = {
         "symbol": "codescribe.transcript.v1",
         "test_path": "scripts/tests/test_bus_read_ack.py",
         "seed": "python3 -m unittest scripts/tests/test_bus_read_ack.py",
-        "reach": "cs-bus / codescribe_status / codescribe_read / codescribe_ack",
+        "reach": "x9bus / codescribe_status / codescribe_read / codescribe_ack",
     },
     "macos-overlay": {
         "path": "macos/Codescribe/Screens/Overlay/OverlayState.swift",
@@ -149,14 +149,23 @@ def loaded_inodes_match(pid: int, app: Path) -> bool | None:
 
 
 def resolve_restart_root() -> Path:
-    helper = Path.home() / ".local/bin/cs-bus"
-    if helper.is_file():
+    helper = resolve_bus_helper()
+    if helper is not None:
         rc, out = run_cmd([str(helper), "--print-agent-turn-lease-path"])
         if rc == 0 and out:
             lease_path = Path(out.strip())
             if lease_path.is_absolute():
                 return lease_path.with_name("restart-if-idle")
     return DEFAULT_RESTART_ROOT
+
+
+def resolve_bus_helper() -> Path | None:
+    """Prefer the public command name while reading older installed aliases."""
+    for name in ("x9bus", "cs-bus"):
+        helper = Path.home() / ".local/bin" / name
+        if helper.is_file():
+            return helper
+    return None
 
 
 def inspect_running_and_installed(
@@ -303,7 +312,7 @@ def cmd_dev(args: argparse.Namespace) -> int:
 def cmd_login(args: argparse.Namespace) -> int:
     codescribe_home = Path.home() / ".codescribe"
     bus_binding = codescribe_home / "agent-bridge/vc.agent-audience-binding.v1.json"
-    cs_bus = Path.home() / ".local/bin/cs-bus"
+    bus_helper = resolve_bus_helper()
     checks: list[dict[str, Any]] = []
 
     binding_ok = False
@@ -318,23 +327,24 @@ def cmd_login(args: argparse.Namespace) -> int:
             "name": "agent-bridge-binding",
             "ok": binding_ok,
             "detail": str(bus_binding) if binding_ok else "missing or invalid JSON",
-            "fix": "Start Codescribe or run cs-bus --status to initialize agent-bridge",
+            "fix": "Start X9bus or run x9bus --status to initialize agent-bridge",
         }
     )
 
     lease_ok = False
-    lease_detail = "cs-bus helper missing"
-    if cs_bus.is_file():
-        rc, out = run_cmd([str(cs_bus), "--print-agent-turn-lease-path"])
+    helper_name = bus_helper.name if bus_helper else "x9bus"
+    lease_detail = f"{helper_name} helper missing"
+    if bus_helper is not None:
+        rc, out = run_cmd([str(bus_helper), "--print-agent-turn-lease-path"])
         if rc == 0 and out.strip():
             lease_ok = Path(out.strip()).parent.is_dir()
             lease_detail = out.strip()
     checks.append(
         {
-            "name": "cs-bus-runtime-lease-dir",
+            "name": "x9bus-runtime-lease-dir",
             "ok": lease_ok,
             "detail": lease_detail,
-            "fix": "Run make install-bus to install ~/.local/bin/cs-bus and initialize runtime dir",
+            "fix": "Run make install-bus to install ~/.local/bin/x9bus and initialize runtime dir",
         }
     )
 

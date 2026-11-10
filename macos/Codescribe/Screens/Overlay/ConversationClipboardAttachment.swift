@@ -3,7 +3,7 @@ import Foundation
 import UniformTypeIdentifiers
 
 /// Clipboard bytes stay on disk. The draft contains editable local pointers;
-/// publication adds verified metadata through cs-bus, never inline file bytes.
+/// publication adds verified metadata through x9bus, never inline file bytes.
 enum ConversationClipboardAttachment {
   static let maximumBytes = 50 * 1024 * 1024
   static let inlineTextBytes = 4096

@@ -48,7 +48,7 @@ different lease and is never produced by the plugin.
 ## How listening works
 
 After `codescribe_connect` the agent **ends its turn**. The plugin's `Stop` and
-`SessionStart` hooks run `cs-bus --claude-code-wake` as Claude Code `asyncRewake`
+`SessionStart` hooks run `x9bus --claude-code-wake` as Claude Code `asyncRewake`
 hooks:
 
 - The hook process waits in the background on the lease file's OS event. No model
@@ -71,9 +71,9 @@ hooks:
   no `Stop` hook after a user interrupt and runs `StopFailure` instead after an
   API error; before this, such a turn left the conversation without a waiter until
   someone typed. With a waiter already armed the extra hook returns at once.
-- A `cs-bus --watch --until-event` background task of the same lease takes
+- A `x9bus --watch --until-event` background task of the same lease takes
   precedence while it lives: the task holds `runtime/until-event/LEASE.lock`
-  shared (every provider's task does; `cs-bus --status` reports it as
+  shared (every provider's task does; `x9bus --status` reports it as
   `listener.until_event_alive`) and records what it reported in the announced
   ledger before it exits.
   The waiter stays armed but announces no delivery while that mark is held, and
@@ -91,7 +91,7 @@ hooks:
   unacknowledged. Detach or Claude Code exit ends it quietly.
 - The hook never reads, ACKs or replies. `codescribe_status` reports
   `native_wake_armed`.
-- Inside a running turn the `PostToolUse` hook runs `cs-bus --claude-code-probe`
+- Inside a running turn the `PostToolUse` hook runs `x9bus --claude-code-probe`
   after every tool call. With nothing unannounced it prints nothing and exits 0
   (one lease read, no model cost). With an unannounced delivery it prints the
   `codescribe_mailbox_ready` notice as `additionalContext`, so the model sees it
