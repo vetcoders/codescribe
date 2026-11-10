@@ -1691,8 +1691,9 @@ enum DictationOverlayWindow {
   @MainActor
   static let brandWordWidth: CGFloat = {
     let font = NSFont.systemFont(ofSize: miniWordSize, weight: .bold)
+    let wordmark = AppBranding.wordmark()
     return ceil(
-      ("codescribe" as NSString).size(withAttributes: [.font: font, .kern: miniWordTracking])
+      (wordmark as NSString).size(withAttributes: [.font: font, .kern: miniWordTracking])
         .width) + 1
   }()
 

@@ -1307,9 +1307,9 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
 
   private func commandManifestPath(for name: String) -> String {
     switch name {
-    case "x9-bus":
+    case "x9bus", "x9-bus":
       return "bin/cs-bus"
-    case "x9-say":
+    case "x9say", "x9-say":
       return "bin/cs-say"
     default:
       return "bin/" + name
@@ -1317,7 +1317,8 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
   }
 
   private func commandNames(manifest: AgentBridgeBundleManifest) -> [String] {
-    ["cs-bus", "x9-bus", "cs-say", "x9-say", "cs-junie", "bus-mcp.py"].filter { name in
+    ["cs-bus", "x9bus", "x9-bus", "cs-say", "x9say", "x9-say", "cs-junie", "bus-mcp.py"].filter {
+      name in
       let manifestPath = commandManifestPath(for: name)
       return manifest.files.contains { $0.path == manifestPath }
     }

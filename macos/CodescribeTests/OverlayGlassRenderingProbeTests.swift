@@ -36,7 +36,7 @@ final class OverlayGlassRenderingProbeTests: XCTestCase {
             appearance: .dark, showsActivityUnderline: true,
             contentInsets: NSEdgeInsets(top: 50, left: 20, bottom: 24, right: 20))
           HStack {
-            Text("codescribe").font(.system(size: 15, weight: .semibold))
+            Text("x9bus").font(.system(size: 15, weight: .semibold))
             Spacer()
             Text(verbatim: "\(tick)").monospacedDigit().frame(width: 50)
           }
@@ -202,7 +202,10 @@ final class OverlayGlassRenderingProbeTests: XCTestCase {
       state: state, intercomDesktopStore: OverlayIntercomDesktopStore(defaults: defaults),
       overlayEnabledProvider: { true }, assistiveStatusProvider: { false },
       panelFactory: { _, _ in panel }, orderPanelFront: { _ in }, orderPanelOut: { _ in })
-    defer { BackgroundTestWindow.tearDown(panel, state: state) }
+    defer {
+      controller.hide()
+      BackgroundTestWindow.tearDown(panel, state: state)
+    }
     controller.show()
     if mini { state.setPresentationMode(.mini) }
     panel.settleFrameTransition()

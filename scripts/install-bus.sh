@@ -48,7 +48,7 @@ PY
 "$ROOT/scripts/build-app.sh" --stage-agent-bridge "$STAGE/payload" "" "$PUBLISHER"
 build_installer
 "$STAGE/install" "$STAGE/payload"
-echo "Commands: ~/.local/bin/cs-bus, ~/.local/bin/cs-say and ~/.local/bin/cs-junie"
+echo "Commands: ~/.local/bin/x9bus, ~/.local/bin/x9say, ~/.local/bin/cs-bus, ~/.local/bin/cs-say and ~/.local/bin/cs-junie"
 echo "Claude Code plugin: /plugin marketplace add ~/.codescribe/agent-bridge/runtime/plugins; /plugin install codescribe@codescribe."
 echo "Native Junie extension: cs-bus --install-junie-extension; then /codescribe junie 6 in Junie."
 echo "OMP plugin: omp plugin marketplace add ~/.codescribe/agent-bridge/runtime/plugins; omp plugin install codescribe@codescribe; then /codescribe leon 4 in omp."
