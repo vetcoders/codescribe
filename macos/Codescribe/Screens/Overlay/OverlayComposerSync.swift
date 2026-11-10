@@ -128,6 +128,18 @@ extension OverlayState {
     }
   }
 
+  /// Restore a returned or refused draft to one conversation alone without
+  /// broadcasting attachment-only restorations into other linked composers.
+  func setPrivateConversationDraft(_ text: String, for id: String) {
+    reconcileDraftSyncOwners()
+    let before = conversationDraft(for: id)
+    guard !OverlayComposerProseEdit.identical(before, text) else { return }
+    conversationDrafts[id] = text
+    if let index = draftGroupIndex(for: id) {
+      resetDraftSyncEpoch(at: index)
+    }
+  }
+
   func applyConversationProseEdit(_ edit: OverlayComposerProseEdit, for id: String) {
     reconcileDraftSyncOwners()
     let source = ConversationDraft.split(conversationDraft(for: id))
@@ -191,7 +203,8 @@ extension OverlayState {
           appliedRange = range
           inserted = replacement.replacement
           if range.location < anchor {
-            metadata.proseAnchor = end > anchor
+            metadata.proseAnchor =
+              end > anchor
               ? range.location + inserted.utf16.count
               : anchor + inserted.utf16.count - range.length
           }
@@ -325,9 +338,11 @@ extension OverlayState {
       let staleSeat = seat != nil && !selected
       let elsewhere = draftGroupIndex(for: target.id)
       let occupiedElsewhere = !selected && !staleSeat && elsewhere != nil && elsewhere != home
-      let peers = elsewhere.map {
-        owningDraftSyncMembers(conversationDraftGroups[$0]).filter { $0.id != target.id }.map(\.name)
-      } ?? []
+      let peers =
+        elsewhere.map {
+          owningDraftSyncMembers(conversationDraftGroups[$0]).filter { $0.id != target.id }.map(
+            \.name)
+        } ?? []
       let linkBlocked = draftSyncBlockReason(
         homeMembers.union(elsewhere.map { conversationDraftGroups[$0].members } ?? [target.id]))
       let enabled: Bool
@@ -336,7 +351,10 @@ extension OverlayState {
         // A successor on this channel is a different owner. The seat must not
         // look selectable, and the click must not retarget the old group.
         enabled = false
-        note = String(localized: "This link no longer matches the agent on this channel. The message will not go to them.")
+        note = String(
+          localized:
+            "This link no longer matches the agent on this channel. The message will not go to them."
+        )
       } else if selected {
         enabled = homeLock == nil
         note = homeLock
@@ -346,7 +364,8 @@ extension OverlayState {
       } else if occupiedElsewhere {
         enabled = canLinkDraft(conversation.id, with: target.id)
         let list = peers.joined(separator: " · ")
-        note = list.isEmpty
+        note =
+          list.isEmpty
           ? String(localized: "Already in another sync. Choosing them joins the two syncs.")
           : String(localized: "Already in a sync with \(list). Choosing them joins the two syncs.")
       } else {
@@ -379,23 +398,32 @@ extension OverlayState {
 
   private func draftSyncBlockReason(_ members: Set<String>) -> String? {
     if draftMembershipIsRecording(members) {
-      return String(localized: "Dictation is in progress. This take keeps the recipients it started with. Stop it to add or remove someone.")
+      return String(
+        localized:
+          "Dictation is in progress. This take keeps the recipients it started with. Stop it to add or remove someone."
+      )
     }
     if !pendingTextMessages.isDisjoint(with: members)
       || !pendingCaptureAttachmentSends.isDisjoint(with: members)
       || members.contains(where: { captureAttachmentDrafts[$0] != nil })
     {
-      return String(localized: "A delivery is still going out. Wait for it to finish before changing recipients.")
+      return String(
+        localized:
+          "A delivery is still going out. Wait for it to finish before changing recipients.")
     }
     return nil
   }
 
   private func canLinkDraft(_ source: String, with target: String) -> Bool {
     let eligible = Set(draftSyncConversations.map(\.id))
-    guard source != target, eligible.contains(source), eligible.contains(target) else { return false }
-    let sourceMembers = draftGroupIndex(for: source).map { conversationDraftGroups[$0].members }
+    guard source != target, eligible.contains(source), eligible.contains(target) else {
+      return false
+    }
+    let sourceMembers =
+      draftGroupIndex(for: source).map { conversationDraftGroups[$0].members }
       ?? [source]
-    let targetMembers = draftGroupIndex(for: target).map { conversationDraftGroups[$0].members }
+    let targetMembers =
+      draftGroupIndex(for: target).map { conversationDraftGroups[$0].members }
       ?? [target]
     return !groupIsBusy(sourceMembers.union(targetMembers))
   }
@@ -449,8 +477,9 @@ extension OverlayState {
     }
     guard Set(participants.keys) == members else { return false }
     conversationDraftGroups.removeAll { !$0.members.isDisjoint(with: members) }
-    conversationDraftGroups.append(OverlayDraftSyncGroup(
-      id: "draft-sync:\(UUID().uuidString)", participants: participants))
+    conversationDraftGroups.append(
+      OverlayDraftSyncGroup(
+        id: "draft-sync:\(UUID().uuidString)", participants: participants))
     armedDraftSyncConversationID = nil
     // Linking changes who receives the open draft: a held edit started before
     // this must not steal focus on return.
@@ -463,6 +492,11 @@ extension OverlayState {
     guard let index = draftGroupIndex(for: id),
       !groupIsBusy(conversationDraftGroups[index].members)
     else { return }
+    if conversationDraftGroups[index].participants[id]?.owner == nil {
+      composerTargetRevision = UUID()
+      conversationDraftGroups.remove(at: index)
+      return
+    }
     unlinkConversationDraft(id)
   }
 
@@ -500,7 +534,8 @@ extension OverlayState {
     guard let index = draftGroupIndex(for: id),
       conversationDraftGroups[index].members.contains(where: { textMessageErrors[$0] != nil })
     else { return nil }
-    return String(localized: "Some linked agents did not receive this message. Send again to retry them.")
+    return String(
+      localized: "Some linked agents did not receive this message. Send again to retry them.")
   }
 
   func hasSynchronizedDraft(_ id: String) -> Bool { draftGroupIndex(for: id) != nil }

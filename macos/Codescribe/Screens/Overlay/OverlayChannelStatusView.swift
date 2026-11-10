@@ -1899,15 +1899,18 @@ struct OverlayChannelStatusView: View {
     status.project = agentProjects[channel.channel]
     status.lastHeartbeat = hudStates[channel.channel]?.lastHeartbeat
     if let conversation {
-      let visible = OverlayConversationView.visibleMessages(in: conversation)
-      if let sent = visible.last(where: { $0.kind == .user }) {
+      if let sent = OverlayConversationView.lastVisibleMessage(
+        in: conversation, where: { $0.kind == .user }
+      ) {
         let receipt = deliveryReceiptDisplay(for: channel, conversation: conversation)
         let reading = receipt?.messageID == sent.id ? receipt?.text : nil
         status.lastSent = .init(
           at: MessageTimestamp.date(fromISO8601: sent.emittedAt),
           status: reading.flatMap { $0.isEmpty ? nil : $0 })
       }
-      if let reply = visible.last(where: { $0.kind == .reply }) {
+      if let reply = OverlayConversationView.lastVisibleMessage(
+        in: conversation, where: { $0.kind == .reply }
+      ) {
         status.lastReply = .init(
           at: MessageTimestamp.date(fromISO8601: reply.emittedAt),
           preview: Self.drawerPreview(message: reply))
@@ -2531,7 +2534,7 @@ struct OverlayChannelStatusView: View {
     includePreview: Bool, titleAccessory: AnyView?,
     headerOnly: Bool, contentOnly: Bool, trailingMarks: AnyView?
   ) -> some View {
-    let last = conversation.flatMap { OverlayConversationView.visibleMessages(in: $0).last }
+    let last = conversation.flatMap { OverlayConversationView.lastVisibleMessage(in: $0) }
     return OverlayAgentRosterLabel(
       title: title, channel: statusChannel?.channel, conversationID: conversation?.id,
       descriptor: statusChannel.flatMap { agentDescriptor(for: $0) },
@@ -2679,8 +2682,10 @@ struct OverlayChannelStatusView: View {
   ) -> OverlayRosterReceipt? {
     guard !unavailable else { return nil }
     if let conversation, let owner = conversation.owner {
-      for message in OverlayConversationView.visibleMessages(in: conversation).reversed()
-      where message.kind == .user && message.showsDeliveryReceipts {
+      for message in conversation.messages.reversed()
+      where message.kind == .user && message.showsDeliveryReceipts
+        && !OverlayConversationView.isSkippedBroadcast(message, for: owner)
+      {
         guard
           let recipient = message.recipients.first(where: {
             $0.owner.provider == owner.provider

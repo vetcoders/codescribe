@@ -1143,9 +1143,10 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       markerValues.isRegularFile == true, markerValues.isSymbolicLink != true,
       let marker = try? decode(AgentBridgeManagedMarker.self, from: markerURL),
       marker.schema == Self.markerSchema,
-      (marker.client == client
+      marker.client == client
         || (client == .agents && marker.client == .claudeCode
-          && destination.standardizedFileURL == client.skillDirectory(home: homeDirectory).standardizedFileURL)),
+          && destination.standardizedFileURL
+            == client.skillDirectory(home: homeDirectory).standardizedFileURL),
       marker.agentBridgeRoot == bridgeRoot.standardizedFileURL.path
     else { return nil }
     return marker
@@ -1306,11 +1307,15 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
     let installedReplacement: Bool
   }
 
+  private static let publishedCommandNames = [
+    "cs-bus", "x9-bus", "x9bus", "cs-say", "x9-say", "x9say", "cs-junie", "bus-mcp.py",
+  ]
+
   private func commandManifestPath(for name: String) -> String {
     switch name {
-    case "x9-bus":
+    case "x9-bus", "x9bus":
       return "bin/cs-bus"
-    case "x9-say":
+    case "x9-say", "x9say":
       return "bin/cs-say"
     default:
       return "bin/" + name
@@ -1318,7 +1323,7 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
   }
 
   private func commandNames(manifest: AgentBridgeBundleManifest) -> [String] {
-    ["cs-bus", "x9-bus", "cs-say", "x9-say", "cs-junie", "bus-mcp.py"].filter { name in
+    Self.publishedCommandNames.filter { name in
       let manifestPath = commandManifestPath(for: name)
       return manifest.files.contains { $0.path == manifestPath }
     }
@@ -1331,15 +1336,33 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
   private static let commandMarker = "# codescribe-managed-command: "
 
   func managedCommandID(_ file: URL) -> String? {
-    guard let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+    let target = resolvedManagedCommandFile(file)
+    guard
+      let values = try? target.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
       values.isRegularFile == true, values.isSymbolicLink != true,
-      let text = try? String(contentsOf: file, encoding: .utf8),
+      let text = try? String(contentsOf: target, encoding: .utf8),
       let line = text.split(separator: "\n", maxSplits: 2).dropFirst().first,
       line.hasPrefix(Self.commandMarker),
       let metadata = try? JSONSerialization.jsonObject(
         with: Data(line.dropFirst(Self.commandMarker.count).utf8)) as? [String: Any]
     else { return nil }
     return metadata["managed_id"] as? String
+  }
+
+  private func resolvedManagedCommandFile(_ file: URL) -> URL {
+    guard
+      let values = try? file.resourceValues(forKeys: [.isSymbolicLinkKey]),
+      values.isSymbolicLink == true,
+      let destination = try? fileManager.destinationOfSymbolicLink(atPath: file.path)
+    else { return file }
+    let candidate = URL(
+      fileURLWithPath: destination, relativeTo: file.deletingLastPathComponent()
+    ).standardizedFileURL
+    let commandDir = homeDirectory.appendingPathComponent(".local/bin").standardizedFileURL
+    guard candidate.deletingLastPathComponent() == commandDir,
+      Self.publishedCommandNames.contains(candidate.lastPathComponent)
+    else { return file }
+    return candidate
   }
 
   private func requireCommandOwnership(
@@ -1362,9 +1385,15 @@ final class RealAgentBridgeInstaller: AgentBridgeInstalling {
       let destination = commandURL(name)
       let link = try? fileManager.destinationOfSymbolicLink(atPath: destination.path)
       if fileManager.fileExists(atPath: destination.path) || link != nil {
+        let ownedSiblingTarget =
+          link != nil
+          && managedCommandID(destination).map {
+            ownedCommandIDs.isEmpty || ownedCommandIDs.contains($0)
+          } == true
         let ownedLink =
           link == runtimeDirectory.appendingPathComponent(commandManifestPath(for: name)).path
           || link == runtimeDirectory.appendingPathComponent("bin/" + name).path
+          || ownedSiblingTarget
         let ownedFile =
           link == nil
           && managedCommandID(destination).map {

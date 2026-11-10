@@ -65,23 +65,29 @@ struct OverlayConversationMessageContent: View {
   var showsActivity = false
 
   var body: some View {
+    let hasBodyText =
+      !message.bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      || showsActivity
+      || (message.attachments?.isEmpty ?? true)
     VStack(alignment: .leading, spacing: 5) {
-      Group {
-        if OversizedBubblePolicy.isOversized(message.bodyText) {
-          OversizedMessageBody(fullText: message.bodyText) { head in
+      if hasBodyText {
+        Group {
+          if OversizedBubblePolicy.isOversized(message.bodyText) {
+            OversizedMessageBody(fullText: message.bodyText) { head in
+              MarkdownText(
+                raw: head, size: Self.bodyFontSize, bodyColor: palette.primaryText.color,
+                showsUnderlineCaret: showsActivity)
+            }
+          } else {
             MarkdownText(
-              raw: head, size: Self.bodyFontSize, bodyColor: palette.primaryText.color,
+              raw: message.bodyText, size: Self.bodyFontSize, bodyColor: palette.primaryText.color,
               showsUnderlineCaret: showsActivity)
           }
-        } else {
-          MarkdownText(
-            raw: message.bodyText, size: Self.bodyFontSize, bodyColor: palette.primaryText.color,
-            showsUnderlineCaret: showsActivity)
         }
+        .fixedSize(horizontal: false, vertical: true)
+        .background(OverlaySelectableTextRegion(copyText: message.text))
+        .accessibilityIdentifier("overlay-conversation-text-\(message.id)")
       }
-      .fixedSize(horizontal: false, vertical: true)
-      .background(OverlaySelectableTextRegion(copyText: message.text))
-      .accessibilityIdentifier("overlay-conversation-text-\(message.id)")
       if let attachments = message.attachments, !attachments.isEmpty {
         WrapLayout(spacing: 6) {
           ForEach(attachments, id: \.self) { pointer in
@@ -279,6 +285,20 @@ struct OverlayConversationView: View {
   {
     guard let owner = conversation.owner else { return conversation.messages }
     return conversation.messages.filter { !isSkippedBroadcast($0, for: owner) }
+  }
+
+  /// Backward scan for the newest visible message without allocating a filtered
+  /// copy of the full history on every HUD frame.
+  static func lastVisibleMessage(
+    in conversation: OverlayConversation,
+    where predicate: (OverlayConversationMessage) -> Bool = { _ in true }
+  ) -> OverlayConversationMessage? {
+    guard let owner = conversation.owner else {
+      return conversation.messages.last(where: predicate)
+    }
+    return conversation.messages.last {
+      predicate($0) && !isSkippedBroadcast($0, for: owner)
+    }
   }
 
   /// One filter per conversation value. A body pass reads `orderedMessages`

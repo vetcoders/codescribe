@@ -32,6 +32,7 @@ struct IntercomHeaderMetrics: Equatable {
   let groupWidth: CGFloat
   let controlHeight: CGFloat
   let audioWidth: CGFloat
+  let closeWidth: CGFloat
   let countWidth: CGFloat
   let pagingControlWidth: CGFloat
 
@@ -45,16 +46,17 @@ struct IntercomHeaderMetrics: Equatable {
     // Two diameter hit squares. The flat pair pins glyphs inward with a 2pt
     // gap; this slot still budgets the previous 6pt so header width holds.
     audioWidth = 2 * controlHeight + 6
+    closeWidth = 20 * max(1, scale)
     countWidth = textWidth(agentCount.formatted(), font: mono)
     pagingControlWidth = 16 * max(1, scale)
   }
 
   func width(showsCount: Bool, paging: Bool) -> CGFloat {
     let content = IntercomHeaderContent(showsCount: showsCount)
-    // One dots menu and audio; optional count and two pagers.
-    let children = 2 + (showsCount ? 2 : 0) + (paging ? 2 : 0)
+    // One dots menu, audio and close; optional count and two pagers.
+    let children = 3 + (showsCount ? 2 : 0) + (paging ? 2 : 0)
     return ceil(
-      groupWidth + audioWidth + 2 * content.horizontalInset
+      groupWidth + audioWidth + closeWidth + 2 * content.horizontalInset
         + CGFloat(children - 1) * Self.spacing
         + (showsCount ? countWidth + Self.spacerMinimum : 0)
         + (paging ? 2 * pagingControlWidth : 0))
