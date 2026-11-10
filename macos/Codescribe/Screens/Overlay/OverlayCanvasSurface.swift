@@ -246,10 +246,30 @@ struct OverlayControlGlass: ViewModifier {
   var role: OverlayGlassRole = .readingCanvas
   var showsBorder = true
   var glassPreferences = ChromeGlassPreferences()
+  var joinsCanvas = false
+
+  static func header(for mode: OverlayPresentationMode) -> Self {
+    Self(
+      cornerRadius: CSRadius.window, isEnabled: mode == .expanded, role: .chrome,
+      joinsCanvas: mode == .expanded)
+  }
+
+  var surfaceShape: UnevenRoundedRectangle {
+    // In expanded mode the lower edge meets the reading canvas. Rounding it
+    // as a standalone pill cuts two uncovered wedges into that internal join.
+    // Only the outer top corners belong to this surface; floating controls
+    // keep their independent four-corner shape.
+    UnevenRoundedRectangle(
+      topLeadingRadius: cornerRadius,
+      bottomLeadingRadius: joinsCanvas ? 0 : cornerRadius,
+      bottomTrailingRadius: joinsCanvas ? 0 : cornerRadius,
+      topTrailingRadius: cornerRadius,
+      style: .continuous)
+  }
 
   @ViewBuilder
   func body(content: Content) -> some View {
-    let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+    let shape = surfaceShape
     let tint = glassPreferences.tint(for: .busHeader)
     // Surface glass stays still under the pointer; controls own interaction.
     let base = Glass.regular

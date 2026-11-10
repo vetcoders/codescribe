@@ -6,6 +6,53 @@ import XCTest
 
 @MainActor
 final class OverlayChromeV3Tests: XCTestCase {
+  func testExpandedHeaderCoversBothCanvasJoinCorners() {
+    let header = OverlayControlGlass.header(for: .expanded)
+    XCTAssertTrue(header.isEnabled)
+    for width in [CGFloat(320), 640] {
+      for height in [CGFloat(48), 72] {
+        let rect = CGRect(x: 0, y: 0, width: width, height: height)
+        let path = header.surfaceShape.path(in: rect)
+        XCTAssertTrue(
+          path.contains(CGPoint(x: 1, y: height - 1)),
+          "Expanded header must cover the left join instead of cutting a window-background wedge")
+        XCTAssertTrue(
+          path.contains(CGPoint(x: width - 1, y: height - 1)),
+          "Expanded header must cover the right join instead of cutting a window-background wedge")
+        XCTAssertFalse(
+          path.contains(CGPoint(x: 1, y: 1)), "The outer top-left window corner stays rounded")
+        XCTAssertFalse(
+          path.contains(CGPoint(x: width - 1, y: 1)),
+          "The outer top-right window corner stays rounded")
+        XCTAssertTrue(path.contains(CGPoint(x: width / 2, y: height / 2)))
+      }
+    }
+  }
+
+  func testCompactHeaderKeepsTheCanvasAsItsOnlyMaterial() {
+    for mode in [OverlayPresentationMode.mini, .midi] {
+      let header = OverlayControlGlass.header(for: mode)
+      XCTAssertFalse(header.isEnabled, "Compact forms must not gain a second glass surface")
+      let rect = CGRect(x: 0, y: 0, width: 320, height: 48)
+      let path = header.surfaceShape.path(in: rect)
+      XCTAssertFalse(path.contains(CGPoint(x: 1, y: 47)))
+      XCTAssertFalse(path.contains(CGPoint(x: 319, y: 47)))
+    }
+  }
+
+  func testFloatingControlGlassKeepsItsOwnRoundedCorners() {
+    let surface = OverlayControlGlass(cornerRadius: CSRadius.composer)
+    let rect = CGRect(x: 0, y: 0, width: 280, height: 64)
+    let path = surface.surfaceShape.path(in: rect)
+    for point in [
+      CGPoint(x: 1, y: 1), CGPoint(x: 279, y: 1),
+      CGPoint(x: 1, y: 63), CGPoint(x: 279, y: 63),
+    ] {
+      XCTAssertFalse(path.contains(point), "Floating reading controls retain all four corners")
+    }
+    XCTAssertTrue(path.contains(CGPoint(x: 140, y: 32)))
+  }
+
   func testCloseControlShowsCrossOnlyOnHoverAndKeepsCloseNameAtBothTextScales() throws {
     let source = try String(
       contentsOf: URL(fileURLWithPath: #filePath)
