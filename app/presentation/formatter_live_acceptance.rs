@@ -338,3 +338,143 @@ async fn stop_preserves_current_live_correction_for_distinct_document_and_captur
         );
     }
 }
+
+#[tokio::test]
+async fn live_formatter_never_oscillates_to_raw_across_apple_tail_commit_and_seal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bus = Arc::new(
+        TranscriptBus::open_at(
+            crate::presentation::transcript_bus::TranscriptSession {
+                session_id: LIVE_TAKE.into(),
+                mode: crate::presentation::transcript_bus::TranscriptMode::Dictation,
+                has_latched_target: true,
+                latched_target_is_self: false,
+                audience: None,
+                badge_only: false,
+            },
+            dir.path().join("live-no-flicker.jsonl"),
+            None,
+        )
+        .expect("bus")
+        .with_capture_session(LIVE_TAKE.into()),
+    );
+    bus.publish_started();
+    let ledger = Arc::new(StdMutex::new(AcousticLedger::new()));
+    let all_events: Arc<StdMutex<Vec<TranscriptBusEvidenceEvent>>> =
+        Arc::new(StdMutex::new(Vec::new()));
+    let sink = Arc::clone(&all_events);
+    let projection_callback: ProjectionObserver =
+        Arc::new(move |event: &TranscriptBusEvidenceEvent| {
+            sink.lock().expect("lock").push(event.clone());
+        });
+    let emitter = Arc::new(PresentationEmitter::new_with_authority(
+        Arc::new(tokio::sync::Mutex::new(String::new())),
+        None,
+        None,
+        Some(bus),
+        Some(Arc::clone(&ledger)),
+        Some(projection_callback),
+    ));
+    emitter.on_capture_opened(LIVE_TAKE, 1);
+
+    let calibration = EnergyCalibration {
+        version: "formatter-live-acceptance".into(),
+        min_energy_integral: 1.0,
+        min_valley_samples: 1,
+    };
+    let admit_and_seal = |index: u64, start: u64, end: u64, label: &str| {
+        let occurrence = OccurrenceIdentity::new(LIVE_TAKE, 1, start, end);
+        let source =
+            ObservationIdentity::new(ObservationProducer::Apple, index, 0, occurrence.clone());
+        let (mutation, seal) = {
+            let mut guard = ledger.lock().expect("ledger");
+            let evidence = AcousticEvidence {
+                occurrence: occurrence.clone(),
+                duration_ms: 1000.0,
+                energy_integral: 10.0,
+                mean_rms_dbfs: -12.0,
+                peak_dbfs: -3.0,
+                vad_open_sample: Some(start),
+                vad_close_sample: Some(end),
+                evidence_calibration_version: calibration.version.clone(),
+            };
+            assert!(guard.qualify(&evidence, &calibration).is_qualified());
+            let receipt = guard.admit(&source, label);
+            let mutation = EngineEvent::LedgerMutation {
+                observation: source.clone(),
+                label: label.into(),
+                receipt,
+            };
+            guard.schedule_frontier(occurrence.clone(), [ObservationProducer::Apple]);
+            assert!(guard.note_frontier_return(&occurrence, ObservationProducer::Apple));
+            (mutation, guard.seal(&occurrence).expect("seal").clone())
+        };
+        (source, mutation, EngineEvent::LedgerSeal { receipt: seal })
+    };
+
+    let (source_0, mutation_0, seal_0) = admit_and_seal(1, 0, 16_000, RAW_FRAGMENTS[0]);
+    emitter.on_event(&mutation_0);
+    emitter.on_event(&seal_0);
+
+    let smart_first = "<unclear>Pierwsze zdanie na żywo.</unclear>";
+    emitter.on_event(&EngineEvent::OccurrenceLabelProposal {
+        proposal: OccurrenceLabelProposal::for_existing_occurrence(
+            LIVE_TAKE,
+            1,
+            0,
+            16_000,
+            smart_first,
+            LabelProposalDisposition::Propose,
+        )
+        .with_source(source_0, RAW_FRAGMENTS[0].into(), FormattingPolicy::Smart),
+    });
+
+    all_events.lock().expect("lock").clear();
+
+    // Provisional Apple words arrive for the second phrase, then the exact same
+    // phrase is committed and sealed by the ledger.
+    emitter.on_event(&EngineEvent::UnadmittedAppleWords {
+        revision: 1,
+        words: vec![
+            codescribe_core::pipeline::contracts::UnadmittedAppleWord {
+                sample_start: 16_000,
+                sample_end: 24_000,
+                text: "drugie".into(),
+                source: codescribe_core::pipeline::contracts::UnadmittedAppleWordSource::Pending {
+                    utterance_id: 1,
+                },
+            },
+            codescribe_core::pipeline::contracts::UnadmittedAppleWord {
+                sample_start: 24_000,
+                sample_end: 32_000,
+                text: "zdanie".into(),
+                source: codescribe_core::pipeline::contracts::UnadmittedAppleWordSource::Pending {
+                    utterance_id: 1,
+                },
+            },
+        ],
+        closed_phrases: std::collections::BTreeMap::new(),
+    });
+
+    let (_, mutation_1, seal_1) = admit_and_seal(2, 16_000, 32_000, "drugie zdanie");
+    emitter.on_event(&mutation_1);
+    emitter.on_event(&seal_1);
+
+    let observed = all_events.lock().expect("lock").clone();
+    assert!(
+        !observed.is_empty(),
+        "live view must republish across provisional tail, commit and seal"
+    );
+    for event in &observed {
+        assert_eq!(
+            event.reducer_action, "derived_projection",
+            "active capture with a valid live formatted fragment must never flash a raw projection: {event:?}"
+        );
+        assert_eq!(
+            event.delivery_text.as_deref(),
+            Some("<unclear>Pierwsze zdanie na żywo.</unclear> drugie zdanie")
+        );
+    }
+    let last = observed.last().expect("last event");
+    assert_eq!(last.rendered_text, "Pierwsze zdanie na zywo drugie zdanie");
+}

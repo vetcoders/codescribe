@@ -118,6 +118,17 @@ class UserTextTests(unittest.TestCase):
                 self.assertEqual(len(events), 2)
                 self.assertEqual(len({event["message_id"] for event in events}), 1)
                 self.assertEqual({event["channel"] for event in events}, {"2", "7"})
+            preassigned = "0123456789abcdef01234567"
+            args_with_id = argparse.Namespace(bridge_home=root, channel="0", message_id=preassigned)
+            with patch.object(DEMUX, "live_follower_pid", return_value=123), \
+                 patch.object(DEMUX, "publish_reply_event", return_value=receipt) as publish, \
+                 patch.object(DEMUX, "emit"), patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"hello"))):
+                self.assertEqual(DEMUX.send_text_command(args_with_id), 0)
+                self.assertEqual({call.args[1]["message_id"] for call in publish.call_args_list}, {preassigned})
+            with patch.object(DEMUX, "live_follower_pid", return_value=123), \
+                 patch.object(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"hello"))):
+                with self.assertRaisesRegex(ValueError, "24 lowercase hex"):
+                    DEMUX.send_text_command(argparse.Namespace(bridge_home=root, channel="0", message_id="NOT-HEX"))
                 for event in events:
                     self.assertEqual(event["origin_channel"], "0")
                     self.assertEqual(event["sender"], {"name": "founder", "channel": "10"})

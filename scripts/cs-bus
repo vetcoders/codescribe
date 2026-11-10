@@ -1,10 +1,19 @@
 #!/usr/bin/env -S python3 -E
-"""Stable entry to the bundled Codescribe bus runtime."""
+"""Compatibility alias for the primary x9bus command."""
 import os
 from pathlib import Path
 import sys
 
-# Started with -E; bus-demux.py runs without it and must not see the host's PYTHON* variables.
 for name in [name for name in os.environ if name.startswith("PYTHON")]:
     del os.environ[name]
-os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve().with_name("bus-demux.py")), *sys.argv[1:]])
+
+os.execv(
+    sys.executable,
+    [
+        sys.executable,
+        str(Path(__file__).resolve().with_name("x9bus")),
+        "--entrypoint",
+        "cs-bus",
+        *sys.argv[1:],
+    ],
+)

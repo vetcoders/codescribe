@@ -4,7 +4,7 @@
 # The user-facing app is built by `make app` (xcodebuild); the Rust side no
 # longer ships a standalone `codescribe` tray binary.
 
-.PHONY: all build release release-codescribe release-codescribe-embedded app app-bindings install install-no-embed config install-app install-voice-lab install-lab \
+.PHONY: all build release release-codescribe release-codescribe-embedded app app-bindings app-codescribe install install-no-embed config install-app install-voice-lab install-lab \
         start stop restart status logs logs-follow \
         bump bump-patch bump-minor bump-major version \
         lint format test test-quick test-e2e test-e2e-real test-e2e-roundtrip test-sse test-sse-release test-responses-live test-sse-heavy test-formatting test-structural-verifier test-transcript-bus-path test-all \
@@ -70,12 +70,16 @@ CODESCRIBE_DIST_LICENSE_KEY = $(if $(CODESCRIBE_LICENSE_PUBLIC_KEY_HEX),$(CODESC
 CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE ?= $(firstword $(wildcard $(HOME)/.codescribe/config/dev/keys/sparkle-public.b64 $(HOME)/.vibecrafted/secrets/codescribe/sparkle-public.b64))
 CODESCRIBE_DIST_SPARKLE_KEY = $(if $(SPARKLE_ED_PUBLIC_KEY),$(SPARKLE_ED_PUBLIC_KEY),$(shell cat $(CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE) 2>/dev/null | tr -d '[:space:]'))
 CODESCRIBE_APP_NAME ?= X9bus
+CODESCRIBE_EXECUTABLE_NAME ?= $(CODESCRIBE_APP_NAME)
 CODESCRIBE_DISPLAY_NAME ?= X9bus
+CODESCRIBE_BUNDLE_ID ?= com.vetcoders.x9bus
+CODESCRIBE_APP_MARKETING_VERSION ?= 0.18.1
+CODESCRIBE_APP_BUILD_VERSION ?= $(CODESCRIBE_APP_MARKETING_VERSION)
+CODESCRIBE_APP_ICON_NAME ?= X9busAppIcon
 # SwiftUI app build profile for `make app` / `make app-bindings`
 # (debug|local-release|release). `release` is distribution-only and requires
 # the operator-owned production license verification key.
 PROFILE ?= debug
-CODESCRIBE_BUNDLE_ID ?= com.vetcoders.codescribe
 CODESCRIBE_MIN_MACOS ?=
 CODESCRIBE_LSUIELEMENT ?= true
 CODESCRIBE_ENTITLEMENTS ?= scripts/entitlements.plist
@@ -146,11 +150,36 @@ release-codescribe-embedded: dist-preflight ensure-models
 # `app-bindings` stops after xcodegen (no Xcode needed) for fast Rust-side iteration.
 app:
 	@echo "Building X9bus.app (SwiftUI, PROFILE=$(PROFILE))..."
-	@./scripts/build-app.sh $(PROFILE)
+	@CODESCRIBE_APP_NAME="$(CODESCRIBE_APP_NAME)" \
+	 CODESCRIBE_EXECUTABLE_NAME="$(CODESCRIBE_EXECUTABLE_NAME)" \
+	 CODESCRIBE_DISPLAY_NAME="$(CODESCRIBE_DISPLAY_NAME)" \
+	 CODESCRIBE_BUNDLE_ID="$(CODESCRIBE_BUNDLE_ID)" \
+	 CODESCRIBE_APP_MARKETING_VERSION="$(CODESCRIBE_APP_MARKETING_VERSION)" \
+	 CODESCRIBE_APP_BUILD_VERSION="$(CODESCRIBE_APP_BUILD_VERSION)" \
+	 CODESCRIBE_APP_ICON_NAME="$(CODESCRIBE_APP_ICON_NAME)" \
+	 ./scripts/build-app.sh $(PROFILE)
 
 app-bindings:
 	@echo "Regenerating UniFFI Swift bindings + Xcode project (PROFILE=$(PROFILE), no xcodebuild)..."
-	@SKIP_XCODEBUILD=1 ./scripts/build-app.sh $(PROFILE)
+	@CODESCRIBE_APP_NAME="$(CODESCRIBE_APP_NAME)" \
+	 CODESCRIBE_EXECUTABLE_NAME="$(CODESCRIBE_EXECUTABLE_NAME)" \
+	 CODESCRIBE_DISPLAY_NAME="$(CODESCRIBE_DISPLAY_NAME)" \
+	 CODESCRIBE_BUNDLE_ID="$(CODESCRIBE_BUNDLE_ID)" \
+	 CODESCRIBE_APP_MARKETING_VERSION="$(CODESCRIBE_APP_MARKETING_VERSION)" \
+	 CODESCRIBE_APP_BUILD_VERSION="$(CODESCRIBE_APP_BUILD_VERSION)" \
+	 CODESCRIBE_APP_ICON_NAME="$(CODESCRIBE_APP_ICON_NAME)" \
+	 SKIP_XCODEBUILD=1 ./scripts/build-app.sh $(PROFILE)
+
+# Explicit build lane for the old application identity and icon.
+app-codescribe:
+	@$(MAKE) --no-print-directory app \
+	 CODESCRIBE_APP_NAME=Codescribe \
+	 CODESCRIBE_EXECUTABLE_NAME=Codescribe \
+	 CODESCRIBE_DISPLAY_NAME=Codescribe \
+	 CODESCRIBE_BUNDLE_ID=com.vetcoders.codescribe \
+	 CODESCRIBE_APP_MARKETING_VERSION=0.18.0 \
+	 CODESCRIBE_APP_BUILD_VERSION=0.18.0 \
+	 CODESCRIBE_APP_ICON_NAME=AppIcon
 
 release: release-codescribe
 
@@ -278,7 +307,7 @@ install-app: install-voice-lab
 	@version=$$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "/Applications/$(CODESCRIBE_APP_NAME).app/Contents/Info.plist" 2>/dev/null || true); \
 	if [ -n "$$version" ]; then \
 		echo "Build $$version zainstalowany"; \
-		if [ "$(INSTALL_ANNOUNCE)" = "1" ]; then "$(HOME)/.local/bin/cs-say" "Build $$version zainstalowany" >/dev/null 2>&1 || true; fi; \
+		if [ "$(INSTALL_ANNOUNCE)" = "1" ]; then "$(HOME)/.local/bin/x9say" "Build $$version zainstalowany" >/dev/null 2>&1 || true; fi; \
 	fi
 	@CODESCRIBE_INSTALL_LANE=1 "$(HOME)/.codescribe/bin/stt-probe" --post-install
 	@if [ "$(RESTART_AFTER_INSTALL)" = "1" ]; then \

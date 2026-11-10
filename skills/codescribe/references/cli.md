@@ -28,7 +28,7 @@ an agent; use [Monitor](monitor.md) for conversational delivery.
 
 ## Typed text with a pasted file
 
-`cs-bus --send-text --channel 0 --attach-file /abs/path` (repeatable; text on
+`x9bus --send-text --channel 0 --attach-file /abs/path` (repeatable; text on
 stdin, may be empty) publishes a pointer to a file the app already stored,
 typically `~/.codescribe/assets/inline_<sha256>.png`. The helper validates the
 path (absolute, under `$HOME`, regular file, 0 < size ≤ 50 MiB), computes the

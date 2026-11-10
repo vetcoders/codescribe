@@ -1302,7 +1302,12 @@ fn archive_agent_with_helper(request: AgentArchiveRequest) -> Result<String> {
             .rev()
             .map(str::trim)
             .find(|line| !line.is_empty())
-            .map(|line| line.trim_start_matches("cs-bus: ").to_string())
+            .map(|line| {
+                line.strip_prefix("x9bus: ")
+                    .or_else(|| line.strip_prefix("cs-bus: "))
+                    .unwrap_or(line)
+                    .to_string()
+            })
             .unwrap_or_else(|| format!("agent archive helper failed: {status}"));
         return Err(anyhow!("{reason}"));
     }

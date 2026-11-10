@@ -19,6 +19,8 @@ use std::sync::Mutex;
 use codescribe_core::config::FormattingPolicy;
 use codescribe_core::pipeline::contracts::EngineEvent;
 
+use crate::presentation::transcript_bus::TranscriptBusEvidenceEvent;
+
 use super::{
     DerivedTranscriptProjection, PresentationEmitter, TranscriptDocumentEntry, TranscriptReducer,
     VisibleWordSource, append_exact_fragment,
@@ -37,6 +39,18 @@ const LIVE_REVISION_BAND: u64 = (1 << 63) | (1 << 62);
 #[derive(Default)]
 pub(super) struct LiveViewMemo {
     inner: Mutex<LiveViewState>,
+}
+
+impl LiveViewMemo {
+    /// Any non-derived overlay publication (or deferred revision) invalidates
+    /// the memo so `LiveViewRefresh::drop` always republishes the live view
+    /// for the new reducer revision, even when the composed text is unchanged.
+    pub(super) fn note_overlay_publication(&self) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .published = None;
+    }
 }
 
 #[derive(Default)]
@@ -123,6 +137,42 @@ impl PresentationEmitter {
         memo.sequence = sequence;
         memo.published = Some(view.rendered_text);
         self.with_active_presentation(|| callback(&event));
+    }
+
+    /// While an active capture already has at least one current formatted
+    /// fragment, non-terminal Raw/seal/coverage/shaping revisions must not
+    /// flash an unformatted projection to the overlay before `LiveViewRefresh`
+    /// publishes the whole composed view at the end of `on_event`.
+    pub(super) fn defers_overlay_to_live_view(
+        &self,
+        events: &[TranscriptBusEvidenceEvent],
+    ) -> bool {
+        if self.transcript_bus.is_none()
+            || events.is_empty()
+            || events
+                .iter()
+                .any(|event| event.terminal || event.reducer_action == "light_plus_tick_deadline")
+        {
+            return false;
+        }
+        let policy = self
+            .live_view
+            .inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .policy;
+        let Some(policy) = policy else {
+            return false;
+        };
+        let take = self
+            .cursor_capture
+            .get()
+            .map(|(session, epoch)| (session.as_str(), *epoch));
+        self.session_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .live_formatted_view(policy, take, 1)
+            .is_some()
     }
 }
 

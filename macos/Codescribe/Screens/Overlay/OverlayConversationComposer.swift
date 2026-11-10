@@ -1011,6 +1011,7 @@ private struct ConversationMessageField: NSViewRepresentable {
     editor.isRichText = false
     editor.isEditable = true
     editor.isSelectable = true
+    editor.registerForDraggedTypes([.string, .fileURL])
     // Without this, Cmd+Z has nothing recorded to undo in the overlay's
     // composer (the chat window's ComposerTextView already allows undo).
     editor.allowsUndo = true
@@ -1086,6 +1087,10 @@ private struct ConversationMessageField: NSViewRepresentable {
     editor.pastedText = {
       try ConversationClipboardAttachment.text(
         from: clipboard, saveImage: saveImage, saveFile: saveFile)
+    }
+    editor.droppedText = { pasteboard in
+      try ConversationClipboardAttachment.text(
+        from: pasteboard, saveImage: saveImage, saveFile: saveFile)
     }
     editor.onPasteError = onPasteError
     editor.hasAttachments = hasAttachments
@@ -1616,6 +1621,7 @@ private struct ConversationMessageField: NSViewRepresentable {
     var onEditorActive: (Bool) -> Void = { _ in }
     var onTypingActivity: () -> Void = {}
     var pastedText: (() throws -> String?)?
+    var droppedText: ((NSPasteboard) throws -> String?)?
     var onPasteError: (String?) -> Void = { _ in }
     /// Read at Return: a paste can add a pill before SwiftUI updates the view.
     var hasAttachments: () -> Bool = { false }
@@ -1734,20 +1740,59 @@ private struct ConversationMessageField: NSViewRepresentable {
       return isFirstResponderActive
     }
 
+    private func insertAttachmentAwareText(_ text: String) {
+      let parts = ConversationDraft.split(text)
+      if !parts.attachments.isEmpty { onAttach(parts.attachments) }
+      let prose = parts.attachments.isEmpty ? text : parts.text.trimmingCharacters(in: .newlines)
+      if !prose.isEmpty || !parts.attachments.isEmpty {
+        insertText(prose, replacementRange: selectedRange())
+      }
+      onPasteError(nil)
+      onTypingActivity()
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+      guard sender.draggingPasteboard.availableType(from: [.fileURL]) != nil else {
+        return super.draggingEntered(sender)
+      }
+      return sending ? [] : .copy
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+      guard sender.draggingPasteboard.availableType(from: [.fileURL]) != nil else {
+        return super.prepareForDragOperation(sender)
+      }
+      return !sending && droppedText != nil
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+      guard sender.draggingPasteboard.availableType(from: [.fileURL]) != nil else {
+        return super.performDragOperation(sender)
+      }
+      // A file URL must never fall through to NSTextView's default path-text
+      // insertion. Treat a drop while sending as consumed and leave the draft
+      // untouched.
+      guard !sending else { return true }
+      do {
+        if let text = try droppedText?(sender.draggingPasteboard) {
+          insertAttachmentAwareText(text)
+        } else {
+          onPasteError(nil)
+        }
+      } catch {
+        onPasteError(
+          String(
+            localized: "Could not paste this attachment. Use files up to 50 MB and try again."))
+      }
+      return true
+    }
+
     override func paste(_ sender: Any?) {
       guard !sending else { return }
       do {
         if let text = try pastedText?() {
           // Store pointers become pills; only the prose enters the editor.
-          let parts = ConversationDraft.split(text)
-          if !parts.attachments.isEmpty { onAttach(parts.attachments) }
-          let prose =
-            parts.attachments.isEmpty ? text : parts.text.trimmingCharacters(in: .newlines)
-          if !prose.isEmpty || !parts.attachments.isEmpty {
-            insertText(prose, replacementRange: selectedRange())
-          }
-          onPasteError(nil)
-          onTypingActivity()
+          insertAttachmentAwareText(text)
           return
         }
         onPasteError(nil)

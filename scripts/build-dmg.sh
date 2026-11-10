@@ -6,14 +6,16 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="${CODESCRIBE_APP_NAME:-X9bus}"
 DISPLAY_NAME="${CODESCRIBE_DISPLAY_NAME:-$APP_NAME}"
-BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-com.vetcoders.codescribe}"
+BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-com.vetcoders.x9bus}"
+APP_ICON_NAME="${CODESCRIBE_APP_ICON_NAME:-X9busAppIcon}"
 MIN_MACOS="${CODESCRIBE_MIN_MACOS:-}"
 LSUIELEMENT="${CODESCRIBE_LSUIELEMENT:-true}"
 ENTITLEMENTS="${CODESCRIBE_ENTITLEMENTS:-$ROOT_DIR/scripts/entitlements.plist}"
 IDENTITY="${CODESCRIBE_CODESIGN_IDENTITY:-}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-VSNotary}"
 
-VERSION=$(awk -F '"' '/^version[[:space:]]*=/{print $2; exit}' "$ROOT_DIR/Cargo.toml" 2>/dev/null || echo "0.0.0")
+VERSION="${CODESCRIBE_APP_MARKETING_VERSION:-$(awk -F '"' '/^version[[:space:]]*=/{print $2; exit}' "$ROOT_DIR/Cargo.toml" 2>/dev/null || echo "0.0.0")}"
+APP_BUILD_VERSION="${CODESCRIBE_APP_BUILD_VERSION:-$VERSION}"
 # The real SwiftUI app is produced by the xcodebuild pipeline (build-app.sh),
 # same product install-app ships — NOT the retired hand-built bundle/ path.
 APP_PATH="$ROOT_DIR/macos/build/Build/Products/Release/${APP_NAME}.app"
@@ -112,7 +114,7 @@ fi
 # exact commit it was cut from (matches the About window's BuildInfo line).
 BUILD_DATE="$(date -u +%Y%m%d)"
 HEAD_SHA="$(git -C "$ROOT_DIR" rev-parse --short=9 HEAD 2>/dev/null || echo nogit)"
-DMG_NAME="Codescribe_${VERSION}-${BUILD_DATE}-${HEAD_SHA}${DMG_SUFFIX}.dmg"
+DMG_NAME="X9bus_${VERSION}-${BUILD_DATE}-${HEAD_SHA}${DMG_SUFFIX}.dmg"
 DMG_PATH="$ROOT_DIR/$DMG_NAME"
 
 BUILD_ENV=(env)
@@ -143,6 +145,10 @@ BUILD_ENV+=(CODESCRIBE_BUNDLE_EMBEDDER="$BUNDLE_EMBEDDER")
 # Every DMG is an install artifact: build-app.sh stamps
 # LSMultipleInstancesProhibited into its Info.plist before signing it.
 BUILD_ENV+=(CODESCRIBE_INSTALL_LANE=1 CODESCRIBE_BUILD_CHANNEL="$BUILD_CHANNEL")
+BUILD_ENV+=(CODESCRIBE_APP_NAME="$APP_NAME" CODESCRIBE_EXECUTABLE_NAME="$APP_NAME")
+BUILD_ENV+=(CODESCRIBE_DISPLAY_NAME="$DISPLAY_NAME" CODESCRIBE_BUNDLE_ID="$BUNDLE_ID")
+BUILD_ENV+=(CODESCRIBE_APP_MARKETING_VERSION="$VERSION" CODESCRIBE_APP_BUILD_VERSION="$APP_BUILD_VERSION")
+BUILD_ENV+=(CODESCRIBE_APP_ICON_NAME="$APP_ICON_NAME")
 
 echo "=== Build DMG ==="
 echo "App: $APP_NAME"

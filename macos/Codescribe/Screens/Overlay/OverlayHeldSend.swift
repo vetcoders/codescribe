@@ -46,6 +46,10 @@ struct OverlayHeldSend: Codable, Equatable, Sendable {
 
   static func newID() -> String { idPrefix + UUID().uuidString.lowercased() }
 
+  static func newMessageID() -> String {
+    String(UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(24))
+  }
+
   /// The row the conversation paints, shaped as the reader shapes a typed
   /// message, so the held bubble, Cancel/Edit, Send now and empty-Return
   /// release work unchanged. Only a holding row carries a deadline and a

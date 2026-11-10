@@ -1698,26 +1698,16 @@ class OverlayIntercomPanel: NSPanel {
   }
 }
 
-/// The Intercom's mark: a two-by-three cell of dots, the graph's nodes as a
-/// glyph. It paints with the current
-/// foreground style, so the menu's hover treatment colours it like any glyph.
+/// The Intercom menu uses a native image because `Menu` drops custom SwiftUI
+/// shapes from its label on macOS.
 struct OverlayIntercomDotsGlyph: View {
-  static let columns = 2
-  static let rows = 3
+  static let symbolName = "circle.grid.2x2.fill"
   let scale: CGFloat
 
   var body: some View {
-    let dot = 2.6 * scale
-    VStack(spacing: 1.6 * scale) {
-      ForEach(0..<Self.rows, id: \.self) { _ in
-        HStack(spacing: 2 * scale) {
-          ForEach(0..<Self.columns, id: \.self) { _ in
-            Circle().frame(width: dot, height: dot)
-          }
-        }
-      }
-    }
-    .accessibilityHidden(true)
+    Image(systemName: Self.symbolName)
+      .csFont(round(10 * scale), .semibold)
+      .accessibilityHidden(true)
   }
 }
 
@@ -1941,7 +1931,7 @@ private struct OverlayIntercomHeader: View {
       }
     }
     Divider()
-    Button(String(localized: "Settings…")) {
+    Button(AppBranding.localized(x9bus: "X9bus Settings…", codescribe: "Settings…")) {
       openWindow.presentSettings()
     }
     .accessibilityIdentifier("overlay-intercom-settings")
@@ -3006,6 +2996,7 @@ private struct OverlayIntercomMessagePreview: View {
           // line. The text takes the whole lines that fit and leaves the rest
           // empty, so the last visible line is never cut through its letters.
           GeometryReader { proxy in
+            let hasProse = !message.bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ScrollView {
               OverlayConversationMessageContent(message: message, palette: palette)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -3019,7 +3010,9 @@ private struct OverlayIntercomMessagePreview: View {
             )
             .id(message.id)
             .frame(
-              height: Self.wholeLinesHeight(available: proxy.size.height, scale: textScale),
+              height: hasProse
+                ? Self.wholeLinesHeight(available: proxy.size.height, scale: textScale)
+                : max(0, proxy.size.height),
               alignment: .topLeading
             )
             .clipped()
@@ -3060,7 +3053,8 @@ private struct OverlayIntercomWholeLineScroll: ScrollTargetBehavior {
 
   func updateTarget(_ target: inout ScrollTarget, context: TargetContext) {
     guard pitch > 0 else { return }
-    let limit = max(0, context.contentSize.height - context.containerSize.height)
+    let rawLimit = max(0, context.contentSize.height - context.containerSize.height)
+    let limit = floor(rawLimit / pitch) * pitch
     target.rect.origin.y = min(limit, max(0, (target.rect.origin.y / pitch).rounded() * pitch))
   }
 }

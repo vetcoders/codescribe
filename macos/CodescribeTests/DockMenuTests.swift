@@ -25,10 +25,31 @@ final class DockMenuTests: XCTestCase {
       [
         String(localized: "Agent"), String(localized: "Show widget"),
         String(localized: "Start transcription", comment: "Tray row: start a new transcription"),
-        String(localized: "Settings…"),
+        DockMenuEntry.settings.title,
       ])
     XCTAssertFalse(menu.autoenablesItems)
     XCTAssertTrue(menu.items.allSatisfy(\.isEnabled))
+  }
+
+  func testBundleIdentitySelectsProductBrandAndLocalizedSettingsLabels() {
+    let x9busBundleID = "com.vetcoders.x9bus"
+    let codescribeBundleID = "com.vetcoders.codescribe"
+    XCTAssertEqual(AppBranding.productName(bundleIdentifier: x9busBundleID), "X9bus")
+    XCTAssertEqual(AppBranding.productName(bundleIdentifier: codescribeBundleID), "Codescribe")
+    XCTAssertEqual(AppBranding.wordmark(bundleIdentifier: x9busBundleID), "X9bus")
+    XCTAssertEqual(AppBranding.wordmark(bundleIdentifier: codescribeBundleID), "codescribe")
+    XCTAssertEqual(
+      AgentWindowChrome.title(bundleIdentifier: x9busBundleID), String(localized: "X9bus Agent"))
+    XCTAssertEqual(
+      AgentWindowChrome.title(bundleIdentifier: codescribeBundleID), String(localized: "Agent"))
+    XCTAssertEqual(
+      AppBranding.localized(
+        bundleIdentifier: x9busBundleID, x9bus: "X9bus Settings…", codescribe: "Settings…"),
+      String(localized: "X9bus Settings…"))
+    XCTAssertEqual(
+      AppBranding.localized(
+        bundleIdentifier: codescribeBundleID, x9bus: "X9bus Settings…", codescribe: "Settings…"),
+      String(localized: "Settings…"))
   }
 
   func testDictationEntryFollowsRecordingState() {

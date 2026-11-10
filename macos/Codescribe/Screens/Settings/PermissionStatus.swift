@@ -410,7 +410,7 @@ struct NativePermissionProbe: PermissionProbing, Sendable {
     )
   }
 
-  private func speechRecognitionState() -> PermissionState {
+  func speechRecognitionState() -> PermissionState {
     switch SFSpeechRecognizer.authorizationStatus() {
     case .authorized: return .granted
     case .notDetermined: return .notDetermined

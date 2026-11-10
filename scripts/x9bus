@@ -1,0 +1,27 @@
+#!/usr/bin/env -S python3 -E
+"""Primary X9bus command for the Codescribe transcript bus runtime."""
+import os
+from pathlib import Path
+import sys
+
+# The bridge helper must not inherit a host's PYTHONHOME/PYTHONPATH.
+for name in [name for name in os.environ if name.startswith("PYTHON")]:
+    del os.environ[name]
+
+arguments = sys.argv[1:]
+entrypoint = "x9bus"
+if arguments[:1] == ["--entrypoint"] and len(arguments) >= 2:
+    entrypoint, *arguments = arguments[1:]
+if entrypoint not in {"x9bus", "cs-bus", "x9say", "cs-say"}:
+    raise SystemExit("x9bus: invalid internal entrypoint")
+
+os.execv(
+    sys.executable,
+    [
+        sys.executable,
+        str(Path(__file__).resolve().with_name("bus-demux.py")),
+        "--entrypoint",
+        entrypoint,
+        *arguments,
+    ],
+)

@@ -162,9 +162,10 @@ final class OverlayChannelMapPreferenceTests: XCTestCase {
   func testMiniBrandWidthIsTheMeasuredWordRowAndNeverNarrowerThanItsControls() {
     typealias W = DictationOverlayWindow
     let font = NSFont.systemFont(ofSize: W.miniWordSize, weight: .bold)
+    let wordmark = AppBranding.wordmark()
     let word =
       ceil(
-        ("codescribe" as NSString).size(withAttributes: [.font: font, .kern: W.miniWordTracking])
+        (wordmark as NSString).size(withAttributes: [.font: font, .kern: W.miniWordTracking])
           .width) + 1
     let row = W.miniFloorWidth + W.miniBrandGap + word
     XCTAssertEqual(W.miniBrandWidth, ceil(row))

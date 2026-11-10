@@ -1939,7 +1939,7 @@ struct OverlayConversationMessage: Codable, Equatable, Identifiable, Sendable {
   var playbackProvider: String? { provider ?? owner?.provider }
   var playbackProviderSessionID: String? { providerSessionID ?? owner?.providerSessionID }
   var replyID: String? { kind == .reply ? String(id.dropFirst("reply:".count)) : nil }
-  /// The bubble body. `cs-bus --send-text` appends one generated
+  /// The bubble body. `x9bus --send-text` appends one generated
   /// `[attachment] name (type, bytes): /path` line per pointer to the published
   /// text for agents; the bubble shows the pointers as chips and hides exactly
   /// those generated lines. Anything the user typed, including a sentence that
@@ -2410,7 +2410,7 @@ struct OverlayMessageReceipt: Codable, Equatable, Sendable {
         listed: listed, reached: reached, skipped: skipped))
   }
 
-  /// The helper's JSON line (`cs-bus --receipts`) for this directory, with
+  /// The helper's JSON line (`x9bus --receipts`) for this directory, with
   /// `NSNull` for null, so a model directory's `expected.json` compares
   /// exactly. The helper knows no copies, so its list fallback is empty.
   func jsonObject(listed fallback: [OverlayConversationReach] = []) -> [String: Any] {

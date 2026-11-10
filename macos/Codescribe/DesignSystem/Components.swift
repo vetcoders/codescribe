@@ -538,7 +538,7 @@ struct CSStatusBadge: View {
   }
 }
 
-/// Wordmark lockup: lowercase "codescribe", the product name and
+/// Wordmark lockup: the product name and
 /// never translated copy. The lockup is a label, so the word itself never
 /// answers the pointer; a surface that needs a control there hands in its own
 /// dot, the way the overlay hands in its close button.
@@ -553,7 +553,7 @@ struct Wordmark<Dot: View>: View {
     HStack(spacing: spacing) {
       dot()
       if showsWord {
-        Text(verbatim: "codescribe")
+        Text(verbatim: AppBranding.wordmark())
           .font(CSFont.ui(size, .bold))
           .tracking(-0.3)
           .foregroundStyle(CSColor.textHigh)

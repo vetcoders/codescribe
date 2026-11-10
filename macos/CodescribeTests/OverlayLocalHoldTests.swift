@@ -438,4 +438,139 @@ final class OverlayLocalHoldTests: XCTestCase {
     XCTAssertNil(heldRow(state, in: lena.id))
     XCTAssertTrue(state.heldSends.isEmpty)
   }
+
+  func testRefusedHeldSendInDraftSyncReturnsAttachmentsOnlyToFailedPeer() async throws {
+    let configDirectory = CodescribeConfig().configDir()
+    guard configDirectory != NSHomeDirectory() + "/.codescribe" else {
+      throw XCTSkip("needs an isolated CODESCRIBE_DATA_DIR, as make test-swift provides")
+    }
+    let store = ConversationAttachmentPointer.configDirectory
+      .appendingPathComponent("attachments/\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: store, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: store) }
+    let files = try ["screen-1.png", "screen-2.png"].map { name -> String in
+      let url = store.appendingPathComponent(name)
+      try Data(name.utf8).write(to: url)
+      return url.resolvingSymlinksInPath().path
+    }
+
+    let agents = try ["1", "2", "3"].map(agent)
+    let failedID = agents[2].id
+    var delivered: [String] = []
+    let state = state(agents: agents) { owner, _, _, _ in
+      if owner?.id == failedID {
+        throw CocoaError(.fileWriteNoPermission)
+      }
+      if let id = owner?.id {
+        delivered.append(id)
+      }
+      return Self.published
+    }
+    XCTAssertTrue(state.toggleDraftSync(from: Self.all.id, with: agents[0].id))
+    XCTAssertTrue(state.toggleDraftSync(from: Self.all.id, with: agents[1].id))
+    XCTAssertTrue(state.toggleDraftSync(from: Self.all.id, with: agents[2].id))
+
+    let attachmentDraft = ConversationDraft.compose(text: "", attachments: files)
+    state.setConversationDraft(attachmentDraft, for: Self.all.id)
+    for peer in agents {
+      XCTAssertEqual(
+        ConversationDraft.split(state.conversationDraft(for: peer.id)).attachments.count, 2)
+    }
+
+    await state.sendConversationText(Self.all)
+    XCTAssertEqual(state.conversationDraft(for: Self.all.id), "")
+    for peer in agents {
+      XCTAssertEqual(state.conversationDraft(for: peer.id), "")
+    }
+
+    advance(10, state)
+    await settle {
+      state.heldSends.count == 2 && state.heldSends.allSatisfy { $0.phase == .dispatched }
+    }
+
+    XCTAssertEqual(Set(delivered), [agents[0].id, agents[1].id])
+    XCTAssertEqual(
+      state.conversationDraft(for: Self.all.id), "",
+      "Returned attachment from one failed peer must not re-populate 0 · All")
+    XCTAssertEqual(
+      state.conversationDraft(for: agents[0].id), "",
+      "Returned attachment from one failed peer must not re-broadcast to delivered peer 1")
+    XCTAssertEqual(
+      state.conversationDraft(for: agents[1].id), "",
+      "Returned attachment from one failed peer must not re-broadcast to delivered peer 2")
+    let failedParts = ConversationDraft.split(state.conversationDraft(for: failedID))
+    XCTAssertEqual(
+      failedParts.attachments.count, 2,
+      "Failed peer retains its returned attachments privately for retry")
+  }
+
+  func testSnapshotArrivingDuringDispatchingRetiresLocalRowWithoutDoubleBubble() async throws {
+    let lena = try agent("1")
+    let owner = try XCTUnwrap(lena.owner)
+    let entered = expectation(description: "dispatch started")
+    let (release, releaser) = AsyncStream<Void>.makeStream()
+    var capturedMessageID: String?
+    let state = state(agents: [lena]) { _, _, _, _ in
+      let assigned = OverlayState.activeHeldDispatchMessageID
+      capturedMessageID = assigned
+      entered.fulfill()
+      for await _ in release { break }
+      return AgentBusTextPublication(
+        messageID: assigned ?? Self.published.messageID, holdUntil: "", recipients: [owner])
+    }
+
+    state.setConversationDraft("Przelecisz przez wszystkie transkrypcje", for: Self.all.id)
+    await state.sendConversationText(Self.all)
+    let held = try XCTUnwrap(heldRow(state, in: Self.all.id))
+    let sendTask = Task {
+      try await state.controlDelivery(.release, message: held, owner: nil, text: nil)
+    }
+    await fulfillment(of: [entered], timeout: 2)
+
+    let preassignedID = try XCTUnwrap(capturedMessageID)
+    XCTAssertEqual(preassignedID.count, 24)
+    let cliArgs = try RealAgentBridgeInstaller.busTextArguments(
+      holdSeconds: 0, owner: nil, root: root, messageID: preassignedID)
+    XCTAssertTrue(cliArgs.suffix(2) == ["--message-id", preassignedID])
+
+    // FSEvents wakes the reader before x9bus finishes waking followers and exits.
+    var busRow = OverlayConversationMessage(
+      id: "typed:" + preassignedID, kind: .user,
+      text: "Przelecisz przez wszystkie transkrypcje",
+      order: 1, emittedAt: "", owner: nil,
+      recipients: [.init(owner: owner, queued: true, accepted: false, acknowledged: false)],
+      deliveryID: nil, replyTo: nil, unsolicited: false, busPath: "/hold/bus")
+    busRow.controlIdentity = preassignedID
+    busRow.deliverySealed = true
+    let allDelivered = OverlayConversation(
+      id: "0", channel: "0", name: "All", owner: nil, messages: [busRow])
+    state.applyConversationSnapshot(
+      .init(deliveries: [], conversations: [allDelivered, lena]), now: clock)
+
+    XCTAssertNil(
+      heldRow(state, in: Self.all.id),
+      "local dispatching row must yield as soon as the bus snapshot carries its message_id")
+    XCTAssertEqual(
+      state.conversations.first { $0.id == Self.all.id }?.messages.count, 1,
+      "0 · All must never show both the canonical Read 0/N row and a duplicate local row")
+    XCTAssertTrue(state.heldSends.isEmpty)
+
+    releaser.yield(())
+    try await sendTask.value
+    XCTAssertEqual(state.conversations.first { $0.id == Self.all.id }?.messages.count, 1)
+    XCTAssertTrue(state.heldSends.isEmpty)
+  }
+
+  func testDistinctSendsWithIdenticalTextAreNeverCollapsedByTextEquality() async throws {
+    let lena = try agent("1")
+    let state = state(agents: [lena]) { _, _, _, _ in Self.published }
+    state.setConversationDraft("Tak", for: Self.all.id)
+    await state.sendConversationText(Self.all)
+    state.setConversationDraft("Tak", for: Self.all.id)
+    await state.sendConversationText(Self.all)
+
+    let allMessages = try XCTUnwrap(state.conversations.first { $0.id == Self.all.id }?.messages)
+    XCTAssertEqual(allMessages.count, 2, "two distinct sends with identical text remain two rows")
+    XCTAssertNotEqual(state.heldSends.first?.messageID, state.heldSends.last?.messageID)
+  }
 }

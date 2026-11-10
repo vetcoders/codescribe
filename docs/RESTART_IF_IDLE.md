@@ -100,8 +100,8 @@ Options:
 - `--wait N` retries the refusals listed above for up to N seconds
   (at most 86400); `--interval N` sets the pause between attempts.
 - `--announce` plays `Glass` after a verified restart or `Basso` after a
-  refusal, then speaks the corresponding text through `cs-say`. It resolves
-  `cs-say` on `PATH`, falling back to `~/.local/bin/cs-say`. Set a nonempty
+  refusal, then speaks the corresponding text through `x9say`. It resolves
+  `x9say` on `PATH`, falling back to `~/.local/bin/x9say`. Set a nonempty
   `RESTART_ANNOUNCE_VOICE` to pass that voice with `--voice`; the configured
   Codescribe speaker is used otherwise.
 - `--detach` runs in the background and prints the waiter's PID and log.
@@ -118,7 +118,7 @@ cannot authorize shutdown. These files contain lifecycle metadata, never audio
 or transcript text. Request/receipt files remain as diagnostic evidence.
 
 After installation, `make install-app` reads the installed bundle version and
-asks `~/.local/bin/cs-say` to announce `Build <version> zainstalowany`. Speech
+asks `~/.local/bin/x9say` to announce `Build <version> zainstalowany`. Speech
 failure does not change the installation result or print the helper receipt.
 
 To install and arm the same idle waiter without either spoken announcement:

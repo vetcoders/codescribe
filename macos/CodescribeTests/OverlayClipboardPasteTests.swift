@@ -517,6 +517,85 @@ final class OverlayClipboardPasteTests: XCTestCase {
   }
 
   @MainActor
+  func testRetinaTIFFFileURLIsTranscodedBeforeTheAttachmentLimit() throws {
+    let board = NSPasteboard.withUniqueName()
+    defer { board.releaseGlobally() }
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let width = 4096
+    let height = 4096
+    let bitmap = try XCTUnwrap(
+      NSBitmapImageRep(
+        bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+        colorSpaceName: .deviceRGB, bytesPerRow: width * 4, bitsPerPixel: 32))
+    let pixels = try XCTUnwrap(bitmap.bitmapData)
+    for y in 0..<height {
+      let row = y * bitmap.bytesPerRow
+      for x in 0..<width {
+        let offset = row + x * 4
+        pixels[offset] = UInt8(x & 0xff)
+        pixels[offset + 1] = UInt8(y & 0xff)
+        pixels[offset + 2] = UInt8((x + y) & 0xff)
+        pixels[offset + 3] = 0xff
+      }
+    }
+    let tiff = try XCTUnwrap(bitmap.representation(using: .tiff, properties: [:]))
+    XCTAssertGreaterThan(tiff.count, ConversationClipboardAttachment.maximumBytes)
+    let file = directory.appendingPathComponent("retina-capture.tiff")
+    try tiff.write(to: file)
+    XCTAssertTrue(board.writeObjects([file as NSURL]))
+
+    var normalized: Data?
+    let draft = try XCTUnwrap(
+      try ConversationClipboardAttachment.text(
+        from: board,
+        saveImage: { data in
+          normalized = data
+          return URL(fileURLWithPath: try savePastedImage(data: data))
+        },
+        saveFile: { _, _ in
+          XCTFail("TIFF screenshots must be stored as normalized image assets")
+          return directory
+        }))
+    let png = try XCTUnwrap(normalized)
+    XCTAssertEqual(Array(png.prefix(8)), [137, 80, 78, 71, 13, 10, 26, 10])
+    XCTAssertLessThanOrEqual(png.count, ConversationClipboardAttachment.maximumBytes)
+    XCTAssertEqual(NSBitmapImageRep(data: png)?.pixelsWide, width)
+    XCTAssertEqual(ConversationDraft.split(draft).attachments.count, 1)
+  }
+
+  @MainActor
+  func testDroppedFileURLProducesAttachmentPointerInsteadOfEditablePath() throws {
+    let board = NSPasteboard.withUniqueName()
+    defer { board.releaseGlobally() }
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let image = try XCTUnwrap(bitmap().representation(using: .png, properties: [:]))
+    let file = directory.appendingPathComponent("drop.png")
+    try image.write(to: file)
+    XCTAssertTrue(board.writeObjects([file as NSURL]))
+
+    let draft = try XCTUnwrap(
+      try ConversationClipboardAttachment.text(
+        from: board,
+        saveImage: { _ in
+          XCTFail("A dropped file URL follows the file attachment path")
+          return directory
+        },
+        saveFile: { data, name in
+          URL(fileURLWithPath: try savePastedAttachment(data: data, name: name))
+        }))
+    let attachment = try XCTUnwrap(ConversationDraft.split(draft).attachments.first)
+    XCTAssertFalse(draft.contains(file.path), "Only the internal pointer may enter the draft")
+    XCTAssertTrue(FileManager.default.fileExists(atPath: attachment))
+    XCTAssertTrue(attachment.hasSuffix(".png"))
+  }
+
+  @MainActor
   func testLongUTF8PasteIsExternalizedAndShortTextStaysEditable() throws {
     let board = NSPasteboard.withUniqueName()
     defer { board.releaseGlobally() }
@@ -695,7 +774,7 @@ final class OverlayClipboardPasteTests: XCTestCase {
     let bin = home.appendingPathComponent(".local/bin")
     try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: home) }
-    let executable = bin.appendingPathComponent("cs-bus")
+    let executable = bin.appendingPathComponent("x9bus")
     try """
     #!/usr/bin/python3
     # codescribe-managed-command: {"managed_id":"clipboard-test"}

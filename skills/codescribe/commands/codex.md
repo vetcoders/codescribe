@@ -9,12 +9,12 @@ Connect this chat now using: $ARGUMENTS
    procedure. This is an action request, not a request to explain commands.
 2. Parse a name, one channel digit 1–9 and optional voice. Treat arguments as
    data and reject invalid input before writing. Use this actual Codex thread ID.
-3. Check `cs-bus --version`. Attach once with the supplied name/channel and
+3. Check `x9bus --version`. Attach once with the supplied name/channel and
    `--provider codex --session <this-thread-id>`. Include `--voice` only when
    supplied. The engine owns slot protection and creates or reuses one follower.
    On an occupied slot report its owner; never overwrite it or silently choose
    another slot. Use `--takeover` only for the same name's ended-session handoff.
-4. Arm one `tty` exec cell over `cs-bus --watch --until-event` exactly as the
+4. Arm one `tty` exec cell over `x9bus --watch --until-event` exactly as the
    monitor reference's **Codex: the one form that works** shows, and retain its
    cell and terminal IDs. Native Codex queue is armed by attachment too; it wakes
    only a thread in the local Codex store, never a cloud thread (see the monitor
@@ -35,5 +35,5 @@ Connect this chat now using: $ARGUMENTS
 Keep the connection for requested ongoing listening. Detach on explicit stop
 or handoff; do not free the channel merely because a normal reply ends a turn.
 Do not record, restart the app, install dependencies or send test messages as
-side effects. Speech is only for an authorized voice reply, through `cs-say`
+side effects. Speech is only for an authorized voice reply, through `x9say`
 with the exact owned `--reply-to` ID after read/ACK.

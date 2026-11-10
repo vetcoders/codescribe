@@ -3,7 +3,7 @@ import Foundation
 import UniformTypeIdentifiers
 
 /// Clipboard bytes stay on disk. The draft contains editable local pointers;
-/// publication adds verified metadata through cs-bus, never inline file bytes.
+/// publication adds verified metadata through x9bus, never inline file bytes.
 enum ConversationClipboardAttachment {
   static let maximumBytes = 50 * 1024 * 1024
   static let inlineTextBytes = 4096
@@ -24,12 +24,28 @@ enum ConversationClipboardAttachment {
       var total = 0
       let pointers = try files.map { file in
         let values = try file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+        let isTIFF = UTType(filenameExtension: file.pathExtension)?.conforms(to: .tiff) == true
+        // TIFF screenshots can be much larger than their normalized PNG.
+        // Bound the source read separately, then apply the user-facing cap to
+        // the bytes that we actually store and send.
+        let sourceLimit = isTIFF ? maximumBytes * 4 : maximumBytes - total
         guard values.isRegularFile == true,
-          let size = values.fileSize, size > 0, size <= maximumBytes - total
+          let size = values.fileSize, size > 0, size <= sourceLimit
         else { throw CocoaError(.fileReadTooLarge) }
         let handle = try FileHandle(forReadingFrom: file)
         defer { try? handle.close() }
-        let data = try handle.read(upToCount: maximumBytes - total + 1) ?? Data()
+        let data = try handle.read(upToCount: sourceLimit + 1) ?? Data()
+        guard data.count <= sourceLimit else { throw CocoaError(.fileReadTooLarge) }
+        if isTIFF {
+          guard let bitmap = NSBitmapImageRep(data: data),
+            let normalized = bitmap.representation(using: .png, properties: [:])
+          else { throw CocoaError(.fileReadCorruptFile) }
+          guard !normalized.isEmpty, normalized.count <= maximumBytes - total else {
+            throw CocoaError(.fileReadTooLarge)
+          }
+          total += normalized.count
+          return ConversationAttachmentPointer.line(try saveImage(normalized))
+        }
         try validate(data)
         total += data.count
         guard total <= maximumBytes else { throw CocoaError(.fileReadTooLarge) }

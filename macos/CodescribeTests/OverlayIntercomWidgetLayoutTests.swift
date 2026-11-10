@@ -96,10 +96,11 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
   }
 
   @MainActor
-  func testDotsHeaderAtCompactAndWideWidthsWithoutPresentingWindows() throws {
-    XCTAssertEqual(
-      OverlayIntercomDotsGlyph.columns * OverlayIntercomDotsGlyph.rows, 6,
-      "the Intercom mark is a two-by-three cell of dots (Maciej, 2026-11-07)")
+  func testFourDotHeaderAtCompactAndWideWidthsWithoutPresentingWindows() throws {
+    XCTAssertEqual(OverlayIntercomDotsGlyph.symbolName, "circle.grid.2x2.fill")
+    XCTAssertNotNil(
+      NSImage(systemSymbolName: OverlayIntercomDotsGlyph.symbolName, accessibilityDescription: nil),
+      "the four-dot Intercom menu mark must resolve to a native image")
     let keyBefore = NSApp.keyWindow
     let suite = "CodescribeTests.header.\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -127,7 +128,7 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
         host.cacheDisplay(in: host.bounds, to: bitmap)
         let attachment = XCTAttachment(
           image: NSImage(cgImage: try XCTUnwrap(bitmap.cgImage), size: host.bounds.size))
-        attachment.name = "dots-header-\(palette.appearance)-\(Int(width))"
+        attachment.name = "four-dot-header-\(palette.appearance)-\(Int(width))"
         attachment.lifetime = .keepAlways
         add(attachment)
       }

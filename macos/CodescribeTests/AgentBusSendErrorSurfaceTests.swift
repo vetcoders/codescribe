@@ -22,7 +22,7 @@ final class AgentBusSendErrorSurfaceTests: XCTestCase {
     let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let bin = home.appendingPathComponent(".local/bin")
     try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
-    let executable = bin.appendingPathComponent("cs-bus")
+    let executable = bin.appendingPathComponent("x9bus")
     let payload = Data(stderr.utf8).base64EncodedString()
     try """
     #!/usr/bin/python3

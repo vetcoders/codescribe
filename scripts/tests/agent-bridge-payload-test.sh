@@ -44,7 +44,7 @@ expected = {
     if path.is_file() and path.name not in EXCLUDED_NAMES
 }
 expected.add("bin/bus-demux.py")
-expected.update({"bin/cs-bus", "bin/cs-say", "bin/cs-junie", "bin/bus-mcp.py",
+expected.update({"bin/x9bus", "bin/x9say", "bin/cs-bus", "bin/cs-say", "bin/cs-junie", "bin/bus-mcp.py",
                  "bin/bus-mcp-agent.py", "bin/bus-mcp-events.py", "bin/bus-mcp-runtime.py",
                  "bin/bus-mcp-key-store.py", "bin/bus-mcp-sessions.py"})
 expected.update({
@@ -65,7 +65,7 @@ expected.update({
 })
 expected.update({
     "plugins/codescribe/server/" + name for name in (
-        "bus-demux.py", "cs-bus", "cs-say", "cs-junie", "bus-mcp.py",
+        "bus-demux.py", "x9bus", "x9say", "cs-bus", "cs-say", "cs-junie", "bus-mcp.py",
         "bus-mcp-agent.py", "bus-mcp-events.py", "bus-mcp-runtime.py",
         "bus-mcp-key-store.py", "bus-mcp-sessions.py",
     )
@@ -103,7 +103,7 @@ FAKE_ROOT="$WORKDIR/unsafe-repo"
 mkdir -p "$FAKE_ROOT/scripts" "$FAKE_ROOT/skills/codescribe"
 cp "$ROOT/scripts/build-app.sh" "$FAKE_ROOT/scripts/build-app.sh"
 cp "$ROOT/scripts/bus-demux.py" "$FAKE_ROOT/scripts/bus-demux.py"
-cp "$ROOT/scripts/cs-bus" "$ROOT/scripts/cs-say" "$ROOT/scripts/cs-junie" "$ROOT/scripts/bus-mcp.py" "$FAKE_ROOT/scripts/"
+cp "$ROOT/scripts/x9bus" "$ROOT/scripts/x9say" "$ROOT/scripts/cs-bus" "$ROOT/scripts/cs-say" "$ROOT/scripts/cs-junie" "$ROOT/scripts/bus-mcp.py" "$FAKE_ROOT/scripts/"
 cp "$ROOT/scripts/bus-mcp-agent.py" "$ROOT/scripts/bus-mcp-events.py" "$ROOT/scripts/bus-mcp-runtime.py" "$ROOT/scripts/bus-mcp-key-store.py" "$ROOT/scripts/bus-mcp-sessions.py" "$FAKE_ROOT/scripts/"
 cp -R "$ROOT/plugins" "$FAKE_ROOT/plugins"
 cp "$ROOT/skills/codescribe/SKILL.md" "$FAKE_ROOT/skills/codescribe/SKILL.md"
@@ -140,6 +140,11 @@ with open(sys.argv[1], "w", encoding="utf-8") as handle:
 PY
 cat >"$WORKDIR/install.swift" <<'SWIFT'
 import Foundation
+// The installer formats one identity-aware error through the app's branding
+// seam. Keep this isolated harness independent of the full SwiftUI app target.
+enum AppBranding {
+  static func localized(x9bus: String, codescribe: String) -> String { x9bus }
+}
 @main
 struct Install {
   static func main() throws {
@@ -157,14 +162,18 @@ xcrun swiftc -swift-version 6 -warnings-as-errors \
 "$WORKDIR/install" "$PAYLOAD" "$WORKDIR/home"
 LOCAL_BIN="$WORKDIR/home/.local/bin"
 test ! -L "$LOCAL_BIN/cs-bus"
-test ! -L "$LOCAL_BIN/x9-bus"
+test ! -L "$LOCAL_BIN/x9bus"
 test ! -L "$LOCAL_BIN/cs-say"
-test ! -L "$LOCAL_BIN/x9-say"
-test -x "$LOCAL_BIN/x9-bus"
-test -x "$LOCAL_BIN/x9-say"
+test ! -L "$LOCAL_BIN/x9say"
+test ! -e "$LOCAL_BIN/x9-bus"
+test ! -e "$LOCAL_BIN/x9-say"
+test -x "$LOCAL_BIN/x9bus"
+test -x "$LOCAL_BIN/x9say"
+test -x "$LOCAL_BIN/cs-bus"
+test -x "$LOCAL_BIN/cs-say"
 test -f "$LOCAL_BIN/bus-mcp.py"
 test ! -x "$LOCAL_BIN/bus-mcp.py"
-printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | "$LOCAL_BIN/cs-bus" --mcp >"$WORKDIR/native-mcp.json"
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | "$LOCAL_BIN/x9bus" --mcp >"$WORKDIR/native-mcp.json"
 python3 - "$WORKDIR/native-mcp.json" <<'PY'
 import json,sys
 tools = json.load(open(sys.argv[1]))["result"]["tools"]
@@ -173,8 +182,14 @@ PY
 test -f "$LOCAL_BIN/cs-junie"
 test ! -L "$LOCAL_BIN/cs-junie"
 "$LOCAL_BIN/cs-junie" --help | grep -q -- '--channel'
-BEFORE_BUS_VERSION="$("$LOCAL_BIN/cs-bus" --version)"
-BEFORE_SAY_VERSION="$("$LOCAL_BIN/cs-say" --version)"
+"$LOCAL_BIN/x9bus" --help | grep -q '^usage: x9bus '
+"$LOCAL_BIN/x9say" --help | grep -q '^x9say TEXT'
+"$LOCAL_BIN/cs-bus" --help | grep -q '^usage: cs-bus '
+"$LOCAL_BIN/cs-say" --help | grep -q 'cs-say.*compatibility alias'
+BEFORE_BUS_VERSION="$("$LOCAL_BIN/x9bus" --version)"
+BEFORE_SAY_VERSION="$("$LOCAL_BIN/x9say" --version)"
+BEFORE_LEGACY_BUS_VERSION="$("$LOCAL_BIN/cs-bus" --version)"
+BEFORE_LEGACY_SAY_VERSION="$("$LOCAL_BIN/cs-say" --version)"
 # Reproduce the older app's explicit replacement with a valid old-style payload.
 # It ships only bus-demux.py, replacing runtime/bin and the generation receipt.
 # Direct commands must survive, report their own generation and remain updatable.
@@ -183,7 +198,7 @@ python3 - "$WORKDIR/old-payload" <<'PY'
 import hashlib,json,sys
 from pathlib import Path
 p = Path(sys.argv[1])
-for name in ('cs-bus', 'cs-say'):
+for name in ('x9bus', 'x9say', 'cs-bus', 'cs-say'):
     (p/'bin'/name).unlink()
 helper = p/'bin/bus-demux.py'
 helper.write_text('#!/usr/bin/env python3\nprint("old app helper")\n')
@@ -191,7 +206,7 @@ m = json.loads((p/'manifest.json').read_text())
 m['bundle_version'] = '1.2.3'
 m.pop('helper_version', None)
 m.pop('source_commit', None)
-m['files'] = [f for f in m['files'] if f['path'] not in ('bin/cs-bus', 'bin/cs-say')]
+m['files'] = [f for f in m['files'] if f['path'] not in ('bin/x9bus', 'bin/x9say', 'bin/cs-bus', 'bin/cs-say')]
 for f in m['files']:
     if f['path'] == 'bin/bus-demux.py':
         f['bytes'] = helper.stat().st_size
@@ -199,17 +214,29 @@ for f in m['files']:
 (p/'manifest.json').write_text(json.dumps(m))
 PY
 "$WORKDIR/install" "$WORKDIR/old-payload" "$WORKDIR/home"
-test ! -e "$WORKDIR/home/.codescribe/agent-bridge/runtime/bin/cs-bus"
-test ! -e "$WORKDIR/home/.codescribe/agent-bridge/runtime/bin/cs-say"
-OUTPUT="$(cd "$WORKDIR" && "$LOCAL_BIN/cs-bus" --bus "$BUS" --name james --once)"
-"$LOCAL_BIN/cs-say" --help | grep -q -- '--provider'
+for name in x9bus x9say cs-bus cs-say; do
+  test ! -e "$WORKDIR/home/.codescribe/agent-bridge/runtime/bin/$name"
+done
+OUTPUT="$(cd "$WORKDIR" && "$LOCAL_BIN/x9bus" --bus "$BUS" --name james --once)"
+LEGACY_OUTPUT="$(cd "$WORKDIR" && "$LOCAL_BIN/cs-bus" --bus "$BUS" --name james --once)"
+"$LOCAL_BIN/x9say" --help | grep -q -- '--provider'
+"$LOCAL_BIN/x9bus" --version | grep -q '^x9bus 9.8.7+g'
+"$LOCAL_BIN/x9say" --version | grep -q '^x9say 9.8.7+g'
 "$LOCAL_BIN/cs-bus" --version | grep -q '^cs-bus 9.8.7+g'
 "$LOCAL_BIN/cs-say" --version | grep -q '^cs-say 9.8.7+g'
-test "$("$LOCAL_BIN/cs-bus" --version)" = "$BEFORE_BUS_VERSION"
-test "$("$LOCAL_BIN/cs-say" --version)" = "$BEFORE_SAY_VERSION"
+test "$("$LOCAL_BIN/x9bus" --version)" = "$BEFORE_BUS_VERSION"
+test "$("$LOCAL_BIN/x9say" --version)" = "$BEFORE_SAY_VERSION"
+test "$("$LOCAL_BIN/cs-bus" --version)" = "$BEFORE_LEGACY_BUS_VERSION"
+test "$("$LOCAL_BIN/cs-say" --version)" = "$BEFORE_LEGACY_SAY_VERSION"
 "$WORKDIR/install" "$PAYLOAD" "$WORKDIR/home"
-test "$("$LOCAL_BIN/cs-bus" --version)" = "$BEFORE_BUS_VERSION"
+test "$("$LOCAL_BIN/x9bus" --version)" = "$BEFORE_BUS_VERSION"
 python3 - "$OUTPUT" <<'PY'
+import json, sys
+value = json.loads(sys.argv[1])
+assert value["kind"] == "seal", value
+assert value["state_change_allowed"] is True, value
+PY
+python3 - "$LEGACY_OUTPUT" <<'PY'
 import json, sys
 value = json.loads(sys.argv[1])
 assert value["kind"] == "seal", value

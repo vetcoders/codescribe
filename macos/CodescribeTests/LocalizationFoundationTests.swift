@@ -45,7 +45,7 @@ final class LocalizationFoundationTests: XCTestCase {
     XCTAssertEqual(app.bundleURL.lastPathComponent, "X9bus.app")
     XCTAssertEqual(app.infoDictionary?["CFBundleExecutable"] as? String, "X9bus")
     XCTAssertTrue(
-      ["com.vetcoders.codescribe", "com.vetcoders.codescribe.dev"].contains(app.bundleIdentifier ?? ""))
+      ["com.vetcoders.x9bus", "com.vetcoders.x9bus.dev"].contains(app.bundleIdentifier ?? ""))
   }
 
   /// Counted phrases pick their noun in the catalog, never in code (R4).

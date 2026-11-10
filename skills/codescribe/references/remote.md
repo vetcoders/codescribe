@@ -1,15 +1,15 @@
 # A mailbox on another Mac
 
-`cs-bus --remote HOST` runs the selected operation in HOST's managed helper,
+`x9bus --remote HOST` runs the selected operation in HOST's managed helper,
 under this conversation's real provider and session. The Founder chooses the
 host and channel; a local attachment does not authorize another attachment.
 Use an SSH host alias with key access (`BatchMode=yes`). The managed helper
-must already exist at `~/.local/bin/cs-bus` on HOST.
+must already exist at `~/.local/bin/x9bus` on HOST.
 
 ```bash
-cs-bus --remote HOST --attach --channel CHANNEL --name NAME --provider PROVIDER --session SESSION
-cs-bus --remote HOST --read-pending --read-limit 2 --provider PROVIDER --session SESSION
-cs-bus --remote HOST --provider PROVIDER --session SESSION --ack DELIVERY_ID
+x9bus --remote HOST --attach --channel CHANNEL --name NAME --provider PROVIDER --session SESSION
+x9bus --remote HOST --read-pending --read-limit 2 --provider PROVIDER --session SESSION
+x9bus --remote HOST --provider PROVIDER --session SESSION --ack DELIVERY_ID
 ```
 
 Keep `--remote HOST` on read, ACK, status, send and detach. Read complete
@@ -73,7 +73,7 @@ local watch above does the queueing. Keep this watch alive after ending a reply:
 the local process is the later-turn wakeup transport, not the output poll window.
 
 Other providers need an output-notifying monitor over
-`cs-bus --remote HOST --watch --bell --provider PROVIDER --session SESSION`.
+`x9bus --remote HOST --watch --bell --provider PROVIDER --session SESSION`.
 Reuse one monitor for that connection. Do not infer remote wakeup from a live
 follower or an attach receipt; only a fresh delivery and reply prove it.
 

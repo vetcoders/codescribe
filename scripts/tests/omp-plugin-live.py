@@ -4,7 +4,7 @@
 Operator-class instrument: it runs `omp --mode rpc` (account, network, model
 cost) against an isolated bridge home and bus, never the user's channels. It
 proves the path the hermetic suite cannot: marketplace plugin load, extension
-identity, MCP connect, a turn that ENDS, then the extension's `cs-bus --omp-wake`
+identity, MCP connect, a turn that ENDS, then the extension's `x9bus --omp-wake`
 waiter waking the conversation for a fresh message, read and ACK without a typed
 nudge. Exit 0 only when that whole chain is observed.
 
@@ -29,7 +29,7 @@ import threading
 import time
 
 REPO = Path(__file__).resolve().parents[2]
-HELPER = REPO / "scripts" / "cs-bus"
+HELPER = REPO / "scripts" / "x9bus"
 CHANNEL, NAME, PROVIDER = "4", "probe", "omp"
 MARKETPLACE = "codescribe-live"
 
@@ -50,10 +50,10 @@ def stage_plugin(target: Path, bus: Path) -> Path:
     package["name"] = MARKETPLACE
     descriptor.write_text(json.dumps(package, indent=2) + "\n")
     mcp = plugin / ".mcp.json"
-    mcp.write_text(mcp.read_text().replace('\\"$HOME/.local/bin/cs-bus\\"', f'\\"{HELPER}\\"')
+    mcp.write_text(mcp.read_text().replace('\\"$HOME/.local/bin/x9bus\\"', f'\\"{HELPER}\\"')
                    .replace(" --mcp", f" --mcp --bus {bus}"))
     extension = plugin / "hooks" / "pre" / "codescribe-omp.ts"
-    extension.write_text(extension.read_text().replace('"$HOME/.local/bin/cs-bus"', f'"{HELPER}"')
+    extension.write_text(extension.read_text().replace('"$HOME/.local/bin/x9bus"', f'"{HELPER}"')
                          .replace(" --omp-wake", f" --omp-wake --bus {bus}"))
     return target
 

@@ -1926,28 +1926,28 @@ default = "carina"
 type = "string"
 reload = "restart"
 category = "agent"
-description = "Voice for cs-say TEXT without provider/session; --voice wins. Does not change agent profiles. Read at helper invocation."
+description = "Voice for x9say TEXT without provider/session; --voice wins. Does not change agent profiles. Read at helper invocation."
 
 [vars.CS_SAY_SPEED]
 default = "1.0"
 type = "f32"
 reload = "restart"
 category = "agent"
-description = "Positive finite speed for the cs-say system voice; --speed wins. Read at helper invocation."
+description = "Positive finite speed for the x9say system voice; --speed wins. Read at helper invocation."
 
 [vars.CS_SAY_TTS_VENDOR]
 default = "xai"
 type = "string"
 reload = "restart"
 category = "agent"
-description = "TTS vendor for the cs-say system voice: xai or openai; --tts-vendor wins. Read at helper invocation."
+description = "TTS vendor for the x9say system voice: xai or openai; --tts-vendor wins. Read at helper invocation."
 
 [vars.CS_SAY_LANGUAGE]
 default = "pl"
 type = "string"
 reload = "restart"
 category = "agent"
-description = "Language of every xAI reply the helper speaks (cs-say, --play-reply). Cut to its first part (pl-PL is pl) and accepted as pl or en; anything else, auto included, speaks pl with a warning. Read at synthesis."
+description = "Language of every xAI reply the helper speaks (x9say, --play-reply). Cut to its first part (pl-PL is pl) and accepted as pl or en; anything else, auto included, speaks pl with a warning. Read at synthesis."
 
 [vars.LLM_ANTHROPIC_OAUTH_CLIENT_ID]
 default = ""

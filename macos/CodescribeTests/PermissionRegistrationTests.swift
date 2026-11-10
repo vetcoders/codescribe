@@ -98,6 +98,45 @@ final class PermissionRegistrationTests: XCTestCase {
     }
   }
 
+  func testSpotifyPassiveAutomationProbeTimesOutInsteadOfBlockingCaller() {
+    let releaseBlockedQuery = DispatchSemaphore(value: 0)
+    defer { releaseBlockedQuery.signal() }
+
+    let started = ContinuousClock.now
+    let state = SpotifyAppleEvents.automationPermission(
+      askUserIfNeeded: false,
+      probeTimeout: .milliseconds(30),
+      queryStatus: { askUserIfNeeded in
+        XCTAssertFalse(askUserIfNeeded)
+        _ = releaseBlockedQuery.wait(timeout: .now() + .seconds(2))
+        return noErr
+      }
+    )
+    let elapsed = started.duration(to: ContinuousClock.now)
+
+    XCTAssertEqual(state, .notDetermined, "a stalled passive AppleEvents probe must fail open to notDetermined")
+    XCTAssertLessThan(elapsed, .milliseconds(500), "passive probe must bound caller wait time")
+  }
+
+  func testSpotifyPassiveAutomationProbeReturnsResolvedStateWithinTimeout() {
+    let granted = SpotifyAppleEvents.automationPermission(
+      askUserIfNeeded: false,
+      probeTimeout: .milliseconds(250),
+      queryStatus: { askUserIfNeeded in
+        XCTAssertFalse(askUserIfNeeded)
+        return noErr
+      }
+    )
+    XCTAssertEqual(granted, .granted)
+
+    let denied = SpotifyAppleEvents.automationPermission(
+      askUserIfNeeded: false,
+      probeTimeout: .milliseconds(250),
+      queryStatus: { _ in OSStatus(errAEEventNotPermitted) }
+    )
+    XCTAssertEqual(denied, .denied)
+  }
+
   func testSpotifyControlIsOptionalAndNamedInBothLanguages() {
     XCTAssertTrue(PermissionKind.spotifyAutomation.isOptionalForSetup)
     XCTAssertFalse(PermissionKind.spotifyAutomation.isRequiredForSetup)

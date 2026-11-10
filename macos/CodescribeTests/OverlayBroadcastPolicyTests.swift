@@ -291,7 +291,7 @@ final class OverlayBroadcastPolicyTests: XCTestCase {
       let source = try String(
         contentsOf: repo.appendingPathComponent("scripts/bus-demux.py"), encoding: .utf8)
       let firstNewline = try XCTUnwrap(source.firstIndex(of: "\n"))
-      let command = installer.commandURL("cs-bus")
+      let command = installer.commandURL("x9bus")
       try FileManager.default.createDirectory(
         at: command.deletingLastPathComponent(), withIntermediateDirectories: true)
       let managed =

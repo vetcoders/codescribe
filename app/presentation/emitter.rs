@@ -4639,6 +4639,10 @@ impl PresentationEmitter {
         let Some(callback) = &self.projection_callback else {
             return;
         };
+        self.live_view.note_overlay_publication();
+        if self.defers_overlay_to_live_view(events) {
+            return;
+        }
         if let Some(snapshot) = coalesced_overlay_document(events) {
             self.with_active_presentation(|| callback(&snapshot));
             return;

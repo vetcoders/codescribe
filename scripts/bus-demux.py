@@ -5,7 +5,7 @@ The helper never opens audio. It reads ``codescribe.transcript.v1`` NDJSON and
 emits small agent-bridge envelopes. Product installs run it from the stable
 path below, not from a source checkout::
 
-  cs-bus \
+  x9bus \
     --provider codex --session <provider-session-id> --name james --drafts --follow
 
 ``--provider`` plus ``--session`` enables a collision-safe lease, heartbeat,
@@ -2491,7 +2491,7 @@ def lease_identifier(provider: str, provider_session_id: str) -> str:
 PROVIDER_SESSION_ENV = {"claude-code": "CLAUDE_CODE_SESSION_ID"}
 
 #: `--remote HOST` runs one operation in the managed helper of another Mac.
-REMOTE_HELPER = '"$HOME/.local/bin/cs-bus"'
+REMOTE_HELPER = '"$HOME/.local/bin/x9bus"'
 REMOTE_HOST_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,252}")
 #: Local paths and native hook modes mean nothing on another Mac.
 REMOTE_REFUSED_FLAGS = ("--bridge-home", "--bus", "--mcp", "--codex-mcp", "--install-junie-extension",
@@ -2538,8 +2538,8 @@ def flag_value(args: list[str], flag: str) -> str | None:
 
 
 def run_remote(argv: list[str], environ: Any = os.environ, root: Path | None = None) -> int:
-    """`cs-bus --remote HOST OPERATION ...`: the same operation in the managed
-    cs-bus of HOST over ssh, under this conversation's identity.
+    """`x9bus --remote HOST OPERATION ...`: the same operation in the managed
+    x9bus of HOST over ssh, under this conversation's identity.
 
     Maciej, 2026-10-15: waking and ACKing over ssh should be cheap. A session
     id that lives in this process's environment is sent as an explicit
@@ -2561,12 +2561,12 @@ def run_remote(argv: list[str], environ: Any = os.environ, root: Path | None = N
         else:
             args.append(item)
     if not host or not REMOTE_HOST_PATTERN.fullmatch(host):
-        sys.stderr.write("cs-bus: --remote needs an ssh host alias\n")
+        sys.stderr.write("x9bus: --remote needs an ssh host alias\n")
         return 2
     refused = [flag for flag in REMOTE_REFUSED_FLAGS
                if any(item == flag or item.startswith(flag + "=") for item in args)]
     if refused:
-        sys.stderr.write(f"cs-bus: --remote does not combine with {', '.join(refused)}\n")
+        sys.stderr.write(f"x9bus: --remote does not combine with {', '.join(refused)}\n")
         return 2
     provider, session = flag_value(args, "--provider"), flag_value(args, "--session")
     if session is None and provider in PROVIDER_SESSION_ENV:
@@ -2586,7 +2586,7 @@ def run_remote(argv: list[str], environ: Any = os.environ, root: Path | None = N
                 args = remote_wakeup_resolved(args, "off")
                 emit({"kind": "wakeup_resolved", "requested": "codex-queue", "effective": "off",
                       "reason": "remote Codex: the mailbox host never queues; "
-                                f"cs-bus --remote {host} --watch queues on this Mac"})
+                                f"x9bus --remote {host} --watch queues on this Mac"})
         if ("--watch" in args and flag_value(args, "--wakeup") != "off"
                 and not any(flag in args for flag in ("--human", "--until-event"))):
             return remote_codex_watch(host, args, session, local_root, environ)
@@ -2750,7 +2750,7 @@ def remote_codex_watch(host: str, args: list[str], session: str, root: Path, env
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             wake.close()
-            sys.stderr.write("cs-bus: this remote Codex watch is already running\n")
+            sys.stderr.write("x9bus: this remote Codex watch is already running\n")
             return 3
         command = " ".join([REMOTE_HELPER, *(shlex.quote(item) for item in args),
                             "--queue-relay", "--from-start"])
@@ -2769,15 +2769,15 @@ def remote_codex_watch(host: str, args: list[str], session: str, root: Path, env
                         raise ValueError("remote watch envelope is incomplete")
                     while raw and not raw.endswith(b"\n"):
                         raw = process.stdout.readline(1 << 20)
-                    sys.stderr.write("cs-bus: skipped a remote watch line over 1 MiB\n")
+                    sys.stderr.write("x9bus: skipped a remote watch line over 1 MiB\n")
                     continue
                 try:
                     value = json.loads(raw)
                 except json.JSONDecodeError:
-                    sys.stderr.write("cs-bus: skipped a remote watch line that is not JSON\n")
+                    sys.stderr.write("x9bus: skipped a remote watch line that is not JSON\n")
                     continue
                 if not isinstance(value, dict):
-                    sys.stderr.write("cs-bus: skipped a remote watch line that is not an envelope\n")
+                    sys.stderr.write("x9bus: skipped a remote watch line that is not an envelope\n")
                     continue
                 if value.get("kind") == "queue_relay_ack":
                     if (value.get("provider") == "codex" and value.get("provider_session_id") == session
@@ -2790,7 +2790,7 @@ def remote_codex_watch(host: str, args: list[str], session: str, root: Path, env
                     wake.enqueue(value)
                 emit(value)
         except (ValueError, OSError) as error:
-            sys.stderr.write(f"cs-bus: remote Codex watch stopped: {error}\n")
+            sys.stderr.write(f"x9bus: remote Codex watch stopped: {error}\n")
             return 3
         except KeyboardInterrupt:
             return 130
@@ -5642,7 +5642,7 @@ class NativeQueueWakeup:
     @staticmethod
     def _report_error(future: Any) -> None:
         if not future.cancelled() and future.exception() is not None:
-            sys.stderr.write("cs-bus: native wakeup failed; delivery remains in its mailbox\n")
+            sys.stderr.write("x9bus: native wakeup failed; delivery remains in its mailbox\n")
 
     def close(self, *, wait: bool = False) -> None:
         self.executor.shutdown(wait=wait, cancel_futures=not wait)
@@ -5691,7 +5691,7 @@ class NativeQueueWakeup:
             label = queue_metadata(self.channel or payload.get("channel") or "?")
             name = queue_metadata(payload.get("audience") or "agent")
             import shlex
-            bus_command = "cs-bus" + (f" --remote {shlex.quote(self.mailbox_host)}" if self.mailbox_host else "")
+            bus_command = "x9bus" + (f" --remote {shlex.quote(self.mailbox_host)}" if self.mailbox_host else "")
             read_command = f"{bus_command} --read-pending --provider codex --session {shlex.quote(self.session)}"
             ack_command = f"{bus_command} --provider codex --session {shlex.quote(self.session)} --ack ID"
             header = (
@@ -5768,7 +5768,7 @@ class NativeQueueWakeup:
             if delivery_acknowledged(self.root, self.lease_id, identity, payload):
                 self._withdraw(identity, locked=True)
             if receipt["disposition"] != "provider_accepted":
-                sys.stderr.write(f"cs-bus: native wakeup {receipt['disposition']} for {identity}; retained, see --status\n")
+                sys.stderr.write(f"x9bus: native wakeup {receipt['disposition']} for {identity}; retained, see --status\n")
 
 
 def fire_seal_hook(command: str, payload: dict[str, Any]) -> None:
@@ -6704,7 +6704,7 @@ def _synthesize_and_store(
 
         _write_speech_atomically(audio, write_wav)
     except OSError as failure:
-        sys.stderr.write(f"cs-bus: speech cache write failed ({failure.__class__.__name__})\n")
+        sys.stderr.write(f"x9bus: speech cache write failed ({failure.__class__.__name__})\n")
     return pcm, None, None
 
 
@@ -8554,7 +8554,7 @@ def agent_bus_policy(root: Path, provider: str, session: str, bus: Path) -> tupl
     except (OSError, ValueError, UnicodeError):
         # Mute fails closed to silence; policy fails open to "on": a broken
         # receipt must never silently cut an agent off from the Founder.
-        sys.stderr.write("cs-bus: unreadable or invalid broadcast policy; using on\n")
+        sys.stderr.write("x9bus: unreadable or invalid broadcast policy; using on\n")
         return "on", False
 
 
@@ -9025,7 +9025,7 @@ def receipts_authorized(root: Path, args: argparse.Namespace, message_id: str) -
 
 
 def receipts_command(args: argparse.Namespace) -> int:
-    """`cs-bus --receipts MESSAGE_ID`: one JSON line of state, never the text."""
+    """`x9bus --receipts MESSAGE_ID`: one JSON line of state, never the text."""
     message_id = args.receipts
     if not receipts_authorized(args.bridge_home, args, message_id):
         emit({"kind": "receipts_refused", "message_id": message_id,
@@ -9334,7 +9334,7 @@ def reader_copies_in_bus(bus: Path, *, provider: str, provider_session_id: str, 
 
 
 def backfill_receipts_command(args: argparse.Namespace) -> int:
-    """`cs-bus --backfill-receipts [--dry-run]`: one JSON line of counts.
+    """`x9bus --backfill-receipts [--dry-run]`: one JSON line of counts.
 
     Exit 0, or 3 when a receipt could not be written (`failed > 0`);
     `unmapped` is information and never changes the exit code.
@@ -9988,7 +9988,7 @@ def note_skipped_broadcast_channel(
     if owner:
         entry.update({key: owner[key] for key in
                       ("audience", "name", "provider", "provider_session_id", "lease_id", "bus")})
-    sys.stderr.write(f"cs-bus: skipped {entry.get('name', '?')} (channel {channel}): "
+    sys.stderr.write(f"x9bus: skipped {entry.get('name', '?')} (channel {channel}): "
                      f"{refusal.replace('_', ' ')}\n")
     return entry
 
@@ -10086,7 +10086,7 @@ def stage_capture_attachment_command(args: argparse.Namespace) -> int:
         try:
             atomic_json(args.bridge_home / "runtime" / "capture-attachment-last-refusal.json", diagnostic)
         except OSError as diagnostic_error:
-            sys.stderr.write(f"cs-bus: attachment diagnostic unavailable: {diagnostic_error}\n")
+            sys.stderr.write(f"x9bus: attachment diagnostic unavailable: {diagnostic_error}\n")
         raise
     emit({"kind": "capture_attachment_staged", "stage_id": event["stage_id"],
           "session_id": args.capture_session, "capture_epoch": args.capture_epoch,
@@ -10211,7 +10211,10 @@ def send_text_command(args: argparse.Namespace) -> int:
             text = text.rstrip() + attachment_pointer_lines(attachments)
             if len(text.encode("utf-8")) > 65536:
                 raise ValueError("message with attachment pointers exceeds 64 KiB; draft retained")
-        identity = os.urandom(12).hex()
+        raw_message_id = getattr(args, "message_id", None)
+        if raw_message_id is not None and not re.fullmatch(r"[0-9a-f]{24}", str(raw_message_id)):
+            raise ValueError("message id must be 24 lowercase hex characters")
+        identity = str(raw_message_id) if raw_message_id else os.urandom(12).hex()
         emitted = datetime.datetime.fromtimestamp(time.time(), datetime.timezone.utc)
         emitted_at = emitted.isoformat(timespec="microseconds")
         hold_seconds = getattr(args, "hold_seconds", 0) or 0
@@ -10929,8 +10932,8 @@ def submit_lifecycle_notice(root: Path, notice: dict[str, Any]) -> str:
         f"Codescribe lifecycle · {notice.get('name') or 'agent'}/{notice.get('channel') or '?'}\n"
         f"Bus listener lost {notice.get('consecutive_losses')} times without a new message; "
         "automatic reconnection is suspended. No transcript is attached. "
-        "Re-run cs-bus --attach for this session and restart cs-bus --watch to resume; "
-        "unread messages stay in cs-bus --read-pending."
+        "Re-run x9bus --attach for this session and restart x9bus --watch to resume; "
+        "unread messages stay in x9bus --read-pending."
     )
     if executable is None:
         disposition = "unavailable"
@@ -11012,9 +11015,9 @@ class ListenerSupervisor:
             outcome["queue_notice"] = submit_lifecycle_notice(self.root, outcome)
         outcome["instructions"] = {
             "follower_recovered": "Same lease, cursor and mailbox; unread messages follow as usual. Do not ACK this notice.",
-            "recovery_failed": "Automatic recovery did not start a reader; re-run cs-bus --attach for this session.",
-            "recovery_suspended": "Two losses without a new message; reconnection is off until cs-bus --attach.",
-            "unrecoverable": "Lease state could not be resumed and was preserved; inspect cs-bus --status.",
+            "recovery_failed": "Automatic recovery did not start a reader; re-run x9bus --attach for this session.",
+            "recovery_suspended": "Two losses without a new message; reconnection is off until x9bus --attach.",
+            "unrecoverable": "Lease state could not be resumed and was preserved; inspect x9bus --status.",
             "listener_ended": "This session no longer owns the channel; nothing is revived. The watch exits.",
         }[event]
         return outcome
@@ -11348,6 +11351,23 @@ def require_drained_lease(
         raise OSError("old source has an unfinished capture; owner retained")
 
 
+HELPER_ENTRYPOINT_NAMES = frozenset({"x9bus", "cs-bus", "x9-bus", "bus-demux.py"})
+
+
+def same_helper_entrypoint(candidate: Path, root: Path, current: Path | None = None) -> bool:
+    """True when `candidate` and `current` are the same helper or sibling bus command alias."""
+    active = (Path(__file__) if current is None else current).resolve()
+    target = candidate.resolve()
+    if target == active:
+        return True
+    if target.name not in HELPER_ENTRYPOINT_NAMES or active.name not in HELPER_ENTRYPOINT_NAMES:
+        return False
+    if target.parent == active.parent:
+        return True
+    managed_dirs = {(root / "runtime" / "bin").resolve(), (Path.home() / ".local" / "bin").resolve()}
+    return target.parent in managed_dirs and active.parent in managed_dirs
+
+
 def verified_follower(root: Path, lease_id: str, session: str, pid: int) -> bool:
     """Bind a live invocation to the incarnation recorded by the lease owner."""
     import shlex
@@ -11368,15 +11388,15 @@ def verified_follower(root: Path, lease_id: str, session: str, pid: int) -> bool
                 return None
             return words[positions[0] + 1]
         return (
-            # The follower is this helper script with these flags, recorded by
-            # the lease owner with its start stamp. The interpreter that
-            # launched it is not part of that identity: a CLI attach runs the
-            # shell's python3, the Claude Code plugin's MCP server runs the one
-            # on its own PATH, and a follower spawned by one lane must be
-            # adoptable by the other (2026-10-12: every plugin connect after a
-            # CLI attach refused with "identity could not be verified").
+            # The follower is this helper script (or its installed x9bus/cs-bus
+            # sibling alias) with these flags, recorded by the lease owner with
+            # its start stamp. The interpreter that launched it is not part of
+            # that identity: a CLI attach runs the shell's python3, the Claude
+            # Code plugin's MCP server runs the one on its own PATH, and a
+            # follower spawned by one lane or alias must be adoptable and
+            # releasable by the other.
             len(words) >= 2
-            and Path(words[1]).resolve() == Path(__file__).resolve()
+            and same_helper_entrypoint(Path(words[1]), root)
             and "--follow" in words and argument("--session") == session
             and argument("--provider") == state["provider"]
             and argument("--bridge-home") is not None
@@ -12068,7 +12088,7 @@ def wait_for_pending_command(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         return 130
     except (OSError, ValueError) as error:
-        sys.stderr.write(f"cs-bus: bounded watch refused: {error}\n")
+        sys.stderr.write(f"x9bus: bounded watch refused: {error}\n")
         return 3
     finally:
         trigger.close()
@@ -12089,7 +12109,7 @@ def watch_command(args: argparse.Namespace) -> int:
     if relay:
         state = read_json(args.bridge_home / "leases" / f"{lease_id}.json") or {}
         if state.get("wakeup_configuration", {}).get("wakeup") != "off":
-            sys.stderr.write("cs-bus: remote queue relay needs reattach with --wakeup off\n")
+            sys.stderr.write("x9bus: remote queue relay needs reattach with --wakeup off\n")
             return 3
     if args.from_file is not None:
         source = args.from_file
@@ -12250,24 +12270,35 @@ def watch_command(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    if any(item == "--remote" or item.startswith("--remote=") for item in sys.argv[1:]):
-        return run_remote(sys.argv[1:])
+    arguments = list(sys.argv[1:])
+    entrypoint = Path(sys.argv[0]).name
+    allowed_entrypoints = {"x9bus", "cs-bus", "x9say", "cs-say"}
+    if entrypoint not in allowed_entrypoints:
+        entrypoint = "x9bus"
+    if "--entrypoint" in arguments:
+        index = arguments.index("--entrypoint")
+        if index + 1 < len(arguments) and arguments[index + 1] in allowed_entrypoints:
+            entrypoint = arguments[index + 1]
+        del arguments[index:index + 2]
+    if any(item == "--remote" or item.startswith("--remote=") for item in arguments):
+        return run_remote(arguments)
     parser = argparse.ArgumentParser(
-        prog="cs-bus", usage="%(prog)s <operation> [options]",
+        prog=entrypoint, usage="%(prog)s <operation> [options]",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        description="Codescribe messages, live notifications and voice replies for your agent.\n\n"
+        description="X9bus messages, live notifications and voice replies for your agent.\n"
+               "Primary commands are x9bus and x9say; cs-bus and cs-say remain compatibility aliases.\n\n"
                "Quick start:\n"
-               "  cs-bus --attach --channel 2 --name lena --provider codex --session THREAD\n"
-               "  cs-bus --attach --channel 2 --name lena --provider codex --session THREAD --takeover\n"
-               "  cs-bus --detach --provider codex --session THREAD\n"
-               "  cs-bus --read-delivery ID --lease PREVIOUS_LEASE --provider codex --session THREAD\n"
-               "  cs-bus --watch --provider codex --session THREAD\n"
-               "  cs-bus --read-delivery ID --provider codex --session THREAD\n"
-               "  cs-bus --ack ID --provider codex --session THREAD\n"
-               "  cs-bus --history --since 1d > bus-history.md\n"
-               "  cs-say 'Gotowe.'  # Codescribe system voice (Carina, xAI)\n"
-               "  cs-say 'Gotowe.' --provider codex --session THREAD\n"
-               "  cs-say auth --help\n\n"
+               "  x9bus --attach --channel 2 --name lena --provider codex --session THREAD\n"
+               "  x9bus --attach --channel 2 --name lena --provider codex --session THREAD --takeover\n"
+               "  x9bus --detach --provider codex --session THREAD\n"
+               "  x9bus --read-delivery ID --lease PREVIOUS_LEASE --provider codex --session THREAD\n"
+               "  x9bus --watch --provider codex --session THREAD\n"
+               "  x9bus --read-delivery ID --provider codex --session THREAD\n"
+               "  x9bus --ack ID --provider codex --session THREAD\n"
+               "  x9bus --history --since 1d > bus-history.md\n"
+               "  x9say 'Gotowe.'  # Codescribe system voice (Carina, xAI)\n"
+               "  x9say 'Gotowe.' --provider codex --session THREAD\n"
+               "  x9say auth --help\n\n"
                "Every attachment needs an output-notifying watch. Its default bell carries the full message;\n"
                "ACK complete received messages immediately. Codex native queue also wakes the next turn.",
     )
@@ -12288,10 +12319,10 @@ def main() -> int:
                         help="with --omp-wake: the OMP process whose exit ends the wait silently")
     parser.add_argument("--extensions-directory", type=Path, default=None,
                         help="with --install-junie-extension: override Junie's extensions directory")
-    parser.add_argument("--entrypoint", choices=("cs-bus", "cs-say"), default="cs-bus", help=argparse.SUPPRESS)
+    parser.add_argument("--entrypoint", choices=("x9bus", "cs-bus", "x9say", "cs-say"), default=entrypoint, help=argparse.SUPPRESS)
     parser.add_argument("--bus", type=Path, default=None, help="override bus path")
     parser.add_argument("--remote", metavar="HOST",
-                        help="run this operation in the managed cs-bus of HOST over ssh (attach, read, "
+                        help="run this operation in the managed x9bus of HOST over ssh (attach, read, "
                         "ACK, send, detach); an --attach there also wakes this Claude Code session")
     authority = parser.add_mutually_exclusive_group()
     authority.add_argument(
@@ -12465,6 +12496,7 @@ def main() -> int:
         "defaults to the name on this session's lease",
     )
     parser.add_argument("--send-text", action="store_true", help="send user text from stdin; --channel 0 broadcasts, individual channels require exact --provider/--session/--lease/--bus")
+    parser.add_argument("--message-id", metavar="ID", help="with --send-text: 24 lowercase hex message id pre-assigned by the UI")
     parser.add_argument("--also-sent-to", metavar="JSON", help="with --send-text: frozen exact-owner Sync co-addresses, informational only")
     parser.add_argument("--send", metavar="TEXT", help="agent-authored text message; requires --to and an attached --provider/--session sender")
     parser.add_argument("--to", metavar="NAME|1-9|0", help="recipient for --send: an agent name (every other session bound to it), "
@@ -12529,7 +12561,7 @@ def main() -> int:
                         help="with --send-text: pointer to a pasted file the app already stored "
                         "(absolute path under $HOME, <= 50 MiB); repeatable; the helper never copies it")
     parser.add_argument("--follower-workspace", type=Path, help=argparse.SUPPRESS)
-    args = parser.parse_args()
+    args = parser.parse_args(arguments)
     if args.provider is not None:
         # The one entry point of a provider id: everything below sees the token.
         try:
@@ -12550,7 +12582,7 @@ def main() -> int:
         try:
             return stage_capture_attachment_command(args)
         except (OSError, ValueError, RuntimeError) as error:
-            sys.stderr.write(f"cs-bus: capture attachment refused: {error}; draft retained\n")
+            sys.stderr.write(f"x9bus: capture attachment refused: {error}; draft retained\n")
             return 3
     if any(value is not None for value in (args.capture_session, args.capture_epoch, args.capture_source_sequence)):
         parser.error("capture target flags require --stage-capture-attachment")
@@ -12558,6 +12590,8 @@ def main() -> int:
         parser.error("--user-reply-to requires --send-text")
     if args.also_sent_to is not None and not args.send_text:
         parser.error("--also-sent-to requires --send-text")
+    if args.message_id is not None and (not args.send_text or not re.fullmatch(r"[0-9a-f]{24}", args.message_id)):
+        parser.error("--message-id requires --send-text and 24 lowercase hex characters")
     if args.queue_admit and (not args.read_delivery or args.provider != "codex" or args.lease):
         parser.error("--queue-admit requires one current Codex --read-delivery")
     if any(value is not None for value in (args.revise, args.withdraw, args.release)):
@@ -12570,7 +12604,7 @@ def main() -> int:
         try:
             return delivery_control_command(args)
         except (OSError, ValueError, RuntimeError) as error:
-            sys.stderr.write(f"cs-bus: held control refused: {error}\n")
+            sys.stderr.write(f"x9bus: held control refused: {error}\n")
             return 3
     if args.hold_seconds is not None and (not args.send_text or not 0 <= args.hold_seconds <= 4294967295):
         parser.error("--hold-seconds requires --send-text and an unsigned 32-bit integer")
@@ -12584,7 +12618,7 @@ def main() -> int:
         try:
             return set_agent_broadcast_policy(args)
         except (OSError, ValueError) as error:
-            sys.stderr.write(f"cs-bus: broadcast policy refused: {error}\n")
+            sys.stderr.write(f"x9bus: broadcast policy refused: {error}\n")
             return 3
     if args.mcp or args.codex_mcp or args.install_junie_extension or args.claude_code_wake or args.claude_code_probe or args.omp_wake:
         allowed = {"mcp", "codex_mcp", "install_junie_extension", "claude_code_wake", "claude_code_probe", "omp_wake", "host_pid",
@@ -12620,7 +12654,7 @@ def main() -> int:
                 module.serve(sys.modules[__name__], root, args.bus)
             return 0
         except (OSError, ValueError) as error:
-            sys.stderr.write(f"cs-bus: native extension refused: {error}\n")
+            sys.stderr.write(f"x9bus: native extension refused: {error}\n")
             return 3
     if args.extensions_directory:
         parser.error("--extensions-directory requires --install-junie-extension")
@@ -12633,7 +12667,7 @@ def main() -> int:
         try:
             return backfill_receipts_command(args)
         except (OSError, ValueError) as error:
-            sys.stderr.write(f"cs-bus: receipts backfill refused: {error}\n")
+            sys.stderr.write(f"x9bus: receipts backfill refused: {error}\n")
             return 3
     if args.mute_all or args.unmute_all:
         allowed = {"mute_all", "unmute_all", "bridge_home", "entrypoint"}
@@ -12644,7 +12678,7 @@ def main() -> int:
         try:
             return set_global_muted(args)
         except (OSError, ValueError) as error:
-            sys.stderr.write(f"cs-bus: global playback mute refused: {error}\n")
+            sys.stderr.write(f"x9bus: global playback mute refused: {error}\n")
             return 3
     if args.history:
         allowed = {"history", "since", "until", "channel", "agent_only", "export", "bridge_home", "entrypoint"}
@@ -12657,7 +12691,7 @@ def main() -> int:
         try:
             return history_command(args)
         except (OSError, ValueError) as error:
-            sys.stderr.write(f"cs-bus: history refused: {error}\n")
+            sys.stderr.write(f"x9bus: history refused: {error}\n")
             return 3
     if args.since is not None or args.until is not None or args.agent_only or args.export:
         parser.error("--since, --until, --agent-only and --export require --history")
@@ -12780,7 +12814,7 @@ def main() -> int:
         try:
             return receipts_command(args)
         except (OSError, ValueError) as error:
-            sys.stderr.write(f"cs-bus: receipts refused: {error}\n")
+            sys.stderr.write(f"x9bus: receipts refused: {error}\n")
             return 3
     if args.until_event or args.max_wait is not None:
         if (not args.watch or not args.until_event or not args.provider
@@ -12806,7 +12840,7 @@ def main() -> int:
         try:
             return read_pending_command(args)
         except (OSError, ValueError) as error:
-            sys.stderr.write(f"cs-bus: pending read refused: {error}\n")
+            sys.stderr.write(f"x9bus: pending read refused: {error}\n")
             return 3
     if args.takeover and not args.attach:
         parser.error("--takeover requires --attach")
@@ -12815,7 +12849,7 @@ def main() -> int:
             emit(archive_agent(args))
             return 0
         except (OSError, ValueError) as error:
-            sys.stderr.write(f"cs-bus: agent archive refused: {error}\n")
+            sys.stderr.write(f"x9bus: agent archive refused: {error}\n")
             return 3
     if args.mute_agent or args.unmute_agent:
         if (not args.provider or not args.bus_overridden
@@ -12830,7 +12864,7 @@ def main() -> int:
         try:
             return set_agent_muted(args)
         except (OSError, ValueError) as error:
-            sys.stderr.write(f"cs-bus: playback mute refused: {error}\n")
+            sys.stderr.write(f"x9bus: playback mute refused: {error}\n")
             return 3
     if args.send_text:
         if ((args.channel == "0" and any((args.provider, args.session, args.lease, args.bus_overridden)))
@@ -12845,10 +12879,10 @@ def main() -> int:
         try:
             return send_text_command(args)
         except UserTextPublicationUncertain as error:
-            sys.stderr.write(f"cs-bus: {error}\n")
+            sys.stderr.write(f"x9bus: {error}\n")
             return 4
         except (OSError, ValueError, RuntimeError) as error:
-            sys.stderr.write(f"cs-bus: message publication refused: {error}\n")
+            sys.stderr.write(f"x9bus: message publication refused: {error}\n")
             return 3
     if args.send is not None or args.to is not None:
         if (args.send is None or args.to is None or not args.provider
@@ -12859,7 +12893,7 @@ def main() -> int:
         try:
             return send_peer_command(args)
         except (OSError, ValueError, RuntimeError) as error:
-            sys.stderr.write(f"cs-bus: peer message refused: {error}\n")
+            sys.stderr.write(f"x9bus: peer message refused: {error}\n")
             return 3
     if args.reply_to and (args.say is None or not re.fullmatch(r"[0-9a-f]{24}", args.reply_to)):
         parser.error("--reply-to requires --say and a delivery id")

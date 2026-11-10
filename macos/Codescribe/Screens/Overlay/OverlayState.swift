@@ -2016,15 +2016,17 @@ final class OverlayState {
   @ObservationIgnored var heldSendSleep: @MainActor (Duration) async -> Void = { duration in
     try? await Task.sleep(for: duration)
   }
+  @TaskLocal static var activeHeldDispatchMessageID: String?
   @ObservationIgnored var dispatchConversationText:
     @MainActor (
       OverlayConversationOwner?, String, OverlayUserReplyReference?, [OverlayConversationOwner]
     ) async throws -> AgentBusTextPublication =
-      {
-        owner, text, reply, alsoSentTo in
-        try await OverlayState.dispatchHeldText(owner, text, reply, alsoSentTo) {
+      { owner, text, reply, alsoSentTo in
+        let messageID = OverlayState.activeHeldDispatchMessageID
+        return try await OverlayState.dispatchHeldText(owner, text, reply, alsoSentTo) {
           try await RealAgentBridgeInstaller.sendBusText(
-            owner: $0, text: $1, holdSeconds: $2, userReplyTo: $3, alsoSentTo: $4)
+            owner: $0, text: $1, holdSeconds: $2, userReplyTo: $3, alsoSentTo: $4,
+            messageID: messageID)
         }
       }
   /// The app already held the message; the helper must not hold it again.
@@ -2204,7 +2206,7 @@ final class OverlayState {
       switch error.code {
       case .fileNoSuchFile:
         return String(
-          localized: "the cs-bus helper is not installed",
+          localized: "the x9bus helper is not installed",
           comment: "Archive refusal reason: managed helper missing")
       case .fileReadCorruptFile:
         return String(
@@ -3486,7 +3488,8 @@ final class OverlayState {
     let send = OverlayHeldSend(
       id: OverlayHeldSend.newID(), conversationID: owner?.id ?? "0", owner: owner, text: text,
       reply: reply, alsoSentTo: alsoSentTo, acceptedAt: now,
-      deadline: now.addingTimeInterval(TimeInterval(seconds)), phase: .holding)
+      deadline: now.addingTimeInterval(TimeInterval(seconds)), phase: .holding,
+      messageID: OverlayHeldSend.newMessageID())
     heldSends.append(send)
     // The caller clears the only other copy (the draft) when this returns.
     do {
@@ -3559,8 +3562,10 @@ final class OverlayState {
 
   private func completeHeldDispatch(_ send: OverlayHeldSend) async {
     do {
-      let publication = try await dispatchConversationText(
-        send.owner, send.text, send.reply, send.alsoSentTo)
+      let publication = try await Self.$activeHeldDispatchMessageID.withValue(send.messageID) {
+        try await dispatchConversationText(
+          send.owner, send.text, send.reply, send.alsoSentTo)
+      }
       if !publication.skipped.isEmpty {
         if !publication.messageID.isEmpty {
           publishedMessageSkips[publication.messageID] = publication.skipped
@@ -3570,7 +3575,9 @@ final class OverlayState {
       }
       if let index = heldSends.firstIndex(where: { $0.id == send.id }) {
         heldSends[index].phase = .dispatched
-        heldSends[index].messageID = publication.messageID.isEmpty ? nil : publication.messageID
+        if !publication.messageID.isEmpty {
+          heldSends[index].messageID = publication.messageID
+        }
         heldSends[index].dispatchedAt = heldSendNow()
       }
     } catch {
@@ -3580,12 +3587,14 @@ final class OverlayState {
       returnHeldSendToComposer(send)
       textMessageErrors[send.conversationID] = error.userFacingMessage
     }
+    let now = heldSendNow()
+    retireSettledHeldSends(seenIn: busConversationSource, now: now)
     do {
       try persistHeldSends()
     } catch {
       NSLog("codescribe: held sends not saved: \(error)")
     }
-    refreshHeldSendRows(now: heldSendNow())
+    refreshHeldSendRows(now: now)
     runHeldSendClock()
   }
 
@@ -3644,14 +3653,21 @@ final class OverlayState {
 
   /// A published row gives way to the reader's copy, or after a short window.
   private func retireSettledHeldSends(seenIn conversations: [OverlayConversation], now: Date) {
-    guard heldSends.contains(where: { $0.phase == .dispatched }) else { return }
+    guard heldSends.contains(where: { $0.phase != .holding }) else { return }
     let published = Set(
       conversations.flatMap(\.messages).compactMap(\.controlIdentity))
     heldSends.removeAll { send in
-      guard send.phase == .dispatched else { return false }
-      guard let messageID = send.messageID else { return true }
-      return published.contains(messageID)
-        || now.timeIntervalSince(send.dispatchedAt ?? now) >= Self.heldSendSettleWindow
+      switch send.phase {
+      case .holding:
+        return false
+      case .dispatching:
+        guard let messageID = send.messageID else { return false }
+        return published.contains(messageID)
+      case .dispatched:
+        guard let messageID = send.messageID else { return true }
+        return published.contains(messageID)
+          || now.timeIntervalSince(send.dispatchedAt ?? now) >= Self.heldSendSettleWindow
+      }
     }
   }
 
@@ -3674,6 +3690,7 @@ final class OverlayState {
   }
 
   private func refreshHeldSendRows(now: Date) {
+    retireSettledHeldSends(seenIn: busConversationSource, now: now)
     let next = mergingHeldSends(
       into: busConversationSource.map { $0.projectingDelivery(at: now) }, now: now)
     if conversations != next { conversations = next }

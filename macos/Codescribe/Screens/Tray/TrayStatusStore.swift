@@ -36,8 +36,10 @@ enum TrayStatusDotIcon {
       base.draw(in: rect)
       // Tint like a template image would; the draw-time handler makes
       // label color follow the destination (menu bar) appearance.
-      (glyphTint ?? NSColor.labelColor).set()
-      rect.fill(using: .sourceAtop)
+      if let glyphTint {
+        glyphTint.set()
+        rect.fill(using: .sourceAtop)
+      }
 
       let dotRect = dotRect(in: rect)
       if let cg = NSGraphicsContext.current?.cgContext {
@@ -61,11 +63,14 @@ enum TrayStatusDotIcon {
   }
 }
 
-/// Menu-bar image for one tray status. Idle and settled states stay the brand
-/// mark and its indicator as a real template image. Live activity colors the
-/// indicator while the mark continues to follow the menu bar appearance.
+/// Menu-bar image for one tray status. Template glyphs adapt to appearance;
+/// the X9bus bundle icon keeps its original color while activity dots update.
 enum MenuBarStatusImage {
   static func make(base: NSImage, dot: NSColor?, rim: NSColor? = nil) -> NSImage {
+    guard base.isTemplate else {
+      guard let dot else { return base }
+      return TrayStatusDotIcon.composite(base: base, dot: dot, rim: rim)
+    }
     guard let dot else {
       let image = TrayStatusDotIcon.composite(base: base, dot: .black, glyphTint: .black)
       image.isTemplate = true

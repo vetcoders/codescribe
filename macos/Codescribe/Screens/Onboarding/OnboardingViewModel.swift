@@ -184,9 +184,10 @@ final class OnboardingViewModel: ObservableObject {
 
   var step: OnboardingStep { OnboardingStep.step(at: stepIndex) }
   var windowTitle: String {
-    String(
+    let key: String.LocalizationValue = AppBranding.isX9bus() ? "X9bus Setup" : "Getting started"
+    return String(
       localized: LocalizedStringResource(
-        "Getting started", locale: interfaceLocale,
+        key, locale: interfaceLocale,
         comment: "Setup wizard window title: the wizard itself, reopened from Settings (General)"
       ))
   }

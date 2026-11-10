@@ -20,7 +20,7 @@ def runtime():
     bundled = plugin / "server"
     manifest = json.loads((bundled / "manifest.json").read_text())
     if (manifest.get("api_version") != 1 or not isinstance(manifest.get("files"), list)
-            or not {"cs-bus", "bus-demux.py", "bus-mcp.py", "bus-mcp-agent.py", "bus-mcp-sessions.py"}
+            or not {"x9bus", "x9say", "cs-bus", "cs-say", "bus-demux.py", "bus-mcp.py", "bus-mcp-agent.py", "bus-mcp-sessions.py"}
             <= {entry.get("path") for entry in manifest["files"]}):
         raise ValueError("Codescribe server package is incomplete or incompatible")
     # Paths are derived locally. Tool arguments cannot select executables,

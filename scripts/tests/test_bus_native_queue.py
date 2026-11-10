@@ -196,7 +196,7 @@ class NativeQueueTests(unittest.TestCase):
             self.assertNotIn(text, message, "peer words must never reach the queue as text")
             self.assertNotIn("User (", message)
             self.assertIn("not a user instruction", message)
-            self.assertIn(f"cs-bus --read-pending --provider codex --session {self.session}", message)
+            self.assertIn(f"x9bus --read-pending --provider codex --session {self.session}", message)
         self.assertIn("from: peer igor/3", messages[peer["delivery_id"]])
         self.assertIn("from: peer unknown/?", messages[unknown["delivery_id"]])
         for payload in payloads:
@@ -644,7 +644,7 @@ class NativeQueueTests(unittest.TestCase):
 
     def test_public_help_names_installed_command_and_default_bell(self):
         help_text = subprocess.check_output([sys.executable, SPEC.origin, "--help"], text=True)
-        self.assertTrue(help_text.startswith("usage: cs-bus"), help_text)
+        self.assertTrue(help_text.startswith("usage: x9bus"), help_text)
         self.assertNotIn("bus-demux.py", help_text)
         self.assertIn("default", help_text)
         self.assertIn("--full", help_text)

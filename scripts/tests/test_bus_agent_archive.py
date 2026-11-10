@@ -160,6 +160,37 @@ class AgentArchiveTests(unittest.TestCase):
         self.assertEqual(self.bus.read_bytes(), self.original_bus)
         self.assertFalse((self.root / "acknowledgments").exists())
 
+    def test_verified_follower_accepts_sibling_x9bus_and_cs_bus_entrypoints(self):
+        """A follower launched via cs-bus is verifiable when archived via x9bus (and vice versa)."""
+        bin_dir = self.root.parent / "local-bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        cs_bus = bin_dir / "cs-bus"
+        x9bus = bin_dir / "x9bus"
+        cs_bus.write_text("#!/usr/bin/env python3\n")
+        x9bus.write_text("#!/usr/bin/env python3\n")
+        foreign = self.root.parent / "foreign" / "x9bus"
+        foreign.parent.mkdir(parents=True, exist_ok=True)
+        foreign.write_text("#!/usr/bin/env python3\n")
+
+        self.assertTrue(DEMUX.same_helper_entrypoint(cs_bus, self.root, current=x9bus))
+        self.assertTrue(DEMUX.same_helper_entrypoint(x9bus, self.root, current=cs_bus))
+        self.assertFalse(DEMUX.same_helper_entrypoint(foreign, self.root, current=x9bus))
+
+        identity = {
+            "started": "Tue Nov 10 17:00:00 2026",
+            "command": (
+                f"{sys.executable} {cs_bus} --bus {self.bus} --bridge-home {self.root} "
+                f"--provider {self.provider} --session {self.session} --follow"
+            ),
+        }
+        state = DEMUX.read_json(self.lease)
+        state["pid"] = 42424
+        state["process_identity"] = identity
+        DEMUX.atomic_json(self.lease, state)
+        with mock.patch.object(DEMUX, "process_identity", return_value=identity), \
+                mock.patch.object(DEMUX, "__file__", str(x9bus)):
+            self.assertTrue(DEMUX.verified_follower(self.root, self.lease_id, self.session, 42424))
+
     def test_release_reader_stale_click_refuses_before_signalling(self):
         child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
         self.addCleanup(lambda: child.poll() is None and (child.kill(), child.wait()))

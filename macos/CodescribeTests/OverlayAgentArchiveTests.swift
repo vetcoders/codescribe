@@ -156,7 +156,7 @@ final class OverlayAgentArchiveTests: XCTestCase {
       "agent archive refused: agent reader is alive; channel retained")
     XCTAssertEqual(
       OverlayState.archiveFailureReason(CocoaError(.fileNoSuchFile)),
-      "the cs-bus helper is not installed")
+      "the x9bus helper is not installed")
     XCTAssertEqual(
       OverlayState.archiveFailureReason(CocoaError(.fileReadCorruptFile)),
       "the agent's lease no longer matches this owner")
@@ -570,7 +570,7 @@ final class OverlayAgentArchiveTests: XCTestCase {
       let source = try String(
         contentsOf: repo.appendingPathComponent("scripts/bus-demux.py"), encoding: .utf8)
       let firstNewline = try XCTUnwrap(source.firstIndex(of: "\n"))
-      let command = installer.commandURL("cs-bus")
+      let command = installer.commandURL("x9bus")
       try FileManager.default.createDirectory(
         at: command.deletingLastPathComponent(), withIntermediateDirectories: true)
       let managed =

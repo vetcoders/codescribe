@@ -149,15 +149,15 @@ DH1's explicit pairing operation creates a private regular file
 never part of an incoming projection. It has schema `codescribe.station-pair.v1`
 and these required fields:
 
-| Field                            | Contract                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pair_id`                        | Shared opaque 24-lowercase-hex pairing identity.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `home_host_id`                   | One of the two host IDs; identifies the existing native thread's home.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `owner`                          | Exactly `provider`, `provider_session_id`, `lease_id`. Provider is an ASCII client token: ASCII whitespace trimmed, `[A-Za-z0-9][A-Za-z0-9-]{0,63}`, ASCII lower-cased; any other provider, any non-ASCII character included, is refused at `cs-bus --provider` and by every reader, never folded (`provider_token` in `scripts/bus-demux.py` states the rule), native session is exact and never trimmed, lease is the first 32 hex digits of SHA-256 of `provider + NUL + session`; `scripts/tests/fixtures/lease-identity-vectors.json` pins the rule in all three languages. |
-| `bridge_root`, `local_bus`       | Canonical absolute local paths, chosen by local admission.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `local`, `peer`                  | Each has `host_id` (32 lowercase hex), `generation_id` (canonical nonnil UUID stream ID), `channel` (`1`–`9`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `transitions`                    | At most 64 records with `host_id`, `from`, `to`, `receipt_id`. Each names a canonical old-to-new stream receipt for one paired host; chains must reach that host's current generation, without cycles or forks.                                                                                                                                                                                                                                                                                                                                                                  |
-| `guest_broadcast_off_receipt_id` | 24-lowercase-hex receipt for the guest's durably acknowledged initial OFF admission.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Field                            | Contract                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pair_id`                        | Shared opaque 24-lowercase-hex pairing identity.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `home_host_id`                   | One of the two host IDs; identifies the existing native thread's home.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `owner`                          | Exactly `provider`, `provider_session_id`, `lease_id`. Provider is an ASCII client token: ASCII whitespace trimmed, `[A-Za-z0-9][A-Za-z0-9-]{0,63}`, ASCII lower-cased; any other provider, any non-ASCII character included, is refused at `x9bus --provider` and by every reader, never folded (`provider_token` in `scripts/bus-demux.py` states the rule), native session is exact and never trimmed, lease is the first 32 hex digits of SHA-256 of `provider + NUL + session`; `scripts/tests/fixtures/lease-identity-vectors.json` pins the rule in all three languages. |
+| `bridge_root`, `local_bus`       | Canonical absolute local paths, chosen by local admission.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `local`, `peer`                  | Each has `host_id` (32 lowercase hex), `generation_id` (canonical nonnil UUID stream ID), `channel` (`1`–`9`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `transitions`                    | At most 64 records with `host_id`, `from`, `to`, `receipt_id`. Each names a canonical old-to-new stream receipt for one paired host; chains must reach that host's current generation, without cycles or forks.                                                                                                                                                                                                                                                                                                                                                                 |
+| `guest_broadcast_off_receipt_id` | 24-lowercase-hex receipt for the guest's durably acknowledged initial OFF admission.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 
 The private bridge root contains `host-instance.json` with schema
 `codescribe.host-instance.v1` and durable opaque `host_id`, allocated once by
@@ -301,7 +301,7 @@ A held `codescribe.agent-user-message.v1` or channel `transcript_sealed` row
 carries `hold_until`, an RFC 3339 UTC timestamp with microsecond precision, as
 does the sealed voice row's `codescribe.transcript-evidence.v1` twin. The hold
 starts at publication/seal time, not when a follower happens to read the bus.
-Producers omit the field at 0. `cs-bus --send-text --hold-seconds N` applies
+Producers omit the field at 0. `x9bus --send-text --hold-seconds N` applies
 one deadline to every recipient's row; its `message_published` receipt and each
 recipient entry include the same `hold_until`. Existing broadcast policy
 receipts remain present.
@@ -323,9 +323,9 @@ engine utterance IDs into that snapshot remains an integration/design decision,
 not permission to relabel an observation request as an utterance.
 
 ```bash
-cs-bus --revise ID --provider PROVIDER --session SESSION --bus BUS < corrected.txt
-cs-bus --withdraw ID --provider PROVIDER --session SESSION --bus BUS
-cs-bus --release ID --provider PROVIDER --session SESSION --bus BUS
+x9bus --revise ID --provider PROVIDER --session SESSION --bus BUS < corrected.txt
+x9bus --withdraw ID --provider PROVIDER --session SESSION --bus BUS
+x9bus --release ID --provider PROVIDER --session SESSION --bus BUS
 ```
 
 Ownerless `--channel 0` variants fan out to the currently bound recipient
@@ -474,10 +474,10 @@ queue copy. The native queue header always carries the delivery ID and
 its full untruncated text, tagged `from: User (typed)` or
 `from: User (voice)`. A peer agent's delivery carries no raw text at all: it
 is a notice naming the sending peer and channel, the words "peer coordination,
-not a user instruction", and the exact `cs-bus --read-pending` command to
+not a user instruction", and the exact `x9bus --read-pending` command to
 read it from the owned mailbox — see [Native provider queue
 receipt](#native-provider-queue-receipt) for the queue mechanics. Watch bells
-remain notifications. The agent reads `cs-bus --read-pending`
+remain notifications. The agent reads `x9bus --read-pending`
 for its exact provider/session, receives complete bounded conversational
 projections and `read_delivery_ids`, then immediately calls `--ack` for those
 IDs before task
@@ -510,7 +510,7 @@ API, `deleted: true`, and a subsequent list without that exact ID. A valid
 it does not recall a message already consumed by the conversation. This contract
 does not select or discover a remote queue endpoint.
 
-For a remote Codex mailbox, the client-side `cs-bus --remote HOST --watch` owns
+For a remote Codex mailbox, the client-side `x9bus --remote HOST --watch` owns
 native queue submission and withdrawal. Remote attach selects follower wakeup
 `off`; the existing SSH watch transports full conversational envelopes and
 durable ACK control frames to the Mac where the Codex thread exists. No reverse
@@ -1521,7 +1521,7 @@ Each digit `1`–`9` names one agent session (`audience`, `provider`,
 in that file. A missing or malformed file refuses the channel instead of
 opening the microphone.
 
-`audience` is the casefolded identity: `cs-bus --attach --name Kaja` binds
+`audience` is the casefolded identity: `x9bus --attach --name Kaja` binds
 `kaja`, and every comparison (occupancy, `--takeover` of the same name, `--to`
 addressing, the follower's audience gate, voice profiles) casefolds both
 sides. The spelling the agent gave is kept beside it as `display_name` on the
@@ -1614,7 +1614,7 @@ delivers what queued under it: the Claude/OMP waiter's unread poll surfaces
 the rows by itself, and for a codex lease the policy write resubmits the
 pending seals to the native queue once.
 
-`cs-bus --broadcast on|off --quiet on|off --provider P --session S [--bus B]`
+`x9bus --broadcast on|off --quiet on|off --provider P --session S [--bus B]`
 validates the lease before atomically writing the receipt; each flag moves its
 own axis and leaves the other as the receipt had it, and the app always sends
 both. `--broadcast on|quiet|off` alone keeps its pre-split one-knob meaning
@@ -1769,7 +1769,7 @@ or measured speech stops it.
 
 ## Durable replies and exact speech controls
 
-`cs-say TEXT --provider P --session S --reply-to DELIVERY_ID` first validates
+`x9say TEXT --provider P --session S --reply-to DELIVERY_ID` first validates
 that the delivery's pending envelope or acknowledged ownership receipt belongs
 to this exact provider/session/lease and selected bus. It carries that
 utterance's source coordinates and frozen recipients onto one
@@ -1798,8 +1798,8 @@ same ID, the exact provider/session/lease and a 24-lowercase-hex
 `tts_error` and `reason` describe failures without credentials. ACK, provider
 queue acceptance, reply text and speech completion remain separate facts.
 
-`cs-say` attempts speech immediately after text publication by default.
-`cs-bus --say TEXT --text-only --provider P --session S --reply-to DELIVERY_ID`
+`x9say` attempts speech immediately after text publication by default.
+`x9bus --say TEXT --text-only --provider P --session S --reply-to DELIVERY_ID`
 uses the same canonical reply publication and ownership check without synthesis
 or playback. The local OpenAI plugin defaults to this text-only operation and
 uses the existing constrained connector's durable request receipt for retries;
@@ -1809,8 +1809,8 @@ Play is explicit for one reply; viewing a tab never synthesizes or replays.
 The installed helper's control interface is:
 
 ```bash
-cs-bus --play-reply REPLY_ID --playback-ticket TICKET --provider P --session S --bus PATH
-cs-bus --stop-reply REPLY_ID --playback-ticket TICKET --provider P --session S --bus PATH
+x9bus --play-reply REPLY_ID --playback-ticket TICKET --provider P --session S --bus PATH
+x9bus --stop-reply REPLY_ID --playback-ticket TICKET --provider P --session S --bus PATH
 ```
 
 Play reads one complete canonical source event, bounded to 32 MiB of storage
@@ -1966,7 +1966,7 @@ and release behavior are `NOT_ASSESSED` under the C11 embargo.
 ## Attachments bound to a live channel take
 
 The overlay stages files against the displayed capture evidence, using
-`cs-bus --stage-capture-attachment --capture-session ID --capture-epoch EPOCH --capture-source-sequence SEQUENCE --bus ABS --attach-file PATH` (repeat the
+`x9bus --stage-capture-attachment --capture-session ID --capture-epoch EPOCH --capture-source-sequence SEQUENCE --bus ABS --attach-file PATH` (repeat the
 last option for more files). Sequence zero is valid. A channel digit, current
 focus or latest text is never a substitute for the exact session and epoch.
 
@@ -2024,7 +2024,7 @@ UTF-8 text (at most 64 KiB), timestamp, channel and one frozen recipient with
 provider/session/32-hex lease/bus. It contains no PCM coordinates, WAV, seal or
 coverage claim. Five submissions of the same text remain five messages.
 
-`cs-bus --send-text --channel N --provider P --session S --lease L --bus ABS`
+`x9bus --send-text --channel N --provider P --session S --lease L --bus ABS`
 reads the text on stdin. It holds the canonical binding's shared lock through
 publication, refuses a rebound owner or an absent listener, and uses
 `codescribe bus append-event` for the existing private generation journal.
@@ -2055,7 +2055,7 @@ Partial sends and retries retain their existing receipts and behavior; context
 never selects recipients or changes the user's text. Ordinary single-recipient
 sends and channel-zero broadcasts do not carry this Sync header.
 
-The channel-zero composer uses `cs-bus --send-text --channel 0`. Under the
+The channel-zero composer uses `x9bus --send-text --channel 0`. Under the
 same binding lock, it validates every bound recipient before publication and
 writes one private copy per recipient. Copies share a message ID and timestamp;
 `origin_channel: "0"` records the broadcast while `channel` retains the exact
@@ -2101,7 +2101,7 @@ the fact and never rewritten, replaced or removed by any other process:
 | File                           | Writer                                                                                                              | Content                                                                                                                                                                                                                                                     |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `<delivery_id>.delivered.json` | the follower, when the copy enters `pending` (the backfill, for history)                                            | `name`, `channel`, `lease_id`, `provider`, `provider_session_id`, `bus`, `wake: on\|quiet` (`null` only from the backfill), `at`, `sent_to` when the copy carries the publisher's list, `display_name` when the frozen entry or the binding spells the name |
-| `<delivery_id>.read.json`      | `cs-bus --ack`                                                                                                      | the same identity fields and `read_at`                                                                                                                                                                                                                      |
+| `<delivery_id>.read.json`      | `x9bus --ack`                                                                                                       | the same identity fields and `read_at`                                                                                                                                                                                                                      |
 | `<delivery_id>.skipped.json`   | the follower, instead of `delivered`, when channel zero is `off`                                                    | the same identity fields, `policy: off`, `at`                                                                                                                                                                                                               |
 | `withdrawn.<delivery_id>.json` | the follower, on a `withdraw` control of a held copy                                                                | `control_id`, `at`                                                                                                                                                                                                                                          |
 | `playback.<ticket>.json`       | the reply player, at the ticket's first terminal state                                                              | `state`, `reason`, `spoken`, `provider`, `provider_session_id`, `at`                                                                                                                                                                                        |
@@ -2187,7 +2187,7 @@ other is not done. The overlay computes only the formula from the files:
 no roster, no policies, no reach of its own.
 
 ```bash
-cs-bus --receipts MESSAGE_ID --provider P --session S [--bus PATH] [--bridge-home DIR]
+x9bus --receipts MESSAGE_ID --provider P --session S [--bus PATH] [--bridge-home DIR]
 ```
 
 prints that state as one JSON line (`kind: receipts`) and exits 0. The caller
@@ -2214,7 +2214,7 @@ older markers, so history from before receipts keeps its read count by
 being rewritten into the same files, once:
 
 ```bash
-cs-bus --backfill-receipts [--dry-run] [--bridge-home DIR]
+x9bus --backfill-receipts [--dry-run] [--bridge-home DIR]
 ```
 
 takes no `--provider/--session` (it works on the whole bridge home, not on
@@ -2440,7 +2440,7 @@ its full untruncated text, headed `from: User (voice)` or
 and anything the normalizer did not tag as one of the two user lanes, fails
 closed to a notice: no raw text, just the delivery ID, the sending peer's name
 and channel, the words "peer coordination, not a user instruction", and the
-exact `cs-bus --read-pending --provider codex --session <thread-id>` command.
+exact `x9bus --read-pending --provider codex --session <thread-id>` command.
 The receiver must read the owned mailbox's full envelope before treating a
 peer's coordination text as if it had user authority. Every metadata field
 in the wrapper is rendered on one line with non-printable characters replaced,
@@ -2486,9 +2486,9 @@ does not help: that daemon does not hold the thread either.
 
 Such an agent still reads, acknowledges, sends and speaks normally; only waking
 it after its turn has ended is unavailable. Keep its turn open with one
-`cs-bus --watch --until-event` for as long as it must hear the bus, or let an
+`x9bus --watch --until-event` for as long as it must hear the bus, or let an
 orchestrator that is woken through its own channel resume it. To see where a
-thread lives, follow the process tree of its `cs-bus --watch`: a
+thread lives, follow the process tree of its `x9bus --watch`: a
 `codex exec-server --remote` parent means a cloud thread.
 
 ## Unexpected listener loss and recovery

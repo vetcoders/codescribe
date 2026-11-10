@@ -120,7 +120,7 @@ final class SettingsChromeContractTests: XCTestCase {
     // The page holds general settings; "Kreator" names the wizard window it
     // reopens (Founder, 2026-10-27).
     XCTAssertEqual(polish["Creator"], "Ogólne")
-    XCTAssertEqual(polish["Getting started"], "Kreator")
+    XCTAssertEqual(polish["X9bus Setup"], "Konfiguracja X9bus")
     XCTAssertEqual(polish["Open Setup Wizard…"], "Otwórz kreator…")
     XCTAssertEqual(polish["Dictionary"], "Słownik")
     XCTAssertEqual(polish["AI models"], "Modele AI")

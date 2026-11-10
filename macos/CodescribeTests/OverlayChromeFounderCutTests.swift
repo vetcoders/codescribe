@@ -1243,7 +1243,7 @@ final class OverlayChromeFounderCutTests: XCTestCase {
     // carries the close button.
     XCTAssertTrue(header.contains("Wordmark("))
     let components = try self.source(at: "Codescribe/DesignSystem/Components.swift")
-    XCTAssertTrue(components.contains("Text(verbatim: \"codescribe\")"))
+    XCTAssertTrue(components.contains("Text(verbatim: AppBranding.wordmark())"))
     XCTAssertFalse(components.contains("\"cs\""), "no surface reads cs since spec §13.4")
     XCTAssertTrue(header.contains(".allowsHitTesting(false)"))
     // The brand block sits on an inert drag region so the dot answers clicks,
