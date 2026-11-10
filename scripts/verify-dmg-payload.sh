@@ -63,7 +63,7 @@ readonly MARKER_SILERO='silero'
 
 DMG=""
 APP_NAME="${CODESCRIBE_APP_NAME:-X9bus}"
-BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-com.vetcoders.codescribe}"
+BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-com.vetcoders.x9bus}"
 VARIANT=""
 VERSION=""
 EXPECTED_CHANNEL="stable"

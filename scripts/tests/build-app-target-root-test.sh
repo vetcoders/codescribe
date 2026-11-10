@@ -7,6 +7,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 python3 - "${1:-$ROOT/scripts/build-app.sh}" "$ROOT" <<'PY'
 import json
 import os
+import plistlib
 from pathlib import Path
 import shutil
 import subprocess
@@ -28,6 +29,11 @@ root = Path(spec["root"])
 profile = spec["profile"]
 out = root / profile
 mode = spec["mode"]
+app_name = spec["app_name"]
+bundle_id = spec["bundle_id"]
+marketing_version = spec["marketing_version"]
+build_version = spec["build_version"]
+icon_name = spec["icon_name"]
 def record(**extra):
     with open(spec["log"], "a") as f:
         f.write(json.dumps(dict(tool=name, argv=args, cwd=os.getcwd(), **extra)) + "\n")
@@ -109,13 +115,13 @@ elif name == "install_name_tool":
         record()
     else:
         assert args[0] == "-change" and len(args) == 4, args
-        assert args[2] == "@rpath/libcodescribe_ffi.dylib" and Path(args[3]).name == "X9bus", args
+        assert args[2] == "@rpath/libcodescribe_ffi.dylib" and Path(args[3]).name == app_name, args
         Path(str(args[3]) + ".ffi").write_text(args[2])
         record()
 elif name == "otool":
     assert args[0] == "-L" and len(args) == 2, args
     path = Path(args[1])
-    if path.name == "X9bus":
+    if path.name == app_name:
         marker = Path(str(path) + ".ffi")
         ffi = marker.read_text() if marker.exists() else str(out / "deps/libcodescribe_ffi.dylib")
         print(f"{path}:\n\t{ffi} (compatibility version 0.0.0, current version 0.0.0)\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1.0.0)")
@@ -137,17 +143,38 @@ elif name == "xcodebuild":
     import shlex
     setting = next(a.split("=", 1)[1] for a in args if a.startswith("LIBRARY_SEARCH_PATHS="))
     assert shlex.split(setting) == [str(out)], ("Xcode library list", setting, str(out))
+    for required in [
+        f"CODESCRIBE_APP_NAME={app_name}",
+        f"CODESCRIBE_EXECUTABLE_NAME={app_name}",
+        f"CODESCRIBE_DISPLAY_NAME={app_name}",
+        f"CODESCRIBE_BUNDLE_ID={bundle_id}",
+        f"CODESCRIBE_APP_ICON_NAME={icon_name}",
+        f"MARKETING_VERSION={marketing_version}",
+        f"CURRENT_PROJECT_VERSION={build_version}",
+    ]:
+        assert required in args, ("missing Xcode product setting", required, args)
     record(sha256=identity(Path(shlex.split(setting)[0]) / "libcodescribe_ffi.dylib", "libcodescribe_ffi.dylib"))
     config = "Debug" if profile == "debug" else "Release"
     assert args[args.index("-configuration") + 1] == config
     assert args[args.index("-derivedDataPath") + 1] == str(repo / "macos/build")
-    contents = repo / "macos/build/Build/Products" / config / "X9bus.app/Contents"
+    contents = repo / "macos/build/Build/Products" / config / f"{app_name}.app/Contents"
     contents.mkdir(parents=True)
     import plistlib
-    bundle_id = "com.vetcoders.codescribe.dev" if config == "Debug" else "com.vetcoders.codescribe"
-    (contents / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": bundle_id}))
+    product_id = bundle_id + ".dev" if config == "Debug" else bundle_id
+    (contents / "Info.plist").write_bytes(plistlib.dumps({
+        "CFBundleIdentifier": product_id,
+        "CFBundleDisplayName": app_name,
+        "CFBundleName": app_name,
+    }))
     (contents / "MacOS").mkdir()
-    (contents / "MacOS/X9bus").write_bytes(b"fresh:X9bus")
+    (contents / f"MacOS/{app_name}").write_bytes(("fresh:" + app_name).encode())
+    localized = contents / "Resources/en.lproj"
+    localized.mkdir(parents=True)
+    localized_plist = plistlib.dumps({
+        "CFBundleDisplayName": "X9bus",
+        "CFBundleName": "X9bus",
+    }, fmt=plistlib.FMT_XML).decode("utf-8").encode("utf-16")
+    (localized / "InfoPlist.strings").write_bytes(localized_plist)
 elif name == "cp":
     import subprocess
     assert len(args) == 2, args
@@ -162,7 +189,7 @@ elif name == "swiftc":
     dest.write_bytes(b"fresh:codescribe-stt-bridge")
 elif name == "codesign":
     signing_identity = spec["signing_identity"]
-    expected_id = "com.vetcoders.codescribe.dev" if profile == "debug" else "com.vetcoders.codescribe"
+    expected_id = bundle_id + ".dev" if profile == "debug" else bundle_id
     # A real identity signs with the hardened runtime and a timestamp, and the
     # app (not the publisher) with the default entitlements; ad-hoc stays plain.
     hardened = [] if signing_identity == "-" else ["--options", "runtime", "--timestamp"]
@@ -209,7 +236,9 @@ else:
 
 passed = failed = 0
 
-def run_case(base, profile, layout, mode="success", skip=False, signing_identity="fixture-identity"):
+def run_case(base, profile, layout, mode="success", skip=False, signing_identity="fixture-identity",
+             app_name="X9bus", bundle_id="com.vetcoders.x9bus", marketing_version="0.18.1",
+             build_version="0.18.1", icon_name="X9busAppIcon"):
     global passed, failed
     label = f"{profile}/{layout}/{mode}" + ("/bindings-only" if skip else "")
     if signing_identity == "-":
@@ -236,7 +265,9 @@ def run_case(base, profile, layout, mode="success", skip=False, signing_identity
         shutil.copyfile(helpers / helper, repo / "scripts/lib" / helper)
     roots = {"default": repo / "target", "absolute": case / "shared", "spaces": case / "shared artifacts", "relative": repo / "relative artifacts", "config": case / "config artifacts"}
     root = roots[layout]
-    spec = dict(repo=str(repo), root=str(root), profile=profile, mode=mode, tools=str(tools), log=str(case / "calls.jsonl"), signing_identity=signing_identity)
+    spec = dict(repo=str(repo), root=str(root), profile=profile, mode=mode, tools=str(tools), log=str(case / "calls.jsonl"), signing_identity=signing_identity,
+                app_name=app_name, bundle_id=bundle_id, marketing_version=marketing_version,
+                build_version=build_version, icon_name=icon_name)
     spec_path = case / "spec.json"
     spec_path.write_text(json.dumps(spec))
     for name in ["cargo", "git", "install_name_tool", "otool", "bindgen-template", "xcodegen", "xcodebuild", "swiftc", "cp", "codesign", "security"]:
@@ -248,7 +279,12 @@ def run_case(base, profile, layout, mode="success", skip=False, signing_identity
     old.mkdir(parents=True)
     for name in ["libcodescribe_ffi.dylib", "codescribe-stt-sidecar", "uniffi-bindgen"]:
         (old / name).write_text("stale:" + name)
-    env = {"PATH": str(tools) + ":" + str(Path(sys.executable).parent) + ":/usr/bin:/bin", "HOME": str(case / "home"), "CARGO_HOME": str(case / "cargo-home"), "TMPDIR": str(case / "tmp"), "FIXTURE_SPEC": str(spec_path), "CODESCRIBE_EMBED_EMBEDDER": "1", "CODESCRIBE_CODESIGN_IDENTITY": signing_identity, "CODESCRIBE_LOCAL_INSTALL": "inherited-must-be-cleared", "CODESCRIBE_VOICE_LAB_SRC": str(case / "absent-voice-lab")}
+    env = {"PATH": str(tools) + ":" + str(Path(sys.executable).parent) + ":/usr/bin:/bin", "HOME": str(case / "home"), "CARGO_HOME": str(case / "cargo-home"), "TMPDIR": str(case / "tmp"), "FIXTURE_SPEC": str(spec_path), "CODESCRIBE_EMBED_EMBEDDER": "1", "CODESCRIBE_CODESIGN_IDENTITY": signing_identity, "CODESCRIBE_LOCAL_INSTALL": "inherited-must-be-cleared", "CODESCRIBE_VOICE_LAB_SRC": str(case / "absent-voice-lab"),
+            "CODESCRIBE_APP_NAME": app_name, "CODESCRIBE_EXECUTABLE_NAME": app_name,
+            "CODESCRIBE_DISPLAY_NAME": app_name, "CODESCRIBE_BUNDLE_ID": bundle_id,
+            "CODESCRIBE_APP_MARKETING_VERSION": marketing_version,
+            "CODESCRIBE_APP_BUILD_VERSION": build_version,
+            "CODESCRIBE_APP_ICON_NAME": icon_name}
     if layout in ("absolute", "spaces"):
         env["CARGO_TARGET_DIR"] = str(root)
     elif layout == "relative":
@@ -309,9 +345,13 @@ def run_case(base, profile, layout, mode="success", skip=False, signing_identity
             else:
                 config = "Debug" if profile == "debug" else "Release"
                 product = repo / "macos/build/Build/Products" / config
-                assert (product / "X9bus.app/Contents/MacOS/X9bus").is_file()
-                assert not (product / "Codescribe.app").exists()
-                assert str(product / "X9bus.app") in result.stdout
+                assert (product / f"{app_name}.app/Contents/MacOS/{app_name}").is_file()
+                assert not (product / ("Codescribe.app" if app_name == "X9bus" else "X9bus.app")).exists()
+                assert str(product / f"{app_name}.app") in result.stdout
+                localized_plist = product / f"{app_name}.app/Contents/Resources/en.lproj/InfoPlist.strings"
+                localized_info = plistlib.loads(localized_plist.read_bytes())
+                assert localized_info["CFBundleDisplayName"] == app_name, localized_info
+                assert localized_info["CFBundleName"] == app_name, localized_info
         else:
             assert result.returncode != 0, "failure silently accepted stale artifacts"
             if mode in ("ffi-error", "sidecar-error"):
@@ -346,6 +386,9 @@ with tempfile.TemporaryDirectory(prefix="build-app-target-root-") as tmp:
     run_case(base, "debug", "spaces", "custom-key-files", skip=True)
     for mode in ("metadata-error", "metadata-malformed", "metadata-relative", "ffi-error", "sidecar-error", "missing-receipt", "missing-file", "malformed-receipt", "unfinished", "cross-env", "cross-config", "fresh-receipt", "stage", "publisher-library-only", "missing-sparkle-key", "missing-license-key"):
         run_case(base, "debug", "spaces", mode)
+    run_case(base, "local-release", "spaces", "success", app_name="Codescribe",
+             bundle_id="com.vetcoders.codescribe", marketing_version="0.18.0",
+             build_version="0.18.0", icon_name="AppIcon")
 print(f"build-app-target-root: scenarios={passed + failed} passed={passed} failed={failed}")
 sys.exit(1 if failed or not passed else 0)
 PY

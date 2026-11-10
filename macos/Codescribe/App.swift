@@ -179,6 +179,7 @@ struct CodescribeApp: App {
   @Environment(\.openWindow) private var openWindow
 
   init() {
+    AppPreferencesMigration.migrateIfNeeded(bundleIdentifier: Bundle.main.bundleIdentifier)
     // Before any engine: a test host must not see the live runtime.
     QualityCaptureHost.isolateFromLiveRuntime()
     if QualityCaptureHost.hidesTestWindows() {

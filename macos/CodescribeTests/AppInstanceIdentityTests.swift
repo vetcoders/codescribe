@@ -6,13 +6,13 @@ import XCTest
 @MainActor
 final class AppInstanceIdentityTests: XCTestCase {
   func testDebugHostHasDistinctBundleIdentity() {
-    XCTAssertEqual(Bundle.main.bundleIdentifier, "com.vetcoders.codescribe.dev")
+    XCTAssertEqual(Bundle.main.bundleIdentifier, "com.vetcoders.x9bus.dev")
   }
 
   func testDebugAndReleaseDoNotCountAsEachOthersDuplicate() {
     for (current, candidate) in [
-      ("com.vetcoders.codescribe.dev", "com.vetcoders.codescribe"),
-      ("com.vetcoders.codescribe", "com.vetcoders.codescribe.dev"),
+      ("com.vetcoders.x9bus.dev", "com.vetcoders.x9bus"),
+      ("com.vetcoders.x9bus", "com.vetcoders.x9bus.dev"),
     ] {
       XCTAssertFalse(
         AppDelegate.isOtherInstance(
@@ -23,7 +23,7 @@ final class AppInstanceIdentityTests: XCTestCase {
   }
 
   func testOnlyAnotherLiveProcessOfSameBundleCounts() {
-    let identity = "com.vetcoders.codescribe"
+    let identity = "com.vetcoders.x9bus"
     XCTAssertTrue(
       AppDelegate.isOtherInstance(
         bundleIdentifier: identity, currentPID: 1,
@@ -38,6 +38,14 @@ final class AppInstanceIdentityTests: XCTestCase {
       AppDelegate.isOtherInstance(
         bundleIdentifier: identity, currentPID: 1,
         candidateBundleIdentifier: identity, candidatePID: 2, isTerminated: true
+      ))
+  }
+
+  func testX9busDoesNotCountLegacyCodescribeAsDuplicate() {
+    XCTAssertFalse(
+      AppDelegate.isOtherInstance(
+        bundleIdentifier: "com.vetcoders.x9bus", currentPID: 1,
+        candidateBundleIdentifier: "com.vetcoders.codescribe", candidatePID: 2, isTerminated: false
       ))
   }
 }

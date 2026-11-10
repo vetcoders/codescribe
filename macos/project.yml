@@ -27,7 +27,6 @@ packages:
 targets:
   Codescribe:
     type: application
-    productName: X9bus
     platform: macOS
     sources: [Codescribe]
     dependencies:
@@ -38,18 +37,16 @@ targets:
     info:
       path: Codescribe/Info.plist
       properties:
-        # Product, physical bundle and localized system name agree.
-        CFBundleDisplayName: X9bus
-        CFBundleName: X9bus
+        # Product, physical bundle and localized system name agree per build lane.
+        CFBundleDisplayName: $(CODESCRIBE_DISPLAY_NAME)
+        CFBundleName: $(CODESCRIBE_DISPLAY_NAME)
         LSHasLocalizedDisplayName: true
         CFBundleDevelopmentRegion: en
         CFBundleLocalizations:
           - en
           - pl
-        # Build provenance — expanded from build settings at xcodebuild time;
-        # scripts/build-app.sh passes the real values (Cargo version, git commit,
-        # diagnostic commit count, UTC timestamp). Release ordering uses the
-        # Cargo/tag version; a branch's commit count never orders updates.
+        # App release version is separate from Rust crate provenance; the
+        # build script stamps git identity and Cargo's diagnostic build count.
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CSBuildNumber: $(CS_BUILD_NUMBER)
@@ -85,11 +82,16 @@ targets:
         NSScreenCaptureUsageDescription: "x9bus captures the screen when you ask the assistant to look at what is currently on screen."
     settings:
       base:
-        CS_APP_PRODUCT_NAME: X9bus
-        PRODUCT_NAME: $(CS_APP_PRODUCT_NAME)
+        CODESCRIBE_APP_NAME: X9bus
+        CODESCRIBE_EXECUTABLE_NAME: $(CODESCRIBE_APP_NAME)
+        CODESCRIBE_DISPLAY_NAME: X9bus
+        CODESCRIBE_BUNDLE_ID: com.vetcoders.x9bus
+        CODESCRIBE_APP_ICON_NAME: X9busAppIcon
+        PRODUCT_NAME: $(CODESCRIBE_APP_NAME)
+        EXECUTABLE_NAME: $(CODESCRIBE_EXECUTABLE_NAME)
         PRODUCT_MODULE_NAME: Codescribe
-        # Dock/app icon — AppIcon.appiconset in Codescribe/Assets.xcassets.
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # X9bus uses a separate icon set; app-codescribe selects AppIcon.
+        ASSETCATALOG_COMPILER_APPICON_NAME: $(CODESCRIBE_APP_ICON_NAME)
         # Build-provenance defaults for bare `xcodebuild` / Xcode runs; the
         # verified pipeline (scripts/build-app.sh) overrides all four.
         MARKETING_VERSION: 0.0.0-dev
@@ -131,13 +133,13 @@ targets:
         Debug:
           # XCTest reuses this app. Its LaunchServices/TCC identity must never
           # compete with the installed Release application.
-          PRODUCT_BUNDLE_IDENTIFIER: com.vetcoders.codescribe.dev
+          PRODUCT_BUNDLE_IDENTIFIER: $(CODESCRIBE_BUNDLE_ID).dev
           LIBRARY_SEARCH_PATHS: "$(SRCROOT)/../target/debug"
           # Debug is the superset configuration used for test runs and String Catalog
           # localization extraction; include CHANNEL_nightly so beta copy is extracted.
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) CHANNEL_nightly
         Release:
-          PRODUCT_BUNDLE_IDENTIFIER: com.vetcoders.codescribe
+          PRODUCT_BUNDLE_IDENTIFIER: $(CODESCRIBE_BUNDLE_ID)
           LIBRARY_SEARCH_PATHS: "$(SRCROOT)/../target/release"
           # Release uses the build channel (defaults to stable for release DMG, overridable to nightly).
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) CHANNEL_$(CS_BUILD_CHANNEL)
@@ -154,7 +156,9 @@ targets:
       - target: Codescribe
     settings:
       base:
-        TEST_HOST: $(BUILT_PRODUCTS_DIR)/X9bus.app/Contents/MacOS/X9bus
+        CODESCRIBE_APP_NAME: X9bus
+        CODESCRIBE_EXECUTABLE_NAME: X9bus
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/$(CODESCRIBE_APP_NAME).app/Contents/MacOS/$(CODESCRIBE_EXECUTABLE_NAME)
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: 6.0
         SWIFT_STRICT_CONCURRENCY: complete

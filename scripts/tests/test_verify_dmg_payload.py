@@ -49,7 +49,6 @@ class ProductBundleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             mount = Path(temporary)
             (mount / "X9bus.app").mkdir()
-            (mount / "Codescribe.app").mkdir()
             result = subprocess.run(
                 ["bash", "-c", command, "bundle-selection", str(mount)],
                 check=True,

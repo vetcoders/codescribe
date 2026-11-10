@@ -338,6 +338,10 @@ fi
 
 SCHEME="Codescribe"
 APP_BUNDLE_NAME="${CODESCRIBE_APP_NAME:-X9bus}"
+APP_EXECUTABLE_NAME="${CODESCRIBE_EXECUTABLE_NAME:-$APP_BUNDLE_NAME}"
+APP_DISPLAY_NAME="${CODESCRIBE_DISPLAY_NAME:-$APP_BUNDLE_NAME}"
+APP_BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-com.vetcoders.x9bus}"
+APP_ICON_NAME="${CODESCRIBE_APP_ICON_NAME:-X9busAppIcon}"
 BRIDGE_DIR="macos/Codescribe/Bridge"
 DYLIB="$TARGET_DIR/libcodescribe_ffi.dylib"
 BINDGEN="$TARGET_DIR/uniffi-bindgen"
@@ -356,6 +360,8 @@ STT_SIDECAR_BIN="$TARGET_DIR/codescribe-stt-sidecar"
 #   - exclude UniFFI-generated Bridge (normalized, installed only on byte changes)
 #   - if remaining porcelain is non-empty → append -dirty
 STAMP_VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$REPO_ROOT/Cargo.toml" | head -1)"
+APP_MARKETING_VERSION="${CODESCRIBE_APP_MARKETING_VERSION:-$STAMP_VERSION}"
+APP_BUILD_VERSION="${CODESCRIBE_APP_BUILD_VERSION:-$APP_MARKETING_VERSION}"
 if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   STAMP_COMMIT="$(git -C "$REPO_ROOT" rev-parse --short=9 HEAD)"
   # Tracked-only; drop Bridge paths (UniFFI generation mid-build). Untracked junk
@@ -481,12 +487,16 @@ run_app_xcodebuild() {
   xcodebuild -project macos/Codescribe.xcodeproj \
     -scheme "$SCHEME" -configuration "$CONFIG" \
     -derivedDataPath "$DERIVED" \
-    CS_APP_PRODUCT_NAME="$APP_BUNDLE_NAME" \
+    CODESCRIBE_APP_NAME="$APP_BUNDLE_NAME" \
+    CODESCRIBE_EXECUTABLE_NAME="$APP_EXECUTABLE_NAME" \
+    CODESCRIBE_DISPLAY_NAME="$APP_DISPLAY_NAME" \
+    CODESCRIBE_BUNDLE_ID="$APP_BUNDLE_ID" \
+    CODESCRIBE_APP_ICON_NAME="$APP_ICON_NAME" \
     ONLY_ACTIVE_ARCH=YES \
     LIBRARY_SEARCH_PATHS="\"$TARGET_DIR\"" \
     CODE_SIGNING_ALLOWED="${CODE_SIGNING_ALLOWED:-NO}" \
-    MARKETING_VERSION="$STAMP_VERSION" \
-    CURRENT_PROJECT_VERSION="$STAMP_VERSION" \
+    MARKETING_VERSION="$APP_MARKETING_VERSION" \
+    CURRENT_PROJECT_VERSION="$APP_BUILD_VERSION" \
     CS_BUILD_NUMBER="$STAMP_BUILD_NUM" \
     CS_BUILD_COMMIT="$STAMP_COMMIT" \
     CS_BUILT_AT="$STAMP_BUILT_AT" \
@@ -511,6 +521,28 @@ fi
 rm -f "$XCODEBUILD_LOG"
 
 APP="$DERIVED/Build/Products/$CONFIG/$APP_BUNDLE_NAME.app"
+python3 - "$APP" "$APP_DISPLAY_NAME" <<'PY'
+import plistlib
+import sys
+from pathlib import Path
+
+bundle = Path(sys.argv[1])
+display_name = sys.argv[2]
+paths = [bundle / "Contents/Info.plist", *bundle.glob("Contents/Resources/*.lproj/InfoPlist.strings")]
+for path in paths:
+    if not path.is_file():
+        continue
+    raw = path.read_bytes()
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        raw = raw.decode("utf-16").encode("utf-8")
+    value = plistlib.loads(raw)
+    if not isinstance(value, dict):
+        raise SystemExit(f"invalid property list while setting app name: {path}")
+    for key in ("CFBundleDisplayName", "CFBundleName"):
+        if key in value:
+            value[key] = display_name
+    path.write_bytes(plistlib.dumps(value, fmt=plistlib.FMT_XML, sort_keys=True))
+PY
 echo "==> [6/7] Embedding runtime artifacts into $APP_BUNDLE_NAME.app"
 FRAMEWORKS="$APP/Contents/Frameworks"
 MACOS_DIR="$APP/Contents/MacOS"
@@ -526,9 +558,9 @@ install_name_tool -id @rpath/libcodescribe_ffi.dylib "$EMBEDDED_FFI"
 # A Debug build moves the app's code into $APP_BUNDLE_NAME.debug.dylib (Xcode's
 # ENABLE_DEBUG_DYLIB, for previews) and the executable becomes a stub that
 # loads it, so the library is linked from there.
-APP_MACHO="$MACOS_DIR/$APP_BUNDLE_NAME"
-if [[ -f "$MACOS_DIR/$APP_BUNDLE_NAME.debug.dylib" ]]; then
-  APP_MACHO="$MACOS_DIR/$APP_BUNDLE_NAME.debug.dylib"
+APP_MACHO="$MACOS_DIR/$APP_EXECUTABLE_NAME"
+if [[ -f "$MACOS_DIR/$APP_EXECUTABLE_NAME.debug.dylib" ]]; then
+  APP_MACHO="$MACOS_DIR/$APP_EXECUTABLE_NAME.debug.dylib"
 fi
 LINKED_FFI="$(otool -L "$APP_MACHO" | awk '/libcodescribe_ffi\.dylib/ {print $1; exit}')"
 if [[ -z "$LINKED_FFI" ]]; then
@@ -536,7 +568,7 @@ if [[ -z "$LINKED_FFI" ]]; then
   exit 1
 fi
 install_name_tool -change "$LINKED_FFI" @rpath/libcodescribe_ffi.dylib "$APP_MACHO"
-for MACHO in "$MACOS_DIR/$APP_BUNDLE_NAME" "$APP_MACHO" "$EMBEDDED_FFI"; do
+for MACHO in "$MACOS_DIR/$APP_EXECUTABLE_NAME" "$APP_MACHO" "$EMBEDDED_FFI"; do
   OUTSIDE="$(otool -L "$MACHO" | tail -n +2 | awk '{print $1}' \
     | grep -v -E '^(@rpath/|@executable_path/|@loader_path/|/System/|/usr/lib/)' || true)"
   if [[ -n "$OUTSIDE" ]]; then
@@ -625,7 +657,7 @@ fi
 # (Accessibility / Input Monitoring) keeps its grant across rebuilds instead of
 # re-prompting every time an unsigned binary's cdhash changes. Use the built
 # plist identity for this configuration; `--deep` covers the embedded dylib.
-BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")}"
+BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")"
 # Prefer a REAL signing identity (Developer ID / Apple Development). Its designated
 # requirement is certificate-based, so a TCC grant (Accessibility / Input
 # Monitoring) survives rebuilds. Ad-hoc (`--sign -`) is cdhash-based, so the grant
