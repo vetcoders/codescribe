@@ -4821,3 +4821,51 @@ fn internal_seal_ack_does_not_release_a_pending_cloud_final() {
         Err(tokio::sync::oneshot::error::TryRecvError::Empty),
     );
 }
+
+#[test]
+fn reconcile_silero_ledger_clips_shorter_later_neighbour_against_already_qualified_owner() {
+    let mut state = physical_state("089f6d9f-clip-neighbour", 4.0, &[]);
+    let mut physical = super::super::silero_fusion::UtteranceLedger::new();
+    // Utterance #1 (longer, 0.0..2.0) closes first while Utterance #2 (shorter, 1.9..3.0,
+    // overlapping by 0.1s pre-roll) is still open.
+    physical.open_or_extend(&state.session_id, state.capture_epoch, 0, sample(2.0));
+    physical.close_open(sample(2.0));
+    physical.open_or_extend(
+        &state.session_id,
+        state.capture_epoch,
+        sample(1.9),
+        sample(3.0),
+    );
+    let current_first = vec![segment("pierwsze", 0.5, 1.5)];
+    let (tx, _rx) = mpsc::unbounded_channel();
+    reconcile_silero_ledger(&mut state, &tx, &physical, &current_first);
+    assert!(state.reconciled_silero.contains(&1));
+    assert!(!state.reconciled_silero.contains(&2));
+
+    // Now Utterance #2 closes at 3.0s. Because #2 (1.1s) is shorter than #1 (2.0s),
+    // `exclusive_closed_spans` assigns the shared 1.9..2.0s overlap to #2, but #1 is
+    // already qualified as 0..sample(2.0) in the ledger. Reconciling #2 must clip its
+    // owned start to sample(2.0) so the two qualified occurrences remain disjoint.
+    physical.close_open(sample(3.0));
+    let current_second = vec![segment("drugie", 2.2, 2.8)];
+    reconcile_silero_ledger(&mut state, &tx, &physical, &current_second);
+    assert!(state.reconciled_silero.contains(&2));
+
+    let owners = state
+        .acoustic_ledger
+        .lock()
+        .unwrap()
+        .qualified_occurrences()
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(owners.len(), 2);
+    assert_eq!(
+        (owners[0].sample_start, owners[0].sample_end),
+        (0, sample(2.0))
+    );
+    assert_eq!(
+        (owners[1].sample_start, owners[1].sample_end),
+        (sample(2.0), sample(3.0)),
+        "later shorter utterance must be clipped to the already-qualified neighbour's end"
+    );
+}

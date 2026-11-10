@@ -1277,10 +1277,20 @@ impl AcousticLedger {
                             .filter(|(other, _)| {
                                 *other != owner
                                     && other.same_capture(owner)
-                                    && ((other.sample_end <= owner.sample_start
+                                    && ((other.sample_start < owner.sample_start
+                                        && other.sample_end < owner.sample_end
+                                        && other.sample_end
+                                            <= owner
+                                                .sample_start
+                                                .saturating_add(boundary_tolerance)
                                         && owner.sample_start.saturating_sub(other.sample_end)
                                             <= boundary_tolerance)
-                                        || (owner.sample_end <= other.sample_start
+                                        || (owner.sample_start < other.sample_start
+                                            && owner.sample_end < other.sample_end
+                                            && owner.sample_end
+                                                <= other
+                                                    .sample_start
+                                                    .saturating_add(boundary_tolerance)
                                             && other.sample_start.saturating_sub(owner.sample_end)
                                                 <= boundary_tolerance))
                             })

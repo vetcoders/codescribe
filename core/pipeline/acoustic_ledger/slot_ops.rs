@@ -785,19 +785,33 @@ impl AcousticLedger {
         if word_start - start > resolution {
             return true;
         }
-        if word_start > start {
+        if word_start > start || start == 0 {
             // Mirror the trailing fence's alignment uncertainty. A timestamp
             // just inside this frame cannot prove an onset when measured speech
-            // crosses its left edge and reaches the returned Word.
+            // crosses its left edge and reaches the returned Word. At capture
+            // sample 0 no prior audio exists, so Silero silence across the
+            // opening resolution proves the first word was not cut by the left
+            // fence even when the decoder stretches its start pin back to 0.
             let window = OccurrenceIdentity::new(&owner.session, owner.capture_epoch, start, end);
-            let Some(speech) = self.measured_speech_for(&window) else {
-                return true;
-            };
-            let crosses = speech
-                .ranges()
-                .iter()
-                .any(|range| range.sample_start <= start && range.sample_end > word_start);
-            if !crosses {
+            if let Some(speech) = self.measured_speech_for(&window) {
+                if word_start > start {
+                    let crosses = speech
+                        .ranges()
+                        .iter()
+                        .any(|range| range.sample_start <= start && range.sample_end > word_start);
+                    if !crosses {
+                        return true;
+                    }
+                } else if speech.producer()
+                    == crate::pipeline::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER
+                    && !speech
+                        .ranges()
+                        .iter()
+                        .any(|range| range.sample_start <= resolution)
+                {
+                    return true;
+                }
+            } else if word_start > start {
                 return true;
             }
         }

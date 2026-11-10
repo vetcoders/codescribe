@@ -7010,6 +7010,37 @@ fn reconcile_silero_ledger(
             state.reconciled_silero.insert(utterance_id);
             continue;
         }
+        // An utterance that closed earlier already qualified its span in the
+        // ledger before a later shorter neighbour closed and shifted the shared
+        // pre-roll boundary in `exclusive_closed_spans`. Clip against already
+        // qualified owners so two occurrences never overlap on the same PCM.
+        let (owned_start, owned_end) = {
+            let ledger = state
+                .acoustic_ledger
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut start = owned_start;
+            let mut end = owned_end;
+            for owner in ledger.qualified_occurrences() {
+                if owner.session != state.session_id || owner.capture_epoch != state.capture_epoch {
+                    continue;
+                }
+                if owner.sample_start <= start && owner.sample_end > start && owner.sample_end < end
+                {
+                    start = owner.sample_end;
+                }
+                if owner.sample_start > start && owner.sample_start < end && owner.sample_end >= end
+                {
+                    end = owner.sample_start;
+                }
+            }
+            (start, end)
+        };
+        if owned_start >= owned_end {
+            admit_late_apple_words(state, ev_tx, utterance_id, &words, disjoint);
+            state.reconciled_silero.insert(utterance_id);
+            continue;
+        }
         let occurrence = OccurrenceIdentity::new(
             state.session_id.clone(),
             state.capture_epoch,

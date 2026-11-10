@@ -2456,3 +2456,158 @@ fn recorded_b1a679a9_late_apple_dictation_pin_overlapping_complete_whisper_word_
     );
     assert_eq!(ledger.slots_of(&owner).unwrap().len(), 2);
 }
+
+#[test]
+fn recorded_089f6d9f_boundary_overlap_refuses_duplicate_edge_word_tyle() {
+    let left = OccurrenceIdentity::new("089f6d9f-tyle", 1, 1_187_520, 1_434_720);
+    let right = OccurrenceIdentity::new("089f6d9f-tyle", 1, 1_433_088, 1_645_440);
+    let mut pcm = vec![0.0; 1_800_000];
+    pcm[1_200_000..1_441_920].fill(0.1);
+    pcm[1_530_000..1_645_440].fill(0.1);
+    let mut ledger = measured_ledger_at_rate(&left, &pcm, RATE);
+    let calibration = EnergyCalibration::new("word-fixture-pcm", 1.0, 1);
+    assert!(
+        ledger
+            .qualify(
+                &AcousticEvidence {
+                    occurrence: right.clone(),
+                    duration_ms: (right.sample_end - right.sample_start) as f64 / 48.0,
+                    energy_integral: (right.sample_end - right.sample_start) as f64 * 0.01,
+                    mean_rms_dbfs: -20.0,
+                    peak_dbfs: -20.0,
+                    vad_open_sample: Some(right.sample_start),
+                    vad_close_sample: Some(right.sample_end),
+                    evidence_calibration_version: calibration.version.clone(),
+                },
+                &calibration,
+            )
+            .is_qualified()
+    );
+
+    let whisper_left = ObservationIdentity::new(ObservationProducer::Whisper, 10, 0, left.clone());
+    assert!(
+        ledger
+            .admit_word_slots(
+                &whisper_left,
+                &decoded(
+                    &[
+                        ("znikną.", 1_360_320, 1_399_680),
+                        ("Tyle,", 1_399_680, 1_441_920),
+                    ],
+                    (1_152_000, 1_517_120),
+                ),
+            )
+            .grants_mutation()
+    );
+    assert_eq!(ledger.text_of(&left), Some("znikną. Tyle,"));
+
+    let whisper_right =
+        ObservationIdentity::new(ObservationProducer::Whisper, 11, 0, right.clone());
+    assert!(
+        ledger
+            .admit_word_slots(
+                &whisper_right,
+                &decoded(
+                    &[
+                        ("można", 1_551_360, 1_571_520),
+                        ("powiedzieć", 1_571_520, 1_606_080),
+                        ("teraz.", 1_606_080, 1_645_440),
+                    ],
+                    (1_152_000, 1_789_440),
+                ),
+            )
+            .grants_mutation()
+    );
+    assert_eq!(ledger.text_of(&right), Some("można powiedzieć teraz."));
+
+    let dt_right =
+        ObservationIdentity::new(ObservationProducer::AppleDictation, 12, 0, right.clone());
+    ledger.admit_word_slots(
+        &dt_right,
+        &decoded(
+            &[
+                ("Tyle", 1_433_280, 1_447_680),
+                ("można", 1_532_640, 1_567_680),
+                ("powiedzieć", 1_567_680, 1_606_080),
+                ("teraz", 1_606_080, 1_626_240),
+            ],
+            (1_289_088, 1_789_440),
+        ),
+    );
+    assert_eq!(
+        ledger.text_of(&right),
+        Some("można powiedzieć teraz"),
+        "cross-owner boundary overlap must not admit a duplicate 'Tyle' onto the right occurrence"
+    );
+    assert_eq!(ledger.slots_of(&right).unwrap().len(), 3);
+}
+
+#[test]
+fn recorded_e02ee56b_first_word_stretched_to_zero_over_leading_silero_silence_clears_recovery() {
+    use crate::audio::capture_receipt::{
+        AcousticAvailability, AcousticSpeechEvidence, CaptureEvidenceIdentity,
+    };
+    use crate::pipeline::streaming::silero_fusion::SILERO_BOUNDARIES_PRODUCER;
+    use crate::stt::tail_provider::TailSampleRange;
+
+    let owner = OccurrenceIdentity::new("e02ee56b-first-word", 1, 0, 210_720);
+    // Ambient room noise (-55.47 dBFS = 0.00168 linear RMS) sits above the
+    // -67.19 dBFS existence floor and -80 dBFS active floor across 0..66_048,
+    // while Silero VAD measured speech starting at 66_048..185_856.
+    let mut pcm = vec![0.00168_f32; 432_000];
+    pcm[66_048..185_856].fill(0.05);
+    let mut ledger = measured_ledger_at_rate(&owner, &pcm, RATE);
+    assert!(ledger.bind_speech_anchor_floor(0.000437));
+    ledger.require_text_recovery(&owner);
+    assert!(ledger.text_recovery_pending(&owner));
+    ledger.record_speech_evidence(&AcousticSpeechEvidence::measured(
+        CaptureEvidenceIdentity::new(&owner.session, owner.capture_epoch),
+        SILERO_BOUNDARIES_PRODUCER,
+        AcousticAvailability::Observed {
+            observed_samples: pcm.len() as u64,
+        },
+        vec![TailSampleRange {
+            session: owner.session.clone(),
+            capture_epoch: owner.capture_epoch,
+            sample_start: 66_048,
+            sample_end: 185_856,
+        }],
+    ));
+
+    ledger.schedule_frontier(owner.clone(), [ObservationProducer::Whisper]);
+    let whisper = ObservationIdentity::new(ObservationProducer::Whisper, 1, 0, owner.clone());
+    assert!(
+        ledger
+            .admit_word_slots(
+                &whisper,
+                &decoded(
+                    &[
+                        ("Tak,", 0, 79_680),
+                        ("to", 79_680, 90_240),
+                        ("jest", 90_240, 102_720),
+                        ("konkretny", 102_720, 134_400),
+                        ("brak", 134_400, 152_640),
+                        ("po", 152_640, 159_360),
+                        ("waszej", 159_360, 178_560),
+                        ("stronie,", 178_560, 204_480),
+                        ("który", 204_480, 210_720),
+                    ],
+                    (0, 432_000),
+                ),
+            )
+            .grants_mutation()
+    );
+    assert!(ledger.note_frontier_return(&owner, ObservationProducer::Whisper));
+    assert!(
+        ledger.decode_word_onset_complete(&owner, 0, 432_000, 0),
+        "Silero silence across 0..resolution at capture origin must prove a complete onset"
+    );
+    assert!(
+        !ledger.text_recovery_pending(&owner),
+        "complete first-window decode must clear text_recovery_pending on 0..210720"
+    );
+    assert!(
+        ledger.seal(&owner).is_ok(),
+        "0..210720 must seal once its recovery decode completes"
+    );
+}

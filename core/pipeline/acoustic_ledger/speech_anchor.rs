@@ -355,11 +355,16 @@ impl AcousticLedger {
             return Vec::new();
         };
         let adjacent = self.committed.iter().filter(|(neighbor, _)| {
-            neighbor.same_capture(owner)
-                && (neighbor.sample_end <= owner.sample_start
-                    || owner.sample_end <= neighbor.sample_start)
-                && neighbor.sample_end.saturating_add(tolerance) >= owner.sample_start
-                && neighbor.sample_start <= owner.sample_end.saturating_add(tolerance)
+            *neighbor != owner
+                && neighbor.same_capture(owner)
+                && ((neighbor.sample_start < owner.sample_start
+                    && neighbor.sample_end < owner.sample_end
+                    && neighbor.sample_end <= owner.sample_start.saturating_add(tolerance)
+                    && neighbor.sample_end.saturating_add(tolerance) >= owner.sample_start)
+                    || (owner.sample_start < neighbor.sample_start
+                        && owner.sample_end < neighbor.sample_end
+                        && owner.sample_end <= neighbor.sample_start.saturating_add(tolerance)
+                        && owner.sample_end.saturating_add(tolerance) >= neighbor.sample_start))
         });
         let mut words = Vec::new();
         for (_, held) in adjacent {
