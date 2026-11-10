@@ -41,14 +41,14 @@ class ProductBundleTests(unittest.TestCase):
         end = source.index("\n}\n", start) + 3
         function = source[start:end]
         command = (
-            f'APP_NAME="${{CODESCRIBE_APP_NAME:-X9bus}}"\n'
+            f'APP_NAME="${{CODESCRIBE_APP_NAME:-X9Bus}}"\n'
             f'{function}\n'
             'find_expected_app_bundle "$1"'
         )
-        environment = {**os.environ, "CODESCRIBE_APP_NAME": "X9bus"}
+        environment = {**os.environ, "CODESCRIBE_APP_NAME": "X9Bus"}
         with tempfile.TemporaryDirectory() as temporary:
             mount = Path(temporary)
-            (mount / "X9bus.app").mkdir()
+            (mount / "X9Bus.app").mkdir()
             result = subprocess.run(
                 ["bash", "-c", command, "bundle-selection", str(mount)],
                 check=True,
@@ -56,9 +56,9 @@ class ProductBundleTests(unittest.TestCase):
                 text=True,
                 env=environment,
             )
-            self.assertEqual(Path(result.stdout.strip()).name, "X9bus.app")
+            self.assertEqual(Path(result.stdout.strip()).name, "X9Bus.app")
 
-            (mount / "X9bus.app").rmdir()
+            (mount / "X9Bus.app").rmdir()
             result = subprocess.run(
                 ["bash", "-c", command, "legacy-bundle-only", str(mount)],
                 check=True,

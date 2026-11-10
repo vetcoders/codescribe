@@ -113,7 +113,7 @@ struct SettingsView: View {
     guard let window else { return }
     // This owner keeps the Window-menu title while the toolbar paints the
     // wordmark. A separate navigationTitle would restore a second visible title.
-    window.title = AppBranding.localized(x9bus: "X9bus Settings", codescribe: "Settings")
+    window.title = AppBranding.localized(x9bus: "X9Bus Settings", codescribe: "Settings")
     window.titleVisibility = .hidden
     window.titlebarAppearsTransparent = true
     window.titlebarSeparatorStyle = .none

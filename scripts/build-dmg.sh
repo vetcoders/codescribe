@@ -4,7 +4,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-APP_NAME="${CODESCRIBE_APP_NAME:-X9bus}"
+APP_NAME="${CODESCRIBE_APP_NAME:-X9Bus}"
 DISPLAY_NAME="${CODESCRIBE_DISPLAY_NAME:-$APP_NAME}"
 BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-com.vetcoders.x9bus}"
 APP_ICON_NAME="${CODESCRIBE_APP_ICON_NAME:-X9busAppIcon}"
@@ -114,7 +114,7 @@ fi
 # exact commit it was cut from (matches the About window's BuildInfo line).
 BUILD_DATE="$(date -u +%Y%m%d)"
 HEAD_SHA="$(git -C "$ROOT_DIR" rev-parse --short=9 HEAD 2>/dev/null || echo nogit)"
-DMG_NAME="X9bus_${VERSION}-${BUILD_DATE}-${HEAD_SHA}${DMG_SUFFIX}.dmg"
+DMG_NAME="X9Bus_${VERSION}-${BUILD_DATE}-${HEAD_SHA}${DMG_SUFFIX}.dmg"
 DMG_PATH="$ROOT_DIR/$DMG_NAME"
 
 BUILD_ENV=(env)

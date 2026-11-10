@@ -11,7 +11,7 @@ adding parallel state. For deep narrative detail, see `docs/ARCHITECTURE.md`.
 | `core/`    | Rust (`codescribe-core`) | Audio capture, Silero VAD, Apple + Whisper STT, `AcousticLedger`, Lexicon + Light+, LLM formatting, config + Keychain.            |
 | `app/`     | Rust (`codescribe`)      | `RecordingController`, `TranscriptReducer` (`emitter.rs`), `TranscriptBus`, `DeliveryRoute`, agent channel orchestration.         |
 | `bridge/`  | Rust (`codescribe-ffi`)  | UniFFI surface (`bridge/src/lib.rs`) exported to Swift; regenerated via `make app-bindings`.                                      |
-| `macos/`   | Swift 6 (`X9bus.app`)    | AppKit/SwiftUI shell, `OverlayState` projection consumer, Intercom multi-agent overlay, Settings panels, `Localizable.xcstrings`. |
+| `macos/`   | Swift 6 (`X9Bus.app`)    | AppKit/SwiftUI shell, `OverlayState` projection consumer, Intercom multi-agent overlay, Settings panels, `Localizable.xcstrings`. |
 | `bin/`     | Rust + Shell             | CLI entrypoints (`bin/codescribe.rs`, `bin/control-codescribe`).                                                                  |
 | `scripts/` | Python + Bash            | Transcript Bus demux/MCP (`scripts/bus-demux.py`), build/notarization scripts, and structural/env/l10n verification gates.        |
 | `site/`    | Astro / TypeScript       | Static release and documentation site (`site/src/`).                                                                              |

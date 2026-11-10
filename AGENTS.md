@@ -62,7 +62,7 @@ by hand.
 | `make check` | Formatting, Clippy, Semgrep, the env registry and the ledger gate. |
 | `make verify` | Hermetic Rust tests and doctests (the CI contract). |
 | `make test-swift` | Regenerates bindings and runs the Swift test suite (Swift 6 strict concurrency, warnings as errors). |
-| `make install-app` | Builds and replaces `/Applications/X9bus.app`, then arms `restart-if-idle` (`RESTART_AFTER_INSTALL=0` skips it). |
+| `make install-app` | Builds and replaces `/Applications/X9Bus.app`, then arms `restart-if-idle` (`RESTART_AFTER_INSTALL=0` skips it). |
 | `make restart-if-idle` | Arms a background waiter that restarts the app at its first idle moment, only when a newer build is installed, and says "Zrobione". See `docs/RESTART_IF_IDLE.md`. |
 | `make release-standard` | Notarized distribution DMG. A local `install-app` build is not a release. |
 

@@ -8,7 +8,7 @@ final class BackgroundTestWindowTests: XCTestCase {
   func testHostSettingsStaysBelowThePersonsWindows() {
     let visibleSettings = NSApp.windows.filter {
       $0.isVisible
-        && ($0.title == AppBranding.localized(x9bus: "X9bus Settings", codescribe: "Settings")
+        && ($0.title == AppBranding.localized(x9bus: "X9Bus Settings", codescribe: "Settings")
           || $0.title == String(localized: "Settings"))
     }
     for window in visibleSettings {

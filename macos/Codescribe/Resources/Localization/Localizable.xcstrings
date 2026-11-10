@@ -2255,12 +2255,12 @@
         }
       }
     },
-    "About X9bus" : {
+    "About X9Bus" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "O X9bus"
+            "value" : "O X9Bus"
           }
         }
       }
@@ -23034,57 +23034,57 @@
         }
       }
     },
-    "X9bus Agent" : {
+    "X9Bus Agent" : {
       "comment" : "Agent window title",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Agent X9bus"
+            "value" : "Agent X9Bus"
           }
         }
       }
     },
-    "X9bus Help" : {
+    "X9Bus Help" : {
       "comment" : "Help action in the app tray",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Pomoc X9bus"
+            "value" : "Pomoc X9Bus"
           }
         }
       }
     },
-    "X9bus Settings" : {
+    "X9Bus Settings" : {
       "comment" : "Settings window and tray section title",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ustawienia X9bus"
+            "value" : "Ustawienia X9Bus"
           }
         }
       }
     },
-    "X9bus Settings…" : {
+    "X9Bus Settings…" : {
       "comment" : "Settings menu command",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Ustawienia X9bus…"
+            "value" : "Ustawienia X9Bus…"
           }
         }
       }
     },
-    "X9bus Setup" : {
+    "X9Bus Setup" : {
       "comment" : "Setup wizard window title",
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Konfiguracja X9bus"
+            "value" : "Konfiguracja X9Bus"
           }
         }
       }
@@ -27444,12 +27444,12 @@
         }
       }
     },
-    "the X9bus-managed marker is missing or does not match this client and bridge root" : {
+    "the X9Bus-managed marker is missing or does not match this client and bridge root" : {
       "localizations" : {
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Brakuje znacznika zarządzanego przez X9bus lub nie pasuje do tej aplikacji agenta i lokalizacji Agent Bridge."
+            "value" : "Brakuje znacznika zarządzanego przez X9Bus lub nie pasuje do tej aplikacji agenta i lokalizacji Agent Bridge."
           }
         }
       }

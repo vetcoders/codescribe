@@ -12285,7 +12285,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         prog=entrypoint, usage="%(prog)s <operation> [options]",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        description="X9bus messages, live notifications and voice replies for your agent.\n"
+        description="X9Bus messages, live notifications and voice replies for your agent.\n"
                "Primary commands are x9bus and x9say; cs-bus and cs-say remain compatibility aliases.\n\n"
                "Quick start:\n"
                "  x9bus --attach --channel 2 --name lena --provider codex --session THREAD\n"

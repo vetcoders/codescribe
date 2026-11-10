@@ -72,7 +72,7 @@ artifact; disclose that failure.
       idle restart swap the running application:
 
       ```sh
-      rsync -a --delete <mounted-verified-app>/ /Applications/X9bus.app/
+      rsync -a --delete <mounted-verified-app>/ /Applications/X9Bus.app/
       make restart-if-idle
       ```
 
@@ -80,7 +80,7 @@ artifact; disclose that failure.
       application. Never replace an active capture. An OS permission denial is
       an incomplete installation, not permission to kill or bypass the guard.
 
-- [ ] Verify `/Applications/X9bus.app` version, build, source, signature and
+- [ ] Verify `/Applications/X9Bus.app` version, build, source, signature and
       a fresh successful launch. Only then play the installation success ping.
 - [ ] Check first-run onboarding, installed helpers and selected client skills.
       Record actual UI, voice and transcription acceptance separately; tests and

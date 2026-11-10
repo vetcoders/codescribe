@@ -3,7 +3,7 @@
 
 Commands:
   doctor                          Verify local toolchains, hooks, env registry, and gates
-  dev                             Verify running X9bus.app process or live Voice Lab loopback
+  dev                             Verify running X9Bus.app process or live Voice Lab loopback
   login                           Verify local ~/.codescribe bus bridge and settings.json state
   request METHOD /path [options]  Send real loopback HTTP request to Voice Lab (--contains, --dump)
   execute [--code-file <path>]    Run a local verification fixture or hermetic contract suite
@@ -28,11 +28,11 @@ from typing import Any
 from urllib.parse import urlparse
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_APP = Path("/Applications/X9bus.app")
-# Executables a running app answers to: the installed X9bus, and Codescribe for
+DEFAULT_APP = Path("/Applications/X9Bus.app")
+# Executables a running app answers to: the installed X9Bus, and Codescribe for
 # a process still started from the Codescribe.app bundle installed before
-# 2026-11-09 (scripts/restart-if-idle moves it to X9bus.app when idle).
-APP_EXECUTABLE_NAMES = ("X9bus", "Codescribe")
+# 2026-11-09 (scripts/restart-if-idle moves it to X9Bus.app when idle).
+APP_EXECUTABLE_NAMES = ("X9Bus", "X9bus", "Codescribe")
 DEFAULT_RESTART_ROOT = Path.home() / ".codescribe/agent-bridge/runtime/restart-if-idle"
 
 SURFACES: dict[str, dict[str, str]] = {
@@ -327,7 +327,7 @@ def cmd_login(args: argparse.Namespace) -> int:
             "name": "agent-bridge-binding",
             "ok": binding_ok,
             "detail": str(bus_binding) if binding_ok else "missing or invalid JSON",
-            "fix": "Start X9bus or run x9bus --status to initialize agent-bridge",
+            "fix": "Start X9Bus or run x9bus --status to initialize agent-bridge",
         }
     )
 
@@ -596,7 +596,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_doc.add_argument("--json", action="store_true")
     p_doc.set_defaults(func=cmd_doctor)
 
-    p_dev = sub.add_parser("dev", help="Verify running X9bus.app or live Voice Lab status")
+    p_dev = sub.add_parser("dev", help="Verify running X9Bus.app or live Voice Lab status")
     p_dev.add_argument("--json", action="store_true")
     p_dev.set_defaults(func=cmd_dev)
 

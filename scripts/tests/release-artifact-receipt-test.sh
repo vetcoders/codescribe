@@ -36,8 +36,8 @@ SH
 set -eu
 [[ "$*" == 'app PROFILE=release' ]] || exit 91
 [[ "${SCENARIO:-}" != build-failure ]] || exit 41
-mkdir -p "$FIXTURE/macos/build/Build/Products/Release/X9bus.app"
-payload="$FIXTURE/macos/build/Build/Products/Release/X9bus.app/Contents/Resources/agent-bridge"
+mkdir -p "$FIXTURE/macos/build/Build/Products/Release/X9Bus.app"
+payload="$FIXTURE/macos/build/Build/Products/Release/X9Bus.app/Contents/Resources/agent-bridge"
 mkdir -p "$payload/bin"
 printf 'fixture publisher\n' > "$payload/bin/codescribe"
 chmod +x "$payload/bin/codescribe"
@@ -66,7 +66,7 @@ set -eu
 destination="${!#}"
 while [[ $# -gt 0 ]]; do
   if [[ "$1" == -srcfolder ]]; then
-    [[ -f "$2/X9bus.app/.notary-stapled" ]] || exit 93
+    [[ -f "$2/X9Bus.app/.notary-stapled" ]] || exit 93
   fi
   shift
 done
@@ -154,7 +154,7 @@ success() {
   [[ "$RESULT" -eq 0 ]] || { cat "$FIXTURE/output"; fail "$target exit $RESULT"; }
   local artifact
   artifact=$(cat "$FIXTURE/produced-path")
-  [[ "$artifact" == *'Codescribe_1.2.3-'*'-aaaaaaaaa'*'.dmg' ]] || fail 'producer did not freeze identity'
+  [[ "$artifact" == *'X9Bus_1.2.3-'*'-aaaaaaaaa'*'.dmg' ]] || fail 'producer did not freeze identity'
   [[ $(cat "$FIXTURE/head") == bbbbbbbbb ]] || fail 'HEAD race not exercised'
   printf '%s\n' "$artifact" --variant "$variant" --version 1.2.3 --channel "$channel" > "$FIXTURE/expected"
   cmp "$FIXTURE/expected" "$FIXTURE/verifier-args" || fail 'verifier argument contract'

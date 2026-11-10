@@ -102,16 +102,16 @@ record "host-os" "INFO" "macOS ${OS_VER} (${OS_BUILD}) · ${XCODE_VER}· SDK ${S
 record "host-repo" "INFO" "${GIT_BRANCH}@${GIT_HEAD}"
 
 APP_BUNDLE=""
-for candidate in "/Applications/X9bus.app" "$HOME/Applications/X9bus.app"; do
+for candidate in "/Applications/X9Bus.app" "$HOME/Applications/X9Bus.app"; do
   [[ -d "$candidate" ]] && { APP_BUNDLE="$candidate"; break; }
 done
 if [[ -n "$APP_BUNDLE" ]]; then
   APP_SHORT="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || echo '?')"
   APP_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || echo '?')"
-  APP_RUNNING="$(pgrep -f "$APP_BUNDLE/Contents/MacOS/X9bus" >/dev/null 2>&1 && echo 'running' || echo 'not running')"
+  APP_RUNNING="$(pgrep -f "$APP_BUNDLE/Contents/MacOS/X9Bus" >/dev/null 2>&1 && echo 'running' || echo 'not running')"
   record "host-app" "INFO" "${APP_BUNDLE} ${APP_SHORT} (${APP_BUILD}), ${APP_RUNNING}"
 else
-  record "host-app" "SKIP" "no installed X9bus.app found; UI-dependent rows cannot be judged against a build id"
+  record "host-app" "SKIP" "no installed X9Bus.app found; UI-dependent rows cannot be judged against a build id"
 fi
 
 # ---------------------------------------------------------------------------
@@ -206,7 +206,7 @@ fi
 if [[ -z "$APP_BUNDLE" ]]; then
   record "sparkle" "SKIP" "no installed app bundle to inspect"
 else
-  SPARKLE_LINKED="$( { otool -L "$APP_BUNDLE/Contents/MacOS/X9bus" 2>/dev/null || true; } | { grep -c 'Sparkle' || true; } )"
+  SPARKLE_LINKED="$( { otool -L "$APP_BUNDLE/Contents/MacOS/X9Bus" 2>/dev/null || true; } | { grep -c 'Sparkle' || true; } )"
   FEED="$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || echo '')"
   EDKEY="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || echo '')"
   if [[ "$SPARKLE_LINKED" == "0" ]]; then

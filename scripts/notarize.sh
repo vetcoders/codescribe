@@ -27,7 +27,7 @@ cd "$PROJECT_DIR"
 
 # Configuration
 NOTARY_PROFILE="${NOTARY_PROFILE:-VSNotary}"
-APP_NAME="${CODESCRIBE_APP_NAME:-X9bus}"
+APP_NAME="${CODESCRIBE_APP_NAME:-X9Bus}"
 DEFAULT_BUNDLE_DIR="$PROJECT_DIR/macos/build/Build/Products/Release/${APP_NAME}.app"
 
 # Parse arguments

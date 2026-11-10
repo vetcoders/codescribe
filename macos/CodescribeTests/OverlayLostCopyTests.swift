@@ -265,7 +265,7 @@ final class OverlayLostCopyTests: XCTestCase {
         guard hasActiveSelection else { return }
         copiedCount += 1
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString("X9bus.app", forType: .string)
+        NSPasteboard.general.setString("X9Bus.app", forType: .string)
       }
     }
 

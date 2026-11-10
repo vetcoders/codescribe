@@ -184,7 +184,7 @@ final class OnboardingViewModel: ObservableObject {
 
   var step: OnboardingStep { OnboardingStep.step(at: stepIndex) }
   var windowTitle: String {
-    let key: String.LocalizationValue = AppBranding.isX9bus() ? "X9bus Setup" : "Getting started"
+    let key: String.LocalizationValue = AppBranding.isX9bus() ? "X9Bus Setup" : "Getting started"
     return String(
       localized: LocalizedStringResource(
         key, locale: interfaceLocale,

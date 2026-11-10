@@ -66,7 +66,7 @@ swiftc -O -target arm64-apple-macos26.0 \
 `make app` / `scripts/build-app.sh` builds this helper and bundles it in:
 
 ```text
-X9bus.app/Contents/MacOS/codescribe-stt-bridge
+X9Bus.app/Contents/MacOS/codescribe-stt-bridge
 ```
 
 For local bridge development without rebuilding the app, set:

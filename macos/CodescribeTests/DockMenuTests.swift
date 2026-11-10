@@ -34,21 +34,21 @@ final class DockMenuTests: XCTestCase {
   func testBundleIdentitySelectsProductBrandAndLocalizedSettingsLabels() {
     let x9busBundleID = "com.vetcoders.x9bus"
     let codescribeBundleID = "com.vetcoders.codescribe"
-    XCTAssertEqual(AppBranding.productName(bundleIdentifier: x9busBundleID), "X9bus")
+    XCTAssertEqual(AppBranding.productName(bundleIdentifier: x9busBundleID), "X9Bus")
     XCTAssertEqual(AppBranding.productName(bundleIdentifier: codescribeBundleID), "Codescribe")
-    XCTAssertEqual(AppBranding.wordmark(bundleIdentifier: x9busBundleID), "X9bus")
+    XCTAssertEqual(AppBranding.wordmark(bundleIdentifier: x9busBundleID), "X9Bus")
     XCTAssertEqual(AppBranding.wordmark(bundleIdentifier: codescribeBundleID), "codescribe")
     XCTAssertEqual(
-      AgentWindowChrome.title(bundleIdentifier: x9busBundleID), String(localized: "X9bus Agent"))
+      AgentWindowChrome.title(bundleIdentifier: x9busBundleID), String(localized: "X9Bus Agent"))
     XCTAssertEqual(
       AgentWindowChrome.title(bundleIdentifier: codescribeBundleID), String(localized: "Agent"))
     XCTAssertEqual(
       AppBranding.localized(
-        bundleIdentifier: x9busBundleID, x9bus: "X9bus Settings…", codescribe: "Settings…"),
-      String(localized: "X9bus Settings…"))
+        bundleIdentifier: x9busBundleID, x9bus: "X9Bus Settings…", codescribe: "Settings…"),
+      String(localized: "X9Bus Settings…"))
     XCTAssertEqual(
       AppBranding.localized(
-        bundleIdentifier: codescribeBundleID, x9bus: "X9bus Settings…", codescribe: "Settings…"),
+        bundleIdentifier: codescribeBundleID, x9bus: "X9Bus Settings…", codescribe: "Settings…"),
       String(localized: "Settings…"))
   }
 

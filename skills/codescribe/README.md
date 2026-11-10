@@ -27,7 +27,7 @@ On a host with no window — SSH, a worker session — name the clients on the
 command line instead of in Settings:
 
 ```bash
-/Applications/X9bus.app/Contents/MacOS/X9bus \
+/Applications/X9Bus.app/Contents/MacOS/X9Bus \
   --install-agent-bridge --agent-clients claude-code,codex
 ```
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Restart X9bus only after its live controller atomically reserves idle shutdown."""
+"""Restart X9Bus only after its live controller atomically reserves idle shutdown."""
 
 from __future__ import annotations
 
@@ -38,11 +38,11 @@ RETRYABLE = frozenset({
 
 
 #: The installed bundle: productName in macos/project.yml.
-DEFAULT_APP = Path("/Applications/X9bus.app")
+DEFAULT_APP = Path("/Applications/X9Bus.app")
 #: Bundles that installs before 2026-11-09 left beside it, with the same bundle
 #: identifier. Coexistence is the default (`CODESCRIBE_RETIRE_LEGACY_APP=0` or
 #: unset): `/Applications/Codescribe.app` stays side-by-side next to
-#: `/Applications/X9bus.app` and is neither targeted nor moved to the Trash
+#: `/Applications/X9Bus.app` and is neither targeted nor moved to the Trash
 #: unless `CODESCRIBE_RETIRE_LEGACY_APP=1` is explicitly set.
 RETIRED_BUNDLE_NAMES = ("Codescribe.app",)
 RETIRE_LEGACY_ENV = "CODESCRIBE_RETIRE_LEGACY_APP"

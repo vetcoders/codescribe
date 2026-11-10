@@ -5,7 +5,7 @@
 1. Download the appropriate package from the
    [website](https://codescribe.vetcoders.io/) or
    [GitHub Releases](https://github.com/vetcoders/codescribe/releases).
-2. Open the DMG and drag **X9bus.app** to **Applications**.
+2. Open the DMG and drag **X9Bus.app** to **Applications**.
 3. Launch x9bus from Finder or Spotlight. Complete the setup checklist in
    **Settings → Creator**.
 4. Check **Settings → User** for the installed version and build.

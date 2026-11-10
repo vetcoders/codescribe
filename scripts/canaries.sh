@@ -195,7 +195,7 @@ canary_store_purity() {
 canary_sparkle_key_parity() {
     local keyfile="$HOME/.vibecrafted/secrets/codescribe/sparkle-public.b64"
     local app="" bundle_key local_key
-    for candidate in "/Applications/X9bus.app" "$HOME/Applications/X9bus.app"; do
+    for candidate in "/Applications/X9Bus.app" "$HOME/Applications/X9Bus.app"; do
         [[ -d "$candidate" ]] && { app="$candidate"; break; }
     done
     if [[ ! -f "$keyfile" ]]; then
@@ -203,7 +203,7 @@ canary_sparkle_key_parity() {
         return
     fi
     if [[ -z "$app" ]]; then
-        record "sparkle-key-parity" "SKIP" "no installed X9bus.app to compare against"
+        record "sparkle-key-parity" "SKIP" "no installed X9Bus.app to compare against"
         return
     fi
     local_key="$(tr -d '[:space:]' < "$keyfile")"

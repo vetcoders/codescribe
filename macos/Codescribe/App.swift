@@ -18,7 +18,7 @@ private let notesLog = Logger(
   category: "notes"
 )
 
-/// Product-facing names follow the bundle identity. X9bus and the legacy
+/// Product-facing names follow the bundle identity. X9Bus and the legacy
 /// Codescribe build share implementation while keeping separate UI branding.
 enum AppBranding {
   static let x9busBundleIdentifier = "com.vetcoders.x9bus"
@@ -28,11 +28,11 @@ enum AppBranding {
   }
 
   static func productName(bundleIdentifier: String? = Bundle.main.bundleIdentifier) -> String {
-    isX9bus(bundleIdentifier: bundleIdentifier) ? "X9bus" : "Codescribe"
+    isX9bus(bundleIdentifier: bundleIdentifier) ? "X9Bus" : "Codescribe"
   }
 
   static func wordmark(bundleIdentifier: String? = Bundle.main.bundleIdentifier) -> String {
-    isX9bus(bundleIdentifier: bundleIdentifier) ? "X9bus" : "codescribe"
+    isX9bus(bundleIdentifier: bundleIdentifier) ? "X9Bus" : "codescribe"
   }
 
   static func localized(
@@ -280,7 +280,7 @@ struct CodescribeApp: App {
 
   private var settingsWindow: some Scene {
     Window(
-      AppBranding.localized(x9bus: "X9bus Settings", codescribe: "Settings"),
+      AppBranding.localized(x9bus: "X9Bus Settings", codescribe: "Settings"),
       id: SettingsView.windowID
     ) {
       Group {
@@ -304,7 +304,7 @@ struct CodescribeApp: App {
     .windowToolbarStyle(.unified)
     .commands {
       CommandGroup(replacing: .appSettings) {
-        Button(AppBranding.localized(x9bus: "X9bus Settings…", codescribe: "Settings…")) {
+        Button(AppBranding.localized(x9bus: "X9Bus Settings…", codescribe: "Settings…")) {
           openWindow.presentSettings()
         }
           .keyboardShortcut(",", modifiers: .command)
@@ -1310,7 +1310,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
   private func statusItemImage() -> NSImage? {
     let image: NSImage?
     if AppBranding.isX9bus() {
-      // X9bus uses the exact bundle icon in both visible locations; keep its
+      // X9Bus uses the exact bundle icon in both visible locations; keep its
       // colors when the activity dot is composited in the corner.
       image = NSApp.applicationIconImage.copy() as? NSImage
       image?.size = NSSize(width: 18, height: 18)

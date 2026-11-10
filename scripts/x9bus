@@ -1,5 +1,5 @@
 #!/usr/bin/env -S python3 -E
-"""Primary X9bus command for the Codescribe transcript bus runtime."""
+"""Primary X9Bus command for the Codescribe transcript bus runtime."""
 import os
 from pathlib import Path
 import sys

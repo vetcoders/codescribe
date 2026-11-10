@@ -12,7 +12,7 @@
 //! ```bash
 //! CODESCRIBE_REPLAY_WAV=/path/to/take.wav \
 //! CODESCRIBE_ASR_MODE=apple_only \
-//! CODESCRIBE_APPLE_STT_BRIDGE=/Applications/X9bus.app/Contents/MacOS/codescribe-stt-bridge \
+//! CODESCRIBE_APPLE_STT_BRIDGE=/Applications/X9Bus.app/Contents/MacOS/codescribe-stt-bridge \
 //! CODESCRIBE_BRIDGE_DISCLAIM=1 \
 //! cargo test --test replay_take -- --ignored --nocapture
 //! ```
@@ -45,7 +45,7 @@ async fn replay_operator_take() {
 
     if std::env::var_os("CODESCRIBE_APPLE_STT_BRIDGE").is_none() {
         let installed =
-            std::path::Path::new("/Applications/X9bus.app/Contents/MacOS/codescribe-stt-bridge");
+            std::path::Path::new("/Applications/X9Bus.app/Contents/MacOS/codescribe-stt-bridge");
         if installed.is_file() {
             unsafe {
                 std::env::set_var("CODESCRIBE_APPLE_STT_BRIDGE", installed);

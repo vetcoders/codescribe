@@ -1816,12 +1816,12 @@ fn bridge_binary() -> PathBuf {
 }
 
 /// Resolution order: explicit env override → bridge bundled beside the `.app`
-/// executable → PATH → installed X9bus.app (standalone CLI fallback).
+/// executable → PATH → installed X9Bus.app (standalone CLI fallback).
 /// Testable seam: `current_exe` is injected rather than read from the process.
 fn bridge_binary_for_current_exe(current_exe: Option<&Path>) -> PathBuf {
     bridge_binary_with_installed_app(
         current_exe,
-        Path::new("/Applications/X9bus.app/Contents/MacOS/X9bus"),
+        Path::new("/Applications/X9Bus.app/Contents/MacOS/X9Bus"),
     )
 }
 
@@ -1873,7 +1873,7 @@ fn bundled_bridge_binary_for_exe(current_exe: Option<&Path>) -> Option<PathBuf> 
 /// Cheap, process-cached check that the Apple STT bridge binary can actually be
 /// launched: an explicit `CODESCRIBE_APPLE_STT_BRIDGE` path wins first, then a
 /// bridge bundled beside the current `.app` executable, then the default bare
-/// command name on `PATH`, then the installed X9bus.app. Automatic router
+/// command name on `PATH`, then the installed X9Bus.app. Automatic router
 /// selection gates on this so it never advertises Apple with no bridge.
 pub(crate) fn is_bridge_resolvable() -> bool {
     /// Cached answer to "can we launch the bridge binary" for AUTO engine selection.
@@ -2247,8 +2247,8 @@ mod tests {
         let previous_bridge = std::env::var_os(ENV_STT_BRIDGE);
         let previous_path = std::env::var_os("PATH");
         let root = std::env::temp_dir().join(format!("cs-stt-resolver-{}", Uuid::new_v4()));
-        let bundle_macos = root.join("X9bus.app/Contents/MacOS");
-        let exe = bundle_macos.join("X9bus");
+        let bundle_macos = root.join("X9Bus.app/Contents/MacOS");
+        let exe = bundle_macos.join("X9Bus");
         let bundled = bundle_macos.join(DEFAULT_BRIDGE_BIN);
         let path_dir = root.join("path-bin");
         let path_bridge = path_dir.join(DEFAULT_BRIDGE_BIN);
@@ -2332,7 +2332,7 @@ mod tests {
         let _bridge = crate::test_isolation::EnvGuard::capture(ENV_STT_BRIDGE);
         let _path = crate::test_isolation::EnvGuard::capture("PATH");
         let root = tempfile::tempdir().unwrap();
-        let installed_exe = root.path().join("X9bus.app/Contents/MacOS/X9bus");
+        let installed_exe = root.path().join("X9Bus.app/Contents/MacOS/X9Bus");
         let installed_bridge = installed_exe.with_file_name(DEFAULT_BRIDGE_BIN);
         std::fs::create_dir_all(installed_exe.parent().unwrap()).unwrap();
         std::fs::write(&installed_bridge, b"bridge").unwrap();

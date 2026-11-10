@@ -7,7 +7,7 @@ import XCTest
 /// development language, and catalog-resolved copy reaches a lookup.
 /// Contract: docs/LOCALIZATION.md.
 final class LocalizationFoundationTests: XCTestCase {
-  /// The test bundle is hosted by the app, so `Bundle.main` is X9bus.app.
+  /// The test bundle is hosted by the app, so `Bundle.main` is X9Bus.app.
   private let app = Bundle.main
 
   func testEnglishIsTheDevelopmentLanguage() {
@@ -38,12 +38,12 @@ final class LocalizationFoundationTests: XCTestCase {
   /// The physical product and every localized system name agree.
   func testProductNameMatchesThePhysicalBundle() throws {
     let localized = try XCTUnwrap(app.localizedInfoDictionary)
-    XCTAssertEqual(localized["CFBundleDisplayName"] as? String, "X9bus")
-    XCTAssertEqual(localized["CFBundleName"] as? String, "X9bus")
-    XCTAssertEqual(app.infoDictionary?["CFBundleDisplayName"] as? String, "X9bus")
-    XCTAssertEqual(app.infoDictionary?["CFBundleName"] as? String, "X9bus")
-    XCTAssertEqual(app.bundleURL.lastPathComponent, "X9bus.app")
-    XCTAssertEqual(app.infoDictionary?["CFBundleExecutable"] as? String, "X9bus")
+    XCTAssertEqual(localized["CFBundleDisplayName"] as? String, "X9Bus")
+    XCTAssertEqual(localized["CFBundleName"] as? String, "X9Bus")
+    XCTAssertEqual(app.infoDictionary?["CFBundleDisplayName"] as? String, "X9Bus")
+    XCTAssertEqual(app.infoDictionary?["CFBundleName"] as? String, "X9Bus")
+    XCTAssertEqual(app.bundleURL.lastPathComponent, "X9Bus.app")
+    XCTAssertEqual(app.infoDictionary?["CFBundleExecutable"] as? String, "X9Bus")
     XCTAssertTrue(
       ["com.vetcoders.x9bus", "com.vetcoders.x9bus.dev"].contains(app.bundleIdentifier ?? ""))
   }

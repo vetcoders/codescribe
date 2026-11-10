@@ -12,7 +12,7 @@
 #   2. install_name_tool -id @rpath/... -> make the dylib relocatable
 #   3. uniffi-bindgen generate          -> Swift bindings into macos/Codescribe/Bridge
 #   4. xcodegen generate                -> macos/Codescribe.xcodeproj + Info.plist
-#   5. xcodebuild                        -> X9bus.app
+#   5. xcodebuild                        -> X9Bus.app
 #   6. embed runtime artifacts so the bundle is self-contained
 #   7. sign with a stable identifier so macOS TCC grants survive rebuilds
 #
@@ -337,7 +337,7 @@ if [[ "${SKIP_XCODEBUILD:-0}" != "1" \
 fi
 
 SCHEME="Codescribe"
-APP_BUNDLE_NAME="${CODESCRIBE_APP_NAME:-X9bus}"
+APP_BUNDLE_NAME="${CODESCRIBE_APP_NAME:-X9Bus}"
 APP_EXECUTABLE_NAME="${CODESCRIBE_EXECUTABLE_NAME:-$APP_BUNDLE_NAME}"
 APP_DISPLAY_NAME="${CODESCRIBE_DISPLAY_NAME:-$APP_BUNDLE_NAME}"
 APP_BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-com.vetcoders.x9bus}"
@@ -475,6 +475,10 @@ echo "==> [5/7] Building app (xcodebuild, $CONFIG)"
 echo "    stamp: v${STAMP_VERSION} build ${STAMP_BUILD_NUM} commit ${STAMP_COMMIT} built ${STAMP_BUILT_AT}"
 echo "    developer surface: ${CS_DEVELOPER_SURFACE}"
 DERIVED="$REPO_ROOT/macos/build"
+if [ "$APP_BUNDLE_NAME" = "X9Bus" ] && [ -d "$DERIVED/Build/Products/$CONFIG" ] \
+  && ls "$DERIVED/Build/Products/$CONFIG" 2>/dev/null | grep -qx "X9bus.app"; then
+  mv "$DERIVED/Build/Products/$CONFIG/X9bus.app" "$DERIVED/Build/Products/$CONFIG/X9Bus.app"
+fi
 # ONLY_ACTIVE_ARCH: cargo emits a single-arch libcodescribe_ffi.dylib, so a
 # universal (x86_64+arm64) Release link dies on missing Rust symbols.
 # LIBRARY_SEARCH_PATHS must follow the selected Cargo profile. Xcode's Debug /
@@ -640,7 +644,7 @@ if swiftc -O -target "$STT_BRIDGE_TARGET" -o "$STT_BRIDGE_BIN" "$STT_BRIDGE_SRC"
   STT_BRIDGE_BUNDLED=1
 else
   echo "warning: Apple STT bridge helper skipped; this SDK may not include SpeechAnalyzer/SpeechTranscriber." >&2
-  echo "warning: X9bus.app will build without the bundled helper and use runtime STT fallback resolution." >&2
+  echo "warning: X9Bus.app will build without the bundled helper and use runtime STT fallback resolution." >&2
 fi
 
 # Install/release lanes only (`make install-app`, scripts/build-dmg.sh set

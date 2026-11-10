@@ -25,13 +25,13 @@ class RestartIfIdleTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         # main() resolves --app; /var/folders resolves under /private.
         self.root = Path(self.temporary.name).resolve()
-        self.app = self.root / "X9bus.app"
-        # The bundle installs before X9bus.app left beside it.
+        self.app = self.root / "X9Bus.app"
+        # The bundle installs before X9Bus.app left beside it.
         self.retired = self.root / "Codescribe.app"
         self.trash = self.root / "Trash"
         self.handshakes = self.root / "restart-if-idle"
         self.handshakes.mkdir()
-        self.main = self.app / "Contents/MacOS/X9bus"
+        self.main = self.app / "Contents/MacOS/X9Bus"
         self.ffi = self.app / "Contents/Frameworks/libcodescribe_ffi.dylib"
         for path in (self.main, self.ffi):
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -39,7 +39,7 @@ class RestartIfIdleTests(unittest.TestCase):
         with (self.app / "Contents/Info.plist").open("wb") as handle:
             plistlib.dump({
                 "CFBundleVersion": "fixture", "CSBuildCommit": "expected",
-                "CFBundleExecutable": "X9bus", "CFBundleIdentifier": "com.vetcoders.codescribe",
+                "CFBundleExecutable": "X9Bus", "CFBundleIdentifier": "com.vetcoders.codescribe",
             }, handle)
         self.processes = []
         trash = patch.object(restart, "TRASH", self.trash)
@@ -252,7 +252,7 @@ class RestartIfIdleTests(unittest.TestCase):
     def test_process_lookup_covers_the_installed_and_the_retired_executable(self):
         self.invoke()
         pgrep = [call for call in self.calls if Path(call[0]).name == "pgrep"][0]
-        self.assertEqual(pgrep[1:], ["-x", "Codescribe|X9bus"])
+        self.assertEqual(pgrep[1:], ["-x", "Codescribe|X9Bus"])
 
     def test_process_from_the_retired_bundle_moves_to_the_installed_one(self):
         self.install_retired_bundle()

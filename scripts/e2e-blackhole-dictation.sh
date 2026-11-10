@@ -6,7 +6,7 @@
 #
 #   DAILY product path  ≠  ENGINE harness path
 #
-#   Daily (X9bus.app, teacher, mic, speakers):
+#   Daily (X9Bus.app, teacher, mic, speakers):
 #     System Sound Input  = real mic (MacBook Pro Microphone / …)
 #     System Sound Output = real speakers / headphones
 #     Never leave BlackHole as a system default.

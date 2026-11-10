@@ -866,7 +866,7 @@ fn transcribe_live(language: Option<String>, json: bool) -> anyhow::Result<()> {
         }
         eprintln!("bus={} start=end stop=Ctrl-C", path.display());
         eprintln!(
-            "language_hint={} owner=X9bus.app",
+            "language_hint={} owner=X9Bus.app",
             language.as_deref().unwrap_or("auto")
         );
 

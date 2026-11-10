@@ -69,9 +69,9 @@ CODESCRIBE_DIST_LICENSE_KEY = $(if $(CODESCRIBE_LICENSE_PUBLIC_KEY_HEX),$(CODESC
 # after codesigning, notarisation and stapling had already been paid for.
 CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE ?= $(firstword $(wildcard $(HOME)/.codescribe/config/dev/keys/sparkle-public.b64 $(HOME)/.vibecrafted/secrets/codescribe/sparkle-public.b64))
 CODESCRIBE_DIST_SPARKLE_KEY = $(if $(SPARKLE_ED_PUBLIC_KEY),$(SPARKLE_ED_PUBLIC_KEY),$(shell cat $(CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE) 2>/dev/null | tr -d '[:space:]'))
-CODESCRIBE_APP_NAME ?= X9bus
+CODESCRIBE_APP_NAME ?= X9Bus
 CODESCRIBE_EXECUTABLE_NAME ?= $(CODESCRIBE_APP_NAME)
-CODESCRIBE_DISPLAY_NAME ?= X9bus
+CODESCRIBE_DISPLAY_NAME ?= X9Bus
 CODESCRIBE_BUNDLE_ID ?= com.vetcoders.x9bus
 CODESCRIBE_APP_MARKETING_VERSION ?= 0.18.1
 CODESCRIBE_APP_BUILD_VERSION ?= $(CODESCRIBE_APP_MARKETING_VERSION)
@@ -98,7 +98,7 @@ CORPUS_REFERENCE_POLICY ?= human
 CORPUS_PROFILES ?= apple-layer0,apple-layer1-inprocess
 CORPUS_RUNS ?= 1
 CORPUS_MAX_RECORDINGS ?= 1
-CORPUS_APPLE_BRIDGE ?= /Applications/X9bus.app/Contents/MacOS/codescribe-stt-bridge
+CORPUS_APPLE_BRIDGE ?= /Applications/X9Bus.app/Contents/MacOS/codescribe-stt-bridge
 CORPUS_RUN_ID ?= $(shell date +%Y%m%d-%H%M%S)
 CORPUS_OUT ?= $(HOME)/.vibecrafted/artifacts/vetcoders/codescribe/$(shell date +%Y_%m%d)/reports/corpus-$(CORPUS_RUN_ID)
 
@@ -149,7 +149,7 @@ release-codescribe-embedded: dist-preflight ensure-models
 # Full verified pipeline: cargo (ffi dylib) → uniffi-bindgen → xcodegen → xcodebuild.
 # `app-bindings` stops after xcodegen (no Xcode needed) for fast Rust-side iteration.
 app:
-	@echo "Building X9bus.app (SwiftUI, PROFILE=$(PROFILE))..."
+	@echo "Building X9Bus.app (SwiftUI, PROFILE=$(PROFILE))..."
 	@CODESCRIBE_APP_NAME="$(CODESCRIBE_APP_NAME)" \
 	 CODESCRIBE_EXECUTABLE_NAME="$(CODESCRIBE_EXECUTABLE_NAME)" \
 	 CODESCRIBE_DISPLAY_NAME="$(CODESCRIBE_DISPLAY_NAME)" \
@@ -288,6 +288,9 @@ install-app: install-voice-lab
 	fi; \
 	echo "Installing to /Applications ..."; \
 	mkdir -p /Applications; \
+	if [ "$(CODESCRIBE_APP_NAME)" = "X9Bus" ] && ls /Applications 2>/dev/null | grep -qx "X9bus.app"; then \
+		mv /Applications/X9bus.app /Applications/X9Bus.app; \
+	fi; \
 	rsync -a --delete "$$APP_SRC/" "/Applications/$(CODESCRIBE_APP_NAME).app/"
 	@if [ "$(CODESCRIBE_CODESIGN_IDENTITY)" = "-" ]; then \
 		echo "Codesigning ad-hoc (no stable signing identity found in keychain)."; \
@@ -746,7 +749,7 @@ $(ENGINE_BRIDGE): core/stt/apple_stt/codescribe-stt-bridge.swift core/stt/apple_
 	@# TCC attributes a privacy prompt to a BUNDLE, not to a loose executable: an
 	@# embedded __info_plist alone still aborts the process. Mirroring the binary
 	@# into a minimal .app gives it a bundle identity, so `make engine-auth` can
-	@# raise the dialog. Inside X9bus.app the bridge inherits the app grant
+	@# raise the dialog. Inside X9Bus.app the bridge inherits the app grant
 	@# and this wrapper is unused.
 	@mkdir -p $(ENGINE_BRIDGE_APP)/Contents/MacOS
 	@cp core/stt/apple_stt/bridge-Info.plist $(ENGINE_BRIDGE_APP)/Contents/Info.plist
@@ -756,7 +759,7 @@ $(ENGINE_BRIDGE): core/stt/apple_stt/codescribe-stt-bridge.swift core/stt/apple_
 
 # One-time: raise the macOS Speech Recognition dialog for the standalone bridge.
 # Needed before `make test-engine-apple` or scripts/e2e-blackhole-dictation.sh
-# when the bridge runs outside X9bus.app (inside the app it inherits the
+# when the bridge runs outside X9Bus.app (inside the app it inherits the
 # app's grant).
 .PHONY: engine-auth
 engine-auth: $(ENGINE_BRIDGE)
@@ -1558,6 +1561,9 @@ install-app-release:
 	fi; \
 	echo "Installing stapled Release app to $$DEST (no re-sign) ..."; \
 	mkdir -p /Applications; \
+	if [ "$(CODESCRIBE_APP_NAME)" = "X9Bus" ] && ls /Applications 2>/dev/null | grep -qx "X9bus.app"; then \
+		mv /Applications/X9bus.app /Applications/X9Bus.app; \
+	fi; \
 	rsync -a --delete "$$APP_SRC/" "$$DEST/"; \
 	codeSignExit=0; codesign --verify --deep --strict "$$DEST" || codeSignExit=$$?; \
 	if [ "$$codeSignExit" != "0" ]; then exit "$$codeSignExit"; fi; \

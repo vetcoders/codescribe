@@ -2000,7 +2000,7 @@ private struct OverlayIntercomHeader: View {
       }
     }
     Divider()
-    Button(AppBranding.localized(x9bus: "X9bus Settings…", codescribe: "Settings…")) {
+    Button(AppBranding.localized(x9bus: "X9Bus Settings…", codescribe: "Settings…")) {
       openWindow.presentSettings()
     }
     .accessibilityIdentifier("overlay-intercom-settings")

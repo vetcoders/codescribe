@@ -8,7 +8,7 @@
   __TCC_CRASHING_DUE_TO_PRIVACY_VIOLATION__. Embedding this section is what
   makes `codescribe-stt-bridge request_auth` able to raise the dialog, which the
   engine test path (make test-engine-apple, scripts/e2e-blackhole-dictation.sh)
-  needs when the bridge runs outside X9bus.app.
+  needs when the bridge runs outside X9Bus.app.
 
   Inside the app the bridge inherits the app's authorization; this section only
   matters for the standalone/test invocation.

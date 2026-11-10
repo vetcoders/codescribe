@@ -23,13 +23,13 @@ if [ ! -x "$CODESCRIBE" ]; then
   CODESCRIBE="$HOME/.cargo/bin/codescribe"
 fi
 if [ ! -x "$CODESCRIBE" ]; then
-  CODESCRIBE="/Applications/X9bus.app/Contents/Resources/agent-bridge/bin/codescribe"
+  CODESCRIBE="/Applications/X9Bus.app/Contents/Resources/agent-bridge/bin/codescribe"
 fi
 if [ ! -x "$CODESCRIBE" ]; then
   CODESCRIBE="/Applications/Codescribe.app/Contents/Resources/agent-bridge/bin/codescribe"
 fi
 if [ ! -x "$CODESCRIBE" ]; then
-  osascript -e 'display notification "Install X9bus.app or the Codescribe CLI first" with title "X9bus"'
+  osascript -e 'display notification "Install X9Bus.app or the Codescribe CLI first" with title "X9Bus"'
   exit 1
 fi
 combined=""

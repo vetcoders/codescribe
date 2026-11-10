@@ -1,6 +1,6 @@
 # Codescribe application runtime
 
-X9bus.app owns one process-wide, multi-thread Tokio runtime. The shipped
+X9Bus.app owns one process-wide, multi-thread Tokio runtime. The shipped
 policy starts four workers named `codescribe-app-worker-1` through
 `codescribe-app-worker-4`. `CODESCRIBE_APP_RUNTIME_WORKERS` may change that
 count to `1..16`, is registered in `ENV_REGISTRY.toml`, and takes effect only

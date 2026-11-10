@@ -64,7 +64,7 @@ enum TrayStatusDotIcon {
 }
 
 /// Menu-bar image for one tray status. Template glyphs adapt to appearance;
-/// the X9bus bundle icon keeps its original color while activity dots update.
+/// the X9Bus bundle icon keeps its original color while activity dots update.
 enum MenuBarStatusImage {
   static func make(base: NSImage, dot: NSColor?, rim: NSColor? = nil) -> NSImage {
     guard base.isTemplate else {

@@ -171,8 +171,8 @@ elif name == "xcodebuild":
     localized = contents / "Resources/en.lproj"
     localized.mkdir(parents=True)
     localized_plist = plistlib.dumps({
-        "CFBundleDisplayName": "X9bus",
-        "CFBundleName": "X9bus",
+        "CFBundleDisplayName": "X9Bus",
+        "CFBundleName": "X9Bus",
     }, fmt=plistlib.FMT_XML).decode("utf-8").encode("utf-16")
     (localized / "InfoPlist.strings").write_bytes(localized_plist)
 elif name == "cp":
@@ -237,7 +237,7 @@ else:
 passed = failed = 0
 
 def run_case(base, profile, layout, mode="success", skip=False, signing_identity="fixture-identity",
-             app_name="X9bus", bundle_id="com.vetcoders.x9bus", marketing_version="0.18.1",
+             app_name="X9Bus", bundle_id="com.vetcoders.x9bus", marketing_version="0.18.1",
              build_version="0.18.1", icon_name="X9busAppIcon"):
     global passed, failed
     label = f"{profile}/{layout}/{mode}" + ("/bindings-only" if skip else "")
@@ -346,7 +346,7 @@ def run_case(base, profile, layout, mode="success", skip=False, signing_identity
                 config = "Debug" if profile == "debug" else "Release"
                 product = repo / "macos/build/Build/Products" / config
                 assert (product / f"{app_name}.app/Contents/MacOS/{app_name}").is_file()
-                assert not (product / ("Codescribe.app" if app_name == "X9bus" else "X9bus.app")).exists()
+                assert not (product / ("Codescribe.app" if app_name == "X9Bus" else "X9Bus.app")).exists()
                 assert str(product / f"{app_name}.app") in result.stdout
                 localized_plist = product / f"{app_name}.app/Contents/Resources/en.lproj/InfoPlist.strings"
                 localized_info = plistlib.loads(localized_plist.read_bytes())

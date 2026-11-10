@@ -54,7 +54,7 @@ func query(_ request: Request) throws -> Reception {
         || request.identifier.hasPrefix("overlay-agent-row-controls-")))
   guard AXIsProcessTrusted(), request.pid > 0, admittedIdentifier,
     let bundle = NSRunningApplication(processIdentifier: request.pid)?.bundleURL?.path,
-    bundle.contains("/Xcode/DerivedData/Codescribe-"), bundle.hasSuffix("/X9bus.app")
+    bundle.contains("/Xcode/DerivedData/Codescribe-"), bundle.hasSuffix("/X9Bus.app")
   else { throw CocoaError(.fileReadNoPermission) }
   let application = AXUIElementCreateApplication(request.pid)
   AXUIElementSetMessagingTimeout(application, 2)

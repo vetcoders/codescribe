@@ -594,7 +594,7 @@ the sentence.**
 5. Build. The bundle gains `<lang>.lproj`; Sparkle's own translation for that
    language activates with it.
 6. Run the app under that language without changing the system setting:
-   `open -a X9bus --args -AppleLanguages '(pl)'`.
+   `open -a X9Bus --args -AppleLanguages '(pl)'`.
 
 After the import the catalog is the source of the translation; the worksheet is
 transport. New English copy added later shows up as untranslated rows in the
@@ -641,7 +641,7 @@ A round goes like this:
 1. The cut that adds or changes English copy adds the draft of every language
    the bundle carries (`--draft`). Coverage stays green; the draft is marked.
 2. The reviewer reads the app, not the file: run the Debug or installed build
-   under the language (`open -a X9bus --args -AppleLanguages '(pl)'`) and
+   under the language (`open -a X9Bus --args -AppleLanguages '(pl)'`) and
    go through the screens the pending export names in its `where` column.
 3. Corrections are given in whatever form is fastest — a sentence in chat, a
    voice note, a screenshot with the wrong word circled, an edited pending

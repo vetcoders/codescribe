@@ -82,15 +82,15 @@ targets:
         NSScreenCaptureUsageDescription: "x9bus captures the screen when you ask the assistant to look at what is currently on screen."
     settings:
       base:
-        CODESCRIBE_APP_NAME: X9bus
+        CODESCRIBE_APP_NAME: X9Bus
         CODESCRIBE_EXECUTABLE_NAME: $(CODESCRIBE_APP_NAME)
-        CODESCRIBE_DISPLAY_NAME: X9bus
+        CODESCRIBE_DISPLAY_NAME: X9Bus
         CODESCRIBE_BUNDLE_ID: com.vetcoders.x9bus
         CODESCRIBE_APP_ICON_NAME: X9busAppIcon
         PRODUCT_NAME: $(CODESCRIBE_APP_NAME)
         EXECUTABLE_NAME: $(CODESCRIBE_EXECUTABLE_NAME)
         PRODUCT_MODULE_NAME: Codescribe
-        # X9bus uses a separate icon set; app-codescribe selects AppIcon.
+        # X9Bus uses a separate icon set; app-codescribe selects AppIcon.
         ASSETCATALOG_COMPILER_APPICON_NAME: $(CODESCRIBE_APP_ICON_NAME)
         # Build-provenance defaults for bare `xcodebuild` / Xcode runs; the
         # verified pipeline (scripts/build-app.sh) overrides all four.
@@ -156,8 +156,8 @@ targets:
       - target: Codescribe
     settings:
       base:
-        CODESCRIBE_APP_NAME: X9bus
-        CODESCRIBE_EXECUTABLE_NAME: X9bus
+        CODESCRIBE_APP_NAME: X9Bus
+        CODESCRIBE_EXECUTABLE_NAME: X9Bus
         TEST_HOST: $(BUILT_PRODUCTS_DIR)/$(CODESCRIBE_APP_NAME).app/Contents/MacOS/$(CODESCRIBE_EXECUTABLE_NAME)
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: 6.0

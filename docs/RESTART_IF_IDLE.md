@@ -73,15 +73,15 @@ request is sent. Installing a newer bundle does not give an already running
 older process a capability. The Founder must close that older process at a
 chosen idle moment once, then open the newly installed version.
 
-## From Codescribe.app to X9bus.app
+## From Codescribe.app to X9Bus.app
 
-The installed bundle is `/Applications/X9bus.app` (executable `X9bus`).
+The installed bundle is `/Applications/X9Bus.app` (executable `X9Bus`).
 Installs before 2026-11-09 left `/Applications/Codescribe.app` with the same
 bundle identifier and the executable `Codescribe`, and a process started from
-it keeps running from that bundle after `X9bus.app` is installed. The waiter
+it keeps running from that bundle after `X9Bus.app` is installed. The waiter
 looks up both executable names and accepts a capability file whose bundle is
 `Codescribe.app` beside the installed one. It sends the restart request
-through that bundle and launches `X9bus.app` after the old process exits; the
+through that bundle and launches `X9Bus.app` after the old process exits; the
 receipt names both as `old_bundle` and `bundle`.
 
 After every outcome that leaves no process to restart (`restarted`, `current`,

@@ -62,7 +62,7 @@ readonly MARKER_MINILM='paraphrase-multilingual-MiniLM'
 readonly MARKER_SILERO='silero'
 
 DMG=""
-APP_NAME="${CODESCRIBE_APP_NAME:-X9bus}"
+APP_NAME="${CODESCRIBE_APP_NAME:-X9Bus}"
 BUNDLE_ID="${CODESCRIBE_BUNDLE_ID:-com.vetcoders.x9bus}"
 VARIANT=""
 VERSION=""
@@ -78,7 +78,7 @@ usage() {
   cat <<EOF
 Usage: $0 <dmg> --variant slim|full --version X.Y.Z [--skip-notary] [--unsigned]
 
-Fail-closed payload gate for X9bus release DMGs.
+Fail-closed payload gate for X9Bus release DMGs.
 
   <dmg>               Path to a release DMG; the payload must contain $APP_NAME.app
   --variant slim|full slim = Silero embedded; full = +Whisper embedded
@@ -212,7 +212,7 @@ if [[ "$DMG" != /* ]]; then
 fi
 
 echo "═══════════════════════════════════════════════════════════"
-echo "  X9bus DMG payload gate (fail-closed)"
+echo "  X9Bus DMG payload gate (fail-closed)"
 echo "═══════════════════════════════════════════════════════════"
 echo "  DMG:     $DMG"
 echo "  Variant: $VARIANT"

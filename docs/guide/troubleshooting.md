@@ -19,7 +19,7 @@ or a raw `.env` dump.
 
 ## The app does not open
 
-Launch **X9bus.app** from Applications through Finder or Spotlight. A
+Launch **X9Bus.app** from Applications through Finder or Spotlight. A
 standalone `codescribe` terminal command is a CLI utility, not a replacement
 for launching the native app bundle.
 

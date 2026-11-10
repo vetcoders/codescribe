@@ -1,5 +1,5 @@
 #!/usr/bin/env -S python3 -E
-"""x9say TEXT — X9bus system voice: Carina (xAI), speed 1.0.
+"""x9say TEXT — X9Bus system voice: Carina (xAI), speed 1.0.
 x9say TEXT --provider codex|claude-code --session SESSION [--reply-to DELIVERY_ID] [voice options].
 x9say auth --provider xai|openai|deepinfra|custom --login-type oauth|key|device-code
 x9say --version — installed helper version and source commit.

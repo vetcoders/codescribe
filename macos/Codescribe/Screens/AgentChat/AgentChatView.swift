@@ -113,7 +113,7 @@ enum AgentWindowChrome {
   static func title(bundleIdentifier: String? = Bundle.main.bundleIdentifier) -> String {
     AppBranding.localized(
       bundleIdentifier: bundleIdentifier,
-      x9bus: "X9bus Agent",
+      x9bus: "X9Bus Agent",
       codescribe: "Agent")
   }
 

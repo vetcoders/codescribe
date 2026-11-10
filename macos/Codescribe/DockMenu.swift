@@ -24,7 +24,7 @@ enum DockMenuEntry: Int, CaseIterable {
     case .widget: String(localized: "Show widget")
     case .dictation: ""  // state-dependent; see `DockMenu.menu(for:handlers:)`
     case .settings:
-      AppBranding.localized(x9bus: "X9bus Settings…", codescribe: "Settings…")
+      AppBranding.localized(x9bus: "X9Bus Settings…", codescribe: "Settings…")
     }
   }
 }

@@ -212,7 +212,7 @@ class SayEntryTests(unittest.TestCase):
     def test_help_starts_with_the_system_voice_form(self):
         result = subprocess.run(self.command + ["--help"], env=self.environment,
                                 capture_output=True, text=True, check=True)
-        self.assertTrue(result.stdout.startswith("x9say TEXT — X9bus system voice"))
+        self.assertTrue(result.stdout.startswith("x9say TEXT — X9Bus system voice"))
         for word in ("Carina", "1.0", "CS_SAY_VOICE", "CS_SAY_SPEED", "CS_SAY_TTS_VENDOR"):
             self.assertIn(word, result.stdout)
 

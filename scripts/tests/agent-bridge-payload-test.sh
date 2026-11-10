@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
-PAYLOAD="$WORKDIR/X9bus.app/Contents/Resources/agent-bridge"
+PAYLOAD="$WORKDIR/X9Bus.app/Contents/Resources/agent-bridge"
 
 "$ROOT/scripts/build-app.sh" --stage-agent-bridge "$PAYLOAD" 9.8.7
 FIRST_MANIFEST="$(shasum -a 256 "$PAYLOAD/manifest.json" | awk '{print $1}')"

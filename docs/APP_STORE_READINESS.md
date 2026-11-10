@@ -234,7 +234,7 @@ Apple Distribution identity and a sandboxed build profile that do not exist yet)
 codesign --force --options runtime \
   --entitlements scripts/entitlements.appstore-basic.plist \
   --sign "Apple Distribution: <Team Name> (<TEAMID>)" \
-  X9bus.app/Contents/MacOS/<each-nested-dylib>     # then the .app last
+  X9Bus.app/Contents/MacOS/<each-nested-dylib>     # then the .app last
 
 # 2. Build the installer package for the store:
 productbuild --component codescribe.app /Applications \

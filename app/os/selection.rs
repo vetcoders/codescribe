@@ -457,10 +457,10 @@ fn normalized_app_name(app_name: Option<String>) -> Option<String> {
 
 /// The names this process answers to. macOS reports the localized product
 /// name `x9bus` as `NSRunningApplication.localizedName` (InfoPlist.xcstrings
-/// with `LSHasLocalizedDisplayName`); the raw bundle name is `X9bus`, and
+/// with `LSHasLocalizedDisplayName`); the raw bundle name is `X9Bus`, and
 /// `Codescribe` is the frontmost-app name the controller reports when its own
 /// overlay arms a deferred paste (`app/controller/mod.rs`). All are this app.
-const SELF_APP_NAMES: [&str; 3] = ["x9bus", "X9bus", "Codescribe"];
+const SELF_APP_NAMES: [&str; 3] = ["x9bus", "X9Bus", "Codescribe"];
 
 /// Whether this app name is this app itself (the localized name of **this
 /// process**). One owner for the whole crate: the capture latch skips its own
