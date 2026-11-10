@@ -111,7 +111,9 @@ final class OverlayIntercomConversationAdmissionTests: XCTestCase {
     attachment.lifetime = .keepAlways
     add(attachment)
     let request = VNRecognizeTextRequest()
-    request.recognitionLevel = .accurate
+    // These assertions only need phrase presence; fast mode keeps three
+    // offscreen scale renders under the suite's per-test time ceiling.
+    request.recognitionLevel = .fast
     request.usesLanguageCorrection = false
     try VNImageRequestHandler(cgImage: cgImage).perform([request])
     let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(
