@@ -3079,26 +3079,59 @@ private struct OverlayIntercomMessagePreview: View {
               .accessibilityIdentifier("overlay-intercom-message-route")
           }
           // The card's height is the user's gesture, not a multiple of a
-          // line. The text takes the whole lines that fit and leaves the rest
-          // empty, so the last visible line is never cut through its letters.
+          // line. Anchor top-aligned whole lines with tail truncation instead
+          // of a ScrollView so a 1-line preview never scrolls to a half-line
+          // offset or paints a vertical scroller knob, and render attachments
+          // as a single baseline text line instead of a 26 pt capsule.
           GeometryReader { proxy in
-            let hasProse = !message.bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ScrollView {
-              OverlayConversationMessageContent(message: message, palette: palette)
+            let lineCount = Self.wholeLineCount(available: proxy.size.height, scale: textScale)
+            let prose = Self.flattenedPreviewProse(message.bodyText)
+            let hasProse = !prose.isEmpty
+            let attachments = message.attachments ?? []
+            let hasAttachments = !attachments.isEmpty
+            let showsAttachmentLine = hasAttachments && (!hasProse || lineCount > 1)
+            let proseLineLimit =
+              hasProse && showsAttachmentLine ? max(1, lineCount - 1) : lineCount
+            let fontSize = OverlayConversationMessageContent.bodyFontSize * textScale
+            VStack(alignment: .leading, spacing: Self.proseLineSpacing) {
+              if hasProse {
+                let attributed = MarkdownText.inlineAttributed(
+                  prose,
+                  fontSize: fontSize,
+                  baseFont: CSFont.ui(fontSize),
+                  baseColor: palette.primaryText.color
+                )
+                Text(attributed)
+                  .lineSpacing(Self.proseLineSpacing)
+                  .lineLimit(proseLineLimit)
+                  .truncationMode(.tail)
+                  .frame(maxWidth: .infinity, alignment: .leading)
+                  .accessibilityIdentifier("overlay-conversation-text-\(message.id)")
+              }
+              if showsAttachmentLine {
+                HStack(spacing: 4) {
+                  Image(systemName: "paperclip")
+                    .font(
+                      .system(
+                        size: max(
+                          10, (OverlayConversationMessageContent.bodyFontSize - 2) * textScale),
+                        weight: .medium)
+                    )
+                    .foregroundStyle(palette.mutedText.color)
+                  Text(verbatim: Self.attachmentSummary(attachments))
+                    .font(CSFont.ui(fontSize))
+                    .foregroundStyle(palette.primaryText.color)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("overlay-conversation-attachments-\(message.id)")
+              }
             }
-            .csAutohidingScrollers()
-            // The frame holds whole lines only while the offset does too: a
-            // scroll comes to rest on a line boundary, and a new message
-            // starts from its first line instead of inheriting the offset.
-            .scrollTargetBehavior(
-              OverlayIntercomWholeLineScroll(pitch: Self.linePitch(scale: textScale))
-            )
             .id(message.id)
             .frame(
-              height: hasProse
-                ? Self.wholeLinesHeight(available: proxy.size.height, scale: textScale)
-                : max(0, proxy.size.height),
+              width: max(0, proxy.size.width),
+              height: Self.wholeLinesHeight(available: proxy.size.height, scale: textScale),
               alignment: .topLeading
             )
             .clipped()
@@ -3123,25 +3156,43 @@ private struct OverlayIntercomMessagePreview: View {
     return ceil(NSLayoutManager().defaultLineHeight(for: font)) + proseLineSpacing
   }
 
+  /// Number of whole baseline lines that fit in `available`.
+  static func wholeLineCount(available: CGFloat, scale: CGFloat) -> Int {
+    let pitch = linePitch(scale: scale)
+    return max(1, Int(floor((available + proseLineSpacing) / pitch)))
+  }
+
   /// The last line needs no spacing after it. One line always stays.
   static func wholeLinesHeight(available: CGFloat, scale: CGFloat) -> CGFloat {
     let pitch = linePitch(scale: scale)
-    let lines = max(1, floor((available + proseLineSpacing) / pitch))
+    let lines = CGFloat(wholeLineCount(available: available, scale: scale))
     return lines * pitch - proseLineSpacing
   }
-}
 
-/// Rests a scroll on a prose line boundary. Paragraph gaps and code blocks do
-/// not share the pitch, so a long rich message is aligned from its first line
-/// and may drift by a few points further down.
-private struct OverlayIntercomWholeLineScroll: ScrollTargetBehavior {
-  let pitch: CGFloat
+  /// Collapses block-level markdown headings and blank lines into uniform-pitch
+  /// preview lines so no heading top-padding or paragraph gap shifts a line onto
+  /// the clip edge.
+  static func flattenedPreviewProse(_ raw: String) -> String {
+    let bounded =
+      OversizedBubblePolicy.isOversized(raw) ? OversizedBubblePolicy.head(of: raw) : raw
+    let lines =
+      bounded
+      .components(separatedBy: .newlines)
+      .map { line -> String in
+        var trimmed = line.trimmingCharacters(in: .whitespaces)
+        while trimmed.hasPrefix("#") {
+          trimmed.removeFirst()
+        }
+        return trimmed.trimmingCharacters(in: .whitespaces)
+      }
+      .filter { !$0.isEmpty }
+    return lines.joined(separator: "\n")
+  }
 
-  func updateTarget(_ target: inout ScrollTarget, context: TargetContext) {
-    guard pitch > 0 else { return }
-    let rawLimit = max(0, context.contentSize.height - context.containerSize.height)
-    let limit = floor(rawLimit / pitch) * pitch
-    target.rect.origin.y = min(limit, max(0, (target.rect.origin.y / pitch).rounded() * pitch))
+  static func attachmentSummary(_ attachments: [OverlayMessageAttachment]) -> String {
+    attachments
+      .map { ConversationAttachmentLabel.display(fileName: $0.name, bytes: $0.bytes) }
+      .joined(separator: ", ")
   }
 }
 

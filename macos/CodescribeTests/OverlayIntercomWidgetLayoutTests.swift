@@ -1325,5 +1325,22 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     let agentMenu = roster.intercomContextMenu(for: "2", showsInlineError: false)
     XCTAssertFalse(agentMenu.isBroadcast)
     XCTAssertEqual(agentMenu.members.map(\.channel), ["2"])
+
+    let url = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent().deletingLastPathComponent()
+      .appendingPathComponent("Codescribe/Screens/Overlay/OverlayIntercomWidget.swift")
+    let source = try String(contentsOf: url, encoding: .utf8)
+    let previewStart = try XCTUnwrap(
+      source.range(of: "private struct OverlayIntercomMessagePreview: View {"))
+    let previewEnd = try XCTUnwrap(
+      source.range(
+        of: "private struct OverlayIntercomNameLine: View {",
+        range: previewStart.upperBound..<source.endIndex))
+    let previewSection = String(source[previewStart.lowerBound..<previewEnd.lowerBound])
+    XCTAssertFalse(
+      previewSection.contains("ScrollView {"),
+      "Compact fiszka preview must anchor top lines with lineLimit instead of scrolling")
+    XCTAssertTrue(previewSection.contains(".lineLimit(proseLineLimit)"))
+    XCTAssertTrue(previewSection.contains("Self.attachmentSummary(attachments)"))
   }
 }
