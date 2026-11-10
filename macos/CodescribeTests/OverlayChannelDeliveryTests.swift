@@ -2941,7 +2941,7 @@ final class OverlayChannelDeliveryTests: XCTestCase {
     XCTAssertFalse(header.contains("!state.isCollapsed"))
     let drag = try XCTUnwrap(header.range(of: "OverlayWindowDragRegion"))
     let glass = try XCTUnwrap(
-      header.range(of: "OverlayControlGlass(")
+      header.range(of: "OverlayControlGlass.header(for: state.presentationMode)")
     )
     XCTAssertLessThan(drag.lowerBound, glass.lowerBound)
     let status = try String(
@@ -4876,6 +4876,106 @@ final class OverlayChannelDeliveryTests: XCTestCase {
       "opened_at": "2026-10-29T21:00:00Z",
     ])
     XCTAssertNil(bus.activeCaptureAttachmentSessions.first(where: { $0.channel == "7" }))
+  }
+
+  func testFounderNavigationAndFiszkiCoexistenceContract() throws {
+    let suite = "CodescribeTests.founder-navigation.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+
+    let state = OverlayState()
+    let preference = OverlayChannelMapPreference(defaults: defaults)
+    preference.selectMode(.vertical)
+    state.channelMapPreference = preference
+    let broadcast = OverlayConversation(
+      id: "0", channel: "0", name: "All", owner: nil, messages: [])
+    state.applyConversationSnapshot(.init(deliveries: [], conversations: [broadcast]))
+
+    let panel = NSPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 470, height: 320),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    panel.isReleasedWhenClosed = false
+    defer { panel.close() }
+
+    var frontOrders = 0
+    var outOrders = 0
+    let controller = OverlayController(
+      state: state,
+      intercomDesktopStore: OverlayIntercomDesktopStore(defaults: defaults),
+      overlayEnabledProvider: { true },
+      assistiveStatusProvider: { false },
+      panelFactory: { _, _ in panel },
+      orderPanelFront: { _ in frontOrders += 1 },
+      orderPanelOut: { _ in outOrders += 1 }
+    )
+    controller.startIntercomPresentation()
+    defer { controller.stopIntercomPresentation() }
+
+    // 1. Coexistence: Transcription overlay (mini, midi, and expanded) coexists with Fiszki.
+    controller.show()
+    XCTAssertEqual(state.windowContentSurface, .transcription)
+    XCTAssertTrue(state.intercomWidgetIsVisible)
+    state.showTranscription()
+    XCTAssertEqual(state.presentationMode, .expanded)
+    XCTAssertEqual(state.windowContentSurface, .transcription)
+    XCTAssertTrue(
+      state.intercomWidgetIsVisible,
+      "Expanded Transcription overlay coexists with Fiszki"
+    )
+
+    // 2. Switching to the Agents view hides Fiszki (Agents and Fiszki never coexist).
+    state.showAgentMonitor()
+    XCTAssertEqual(state.windowContentSurface, .agents)
+    XCTAssertEqual(state.presentationMode, .expanded)
+    XCTAssertFalse(
+      state.intercomWidgetIsVisible,
+      "Agents view and Fiszki must never be simultaneously visible"
+    )
+
+    // 3. Clicking the main bar from Agents collapses the overlay to mini and does NOT switch to Fiszki.
+    let outOrdersBeforeHeaderClick = outOrders
+    state.advancePresentationFromHeader()
+    XCTAssertEqual(state.presentationMode, .mini)
+    XCTAssertEqual(state.windowContentSurface, .agents)
+    XCTAssertEqual(outOrders, outOrdersBeforeHeaderClick, "Main overlay stays presented in mini")
+    XCTAssertFalse(
+      state.intercomWidgetIsVisible,
+      "Header click from Agents collapses to mini without switching to Fiszki"
+    )
+
+    // 4. Re-expanding Agents and using the whole-widget collapse control also collapses to mini without Fiszki.
+    state.advancePresentationFromHeader()
+    XCTAssertEqual(state.presentationMode, .expanded)
+    XCTAssertEqual(state.windowContentSurface, .agents)
+    state.toggleCollapsed()
+    XCTAssertEqual(state.presentationMode, .mini)
+    XCTAssertEqual(state.windowContentSurface, .agents)
+    XCTAssertEqual(outOrders, outOrdersBeforeHeaderClick)
+    XCTAssertFalse(
+      state.intercomWidgetIsVisible,
+      "Whole-widget collapse from Agents collapses to mini without switching to Fiszki"
+    )
+
+    // 5. Using the dedicated Fiszki entry hides the main overlay and shows Fiszki.
+    state.onRevealIntercom?()
+    XCTAssertTrue(state.intercomWidgetIsVisible, "Dedicated Fiszki entry reveals Fiszki")
+    XCTAssertGreaterThan(outOrders, outOrdersBeforeHeaderClick, "Main overlay is ordered out")
+
+    // 6. Re-opening the Agents view hides Fiszki; closing the main overlay enters Fiszki.
+    state.showAgentMonitor()
+    controller.show()
+    XCTAssertFalse(state.intercomWidgetIsVisible)
+    controller.dismiss()
+    XCTAssertTrue(state.intercomWidgetIsVisible, "Closing the main overlay enters Fiszki")
+
+    // 7. Explicit Close on Fiszki closes the Fiszki surface until re-summoned.
+    controller.dismissIntercom()
+    XCTAssertTrue(controller.intercomDismissed)
+    XCTAssertFalse(state.intercomWidgetIsVisible, "Close on Fiszki closes the Fiszki surface")
+    state.onRevealIntercom?()
+    XCTAssertFalse(controller.intercomDismissed)
+    XCTAssertTrue(state.intercomWidgetIsVisible)
+    _ = frontOrders
   }
 
   private struct Fixture {

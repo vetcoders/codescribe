@@ -109,6 +109,7 @@ final class OverlayController: ObservableObject {
   private var panel: NSPanel?
   private var intercomWidget: OverlayIntercomWidgetController?
   private var intercomPresentationStarted = false
+  private(set) var intercomDismissed = false
   private let intercomDesktopStore: OverlayIntercomDesktopStore
   private let overlayEnabledProvider: () -> Bool
   private let assistiveStatusProvider: () -> Bool
@@ -366,22 +367,23 @@ final class OverlayController: ObservableObject {
   private func syncIntercomPresentation(overlayEnabled: Bool) {
     guard intercomPresentationStarted else { return }
     let preference = state.channelMapPreference
-    // One presentation owner: the full Agents canvas and its floating views
-    // are alternatives, not two concurrent projections on the desktop.
-    let showsExpandedMainCanvas =
-      panelPresented && state.presentationMode == .expanded
-    let wantsWidget =
-      preference.enabled && preference.layout == .vertical && overlayEnabled && !showsExpandedMainCanvas
-    if wantsWidget, panelPresented, state.windowContentSurface == .agents {
-      // A compact Agents widget is replaced by the floating presentation.
-      // orderOut clears panelPresented before re-entering this same owner.
-      orderOut()
-      return
+    let verticalEnabled =
+      preference.enabled && preference.layout == .vertical && overlayEnabled
+    if !verticalEnabled {
+      intercomDismissed = false
     }
+    // Coexistence contract (FOUNDER-NAVIGATION-20261110): Fiszki may coexist
+    // with the Transcription overlay across mini, midi, and expanded, but
+    // never with the Agents overlay (whether expanded or collapsed to mini/midi).
+    let showsAgentsOverlay =
+      panelPresented && state.windowContentSurface == .agents
+    let wantsWidget =
+      verticalEnabled && !showsAgentsOverlay && !intercomDismissed
     if wantsWidget, intercomWidget == nil {
       intercomWidget = OverlayIntercomWidgetController(
         state: state, textScale: intercomTextScale,
         revealConversation: { [weak self] in self?.show(preserveVisiblePosition: true) },
+        closeIntercom: { [weak self] in self?.dismissIntercom() },
         desktopStore: intercomDesktopStore)
     }
     // The middle-click chooser lives where the agents do: on the Intercom
@@ -401,10 +403,17 @@ final class OverlayController: ObservableObject {
   /// Dismissal hides a projection; it never stops capture or closes a draft.
   private func showIntercom() {
     guard intercomPresentationStarted else { return }
+    intercomDismissed = false
     readOverlayPreference()
     state.selectConversation(nil, expand: false)
     dismiss()
     intercomWidget?.revealGroup()
+  }
+
+  func dismissIntercom() {
+    guard intercomPresentationStarted else { return }
+    intercomDismissed = true
+    syncIntercomPresentation(overlayEnabled: state.transcriptOverlayEnabled)
   }
 
   /// Window-side interactions the state cannot see: a hidden panel, an edge
@@ -422,6 +431,7 @@ final class OverlayController: ObservableObject {
   /// An explicit Tray entry uses the same cached panel and leaves capture,
   /// transcript selection, drafts and recording preferences with their owners.
   func showWidget() {
+    intercomDismissed = false
     readOverlayPreference()
     if panel?.isVisible != true {
       if state.isVerticalIntercom, state.windowContentSurface == .agents {
@@ -501,6 +511,7 @@ final class OverlayController: ObservableObject {
   /// the ordinary countdown closes the panel, which the pin no longer holds.
   func overlayPreferenceChanged() {
     let enabled = readOverlayPreference()
+    if enabled { intercomDismissed = false }
     // Intercom can stand on its own before the main panel has ever existed.
     syncIntercomPresentation(overlayEnabled: enabled)
     guard !enabled, panel != nil else { return }
@@ -709,6 +720,7 @@ final class OverlayController: ObservableObject {
   }
 
   private func resizeForProjectedContent() {
+    syncIntercomPresentation(overlayEnabled: state.transcriptOverlayEnabled)
     guard let panel else { return }
     if (panel as? FloatingOverlayPanel)?.isUserResizing == true {
       contentSizeAfterUserResize = true
@@ -811,6 +823,7 @@ final class OverlayController: ObservableObject {
   /// `session_ended` ever closed (Founder, 2026-09-29: the close button did
   /// not react). New channel evidence may show the panel again.
   func dismiss() {
+    intercomDismissed = false
     orderOut()
   }
 

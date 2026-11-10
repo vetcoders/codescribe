@@ -11,6 +11,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   @ObservationIgnored private let state: OverlayState
   @ObservationIgnored private let textScale: TextScaleController
   @ObservationIgnored private let revealConversation: () -> Void
+  @ObservationIgnored private let closeIntercomAction: (() -> Void)?
   @ObservationIgnored private let desktopStore: OverlayIntercomDesktopStore
   @ObservationIgnored private let diagnosticLog: DiagnosticLog?
   @ObservationIgnored private let idleNow: () -> TimeInterval
@@ -115,6 +116,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
   init(
     state: OverlayState, textScale: TextScaleController,
     revealConversation: @escaping () -> Void = {},
+    closeIntercom: (() -> Void)? = nil,
     desktopStore: OverlayIntercomDesktopStore = OverlayIntercomDesktopStore(),
     diagnosticLog: DiagnosticLog? = nil,
     idleNow: @escaping () -> TimeInterval = { Date.timeIntervalSinceReferenceDate },
@@ -124,6 +126,7 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     self.state = state
     self.textScale = textScale
     self.revealConversation = revealConversation
+    self.closeIntercomAction = closeIntercom
     self.desktopStore = desktopStore
     self.diagnosticLog = diagnosticLog
     self.idleNow = idleNow
@@ -1095,6 +1098,14 @@ final class OverlayIntercomWidgetController: NSObject, NSWindowDelegate {
     revealConversation()
   }
 
+  func closeIntercom() {
+    if let closeIntercomAction {
+      closeIntercomAction()
+    } else {
+      setVisible(false, relativeTo: nil)
+    }
+  }
+
   private func raisePresentedGroup() {
     for identity in presentation.frontOrder(groupIdentities) {
       if let panel = cards[identity], panel.isPresented { panel.orderFrontRegardless() }
@@ -1768,7 +1779,7 @@ private struct OverlayIntercomHeader: View {
         Spacer(minLength: IntercomHeaderMetrics.spacerMinimum)
           .background(OverlayResizeAnchor())
         Button {
-          controller.openMainWindow(surface: .agents)
+          if let broadcast { controller.openMailbox(broadcast.id) }
         } label: {
           Text(verbatim: chips.count.formatted()).csMono(10)
             .scaleEffect(isCountHovered ? 1.24 : 1.0)
@@ -1777,14 +1788,15 @@ private struct OverlayIntercomHeader: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(broadcast == nil)
         .onHover { isCountHovered = $0 }
         .conversationActionHover(
           restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
         )
-        .accessibilityLabel(String(localized: "Agents"))
+        .accessibilityLabel(String(localized: "Shared conversation"))
         .accessibilityValue(Text(verbatim: chips.count.formatted()))
         .accessibilityIdentifier("overlay-intercom-header-count")
-        .help(String(localized: "Agents"))
+        .help(String(localized: "Shared conversation"))
       }
       if controller.headerNeedsPaging {
         Button("Previous agents", systemImage: "chevron.up") { controller.scrollGroup(-1) }
@@ -1800,6 +1812,21 @@ private struct OverlayIntercomHeader: View {
         speaking: broadcast?.replySpeaking == true
       )
       .frame(width: metrics.audioWidth)
+      Button {
+        controller.closeIntercom()
+      } label: {
+        Image(systemName: "xmark")
+          .font(.system(size: 10 * scale, weight: .semibold))
+          .frame(width: metrics.closeWidth, height: metrics.controlHeight)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .conversationActionHover(
+        restingColor: palette.mutedText.color, hoverColor: palette.primaryText.color
+      )
+      .accessibilityLabel(String(localized: "Close"))
+      .accessibilityIdentifier("overlay-intercom-close")
+      .help(String(localized: "Close"))
     }
     .foregroundStyle(palette.mutedText.color)
     .padding(.horizontal, content.horizontalInset)
@@ -1918,6 +1945,11 @@ private struct OverlayIntercomHeader: View {
       openWindow.presentSettings()
     }
     .accessibilityIdentifier("overlay-intercom-settings")
+    Divider()
+    Button(String(localized: "Close"), systemImage: "xmark") {
+      controller.closeIntercom()
+    }
+    .accessibilityIdentifier("overlay-intercom-menu-close")
   }
 
   private func mailboxMenuItem(
@@ -2262,6 +2294,14 @@ private struct OverlayIntercomCard: View {
               .onTapGesture {
                 if canOpenConversation { controller.expand(identity) }
               }
+              .modifier(
+                OverlayRosterMessageHint(
+                  conversation: conversation, palette: palette, textScale: scale,
+                  isOpen: expanded || controller.desktop.openInstance(for: identity) != nil,
+                  onOpen: { if canOpenConversation { controller.expand(identity) } },
+                  dot: identity.digit == "0"
+                    ? .broadcast : (channelRow.map { roster.presenceDotKind(for: $0) } ?? .idle))
+              )
               .contextMenu {
                 if let message = conversation?.messages.last {
                   CopyMessageButton(text: message.text, palette: palette)

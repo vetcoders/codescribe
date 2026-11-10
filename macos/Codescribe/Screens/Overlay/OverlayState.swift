@@ -1096,9 +1096,12 @@ final class OverlayState {
         setPresentationMode(presentationMode == .mini ? .midi : .mini)
       }
     case .expanded:
-      setPresentationMode(
-        contract.windowHeaderClickRestoresCompactForm
-          ? autoCollapse.restoreMode ?? .midi : .midi)
+      if contract.windowHeaderClickRestoresCompactForm {
+        setPresentationMode(
+          windowContentSurface == .agents ? .mini : (autoCollapse.restoreMode ?? .mini))
+      } else {
+        setPresentationMode(.midi)
+      }
     }
   }
 
@@ -1828,7 +1831,7 @@ final class OverlayState {
     let old = conversationDraft(for: target.id)
     let merged = Self.mergeReturnedComposerDraft(
       existing: old, returnedText: text, returnedAttachments: attachments)
-    setConversationDraft(merged, for: target.id)
+    setPrivateConversationDraft(merged, for: target.id)
     if conversationReplies[target.id] == nil, let reply {
       conversationReplies[target.id] = reply
     }
@@ -3588,7 +3591,7 @@ final class OverlayState {
 
   private func returnHeldSendToComposer(_ send: OverlayHeldSend) {
     let current = conversationDraft(for: send.conversationID)
-    setConversationDraft(
+    setPrivateConversationDraft(
       Self.mergeReturnedComposerDraft(existing: current, returnedText: send.text),
       for: send.conversationID)
     if conversationReplies[send.conversationID] == nil, let reply = send.reply {
@@ -4349,7 +4352,7 @@ final class OverlayState {
     guard let staged = captureAttachmentDrafts[id] else { return }
     let draft = ConversationDraft.split(conversationDraft(for: id))
     let added = staged.paths.filter { !draft.attachments.contains($0) }
-    setConversationDraft(
+    setPrivateConversationDraft(
       ConversationDraft.compose(text: draft.text, attachments: draft.attachments + added), for: id
     )
     captureAttachmentDrafts.removeValue(forKey: id)

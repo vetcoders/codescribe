@@ -235,12 +235,13 @@ final class OverlayChromeFounderCutTests: XCTestCase {
       XCTAssertEqual(state.presentationMode, .expanded, "\(mode): the bar opens the window")
       state.advancePresentationFromHeader()
       XCTAssertEqual(state.presentationMode, .midi, "\(mode): the window returns to the bar")
-      // The last full view is remembered across the fold: Agents stays Agents.
+      // The last full view is remembered across the fold: Agents stays Agents
+      // and folds to mini (FOUNDER-NAVIGATION-20261110).
       state.showAgentMonitor()
       XCTAssertEqual(state.presentationMode, .expanded)
       XCTAssertEqual(state.windowContentSurface, .agents)
       state.advancePresentationFromHeader()
-      XCTAssertEqual(state.presentationMode, .midi, "\(mode): Agents folds to the bar it replaced")
+      XCTAssertEqual(state.presentationMode, .mini, "\(mode): Agents folds to mini")
       state.advancePresentationFromHeader()
       XCTAssertEqual(state.presentationMode, .expanded)
       XCTAssertEqual(
