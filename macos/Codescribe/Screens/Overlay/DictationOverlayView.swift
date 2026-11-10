@@ -1735,7 +1735,10 @@ struct DictationOverlayView: View {
   private func conversationHeaderMenu(
     _ conversation: OverlayConversation, roster: OverlayChannelStatusView
   ) -> OverlayBroadcastPolicyMenu? {
-    conversationHeaderChannel(conversation, roster: roster).map {
+    if conversation.channel == "0", conversation.owner == nil {
+      return roster.intercomContextMenu(for: "0", showsInlineError: false)
+    }
+    return conversationHeaderChannel(conversation, roster: roster).map {
       roster.agentPillMenu(for: $0.channel, showsInlineError: false)
     }
   }

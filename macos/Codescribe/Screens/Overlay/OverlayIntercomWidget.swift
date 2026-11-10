@@ -1698,22 +1698,77 @@ class OverlayIntercomPanel: NSPanel {
   }
 }
 
-/// The Intercom menu uses a native image because `Menu` drops custom SwiftUI
-/// shapes from its label on macOS.
+/// The Intercom menu keeps `Image(systemName: symbolName)` inside `Menu`'s
+/// label for `NSPopUpButton` sizing, while the visible 2×2 dot matrix renders
+/// in an overlay above `Menu` so AppKit does not strip its rotation or per-dot
+/// ring pulse.
 struct OverlayIntercomDotsGlyph: View {
   static let symbolName = "circle.grid.2x2.fill"
+  /// Clockwise ring order around the 2×2 grid: top-left (0), top-right (1),
+  /// bottom-right (3), bottom-left (2).
+  static let ringOrder = [0, 1, 3, 2]
+  static let stepInterval: TimeInterval = 0.18
+
   let scale: CGFloat
+  var hovered = false
+  var active = false
+  var reduceMotion = false
+
+  static func activeDotIndex(at time: TimeInterval) -> Int {
+    let step = Int(floor(time / stepInterval)).quotientAndRemainder(dividingBy: ringOrder.count)
+      .remainder
+    let normalized = (step + ringOrder.count) % ringOrder.count
+    return ringOrder[normalized]
+  }
 
   var body: some View {
-    Image(systemName: Self.symbolName)
-      .csFont(round(10 * scale), .semibold)
-      .accessibilityHidden(true)
+    TimelineView(.animation(minimumInterval: Self.stepInterval, paused: !active || reduceMotion)) {
+      context in
+      let activeDot =
+        active && !reduceMotion
+        ? Self.activeDotIndex(at: context.date.timeIntervalSinceReferenceDate) : nil
+      let dotSize = round(3.8 * scale)
+      let spacing = round(2.2 * scale)
+      VStack(spacing: spacing) {
+        HStack(spacing: spacing) {
+          dot(index: 0, activeDot: activeDot, size: dotSize)
+          dot(index: 1, activeDot: activeDot, size: dotSize)
+        }
+        HStack(spacing: spacing) {
+          dot(index: 2, activeDot: activeDot, size: dotSize)
+          dot(index: 3, activeDot: activeDot, size: dotSize)
+        }
+      }
+      .rotationEffect(.degrees(hovered && !reduceMotion ? 90 : 0))
+      .scaleEffect(hovered && !reduceMotion ? 1.08 : 1.0)
+      .animation(
+        reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.72),
+        value: hovered
+      )
+    }
+    .accessibilityHidden(true)
+  }
+
+  private func dot(index: Int, activeDot: Int?, size: CGFloat) -> some View {
+    let isLit = activeDot == index
+    let isTrailing =
+      activeDot.map { current in
+        guard let pos = Self.ringOrder.firstIndex(of: current) else { return false }
+        let prev = Self.ringOrder[(pos + Self.ringOrder.count - 1) % Self.ringOrder.count]
+        return prev == index
+      } ?? false
+    return Circle()
+      .frame(width: size, height: size)
+      .scaleEffect(isLit ? 1.32 : (isTrailing ? 1.12 : (active && !reduceMotion ? 0.86 : 1.0)))
+      .opacity(isLit ? 1.0 : (isTrailing ? 0.78 : (active && !reduceMotion ? 0.42 : 1.0)))
+      .animation(reduceMotion ? nil : .easeInOut(duration: Self.stepInterval), value: activeDot)
   }
 }
 
 private struct OverlayIntercomHeader: View {
   @Environment(\.colorScheme) private var colorScheme
   @Environment(\.csTextScale) private var scale
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
   @Environment(\.openWindow) private var openWindow
   let state: OverlayState
@@ -1728,6 +1783,9 @@ private struct OverlayIntercomHeader: View {
     // its existing microphone and reply controls in this header.
     let broadcast = intercomConversation(state: state, digit: "0")
     let inbox = state.conversations.first(where: \.isHumanInbox)
+    let intercomAudioActive = state.conversations.contains {
+      $0.replySpeaking || state.conversationMicrophoneOpen($0)
+    }
     let metrics = controller.headerMetrics
     let content = metrics.content(
       width: controller.groupWidth, paging: controller.headerNeedsPaging)
@@ -1735,24 +1793,35 @@ private struct OverlayIntercomHeader: View {
       Menu {
         intercomMenuActions(broadcast: broadcast, inbox: inbox)
       } label: {
-        OverlayIntercomDotsGlyph(scale: scale)
-          .rotationEffect(.degrees(isMenuHovered ? 180 : 0))
-          .scaleEffect(isMenuHovered ? 0.88 : 1.0)
-          .animation(.easeInOut(duration: 0.5), value: isMenuHovered)
+        Image(systemName: OverlayIntercomDotsGlyph.symbolName)
+          .csFont(round(10 * scale), .semibold)
           .frame(width: metrics.groupWidth, height: metrics.controlHeight)
           .contentShape(Rectangle())
-          .overlay(alignment: .topTrailing) {
-            if [inbox, broadcast].compactMap({ $0 }).contains(where: {
-              state.unreadReplies(in: $0) > 0
-            }) {
-              Circle().fill(palette.primaryText.color).frame(width: 4, height: 4)
-                .accessibilityHidden(true)
-            }
-          }
       }
       .menuStyle(.borderlessButton)
       .menuIndicator(.hidden)
       .fixedSize()
+      .opacity(0.01)
+      .frame(width: metrics.groupWidth, height: metrics.controlHeight)
+      .overlay {
+        OverlayIntercomDotsGlyph(
+          scale: scale,
+          hovered: isMenuHovered,
+          active: intercomAudioActive,
+          reduceMotion: reduceMotion
+        )
+        .foregroundStyle(isMenuHovered ? palette.primaryText.color : palette.bodyText.color)
+        .allowsHitTesting(false)
+      }
+      .overlay(alignment: .topTrailing) {
+        if [inbox, broadcast].compactMap({ $0 }).contains(where: {
+          state.unreadReplies(in: $0) > 0
+        }) {
+          Circle().fill(palette.primaryText.color).frame(width: 4, height: 4)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+      }
       .onHover { isMenuHovered = $0 }
       // Body ink at rest, a few tones above the muted controls beside it
       // at rest; the hover brightens it like every other glyph.
@@ -2321,7 +2390,21 @@ private struct OverlayIntercomCard: View {
               )
               .frame(
                 height: OverlayIntercomWidgetLayout.contextStripHeight(scale: scale),
-                alignment: .top)
+                alignment: .top
+              )
+              .contentShape(Rectangle())
+              .onTapGesture {
+                if canOpenConversation { controller.expand(identity) }
+              }
+              .modifier(
+                OverlayRosterMessageHint(
+                  conversation: conversation, palette: palette, textScale: scale,
+                  isOpen: expanded || controller.desktop.openInstance(for: identity) != nil
+                    || preview?.showsComposer == true,
+                  onOpen: { if canOpenConversation { controller.expand(identity) } },
+                  dot: identity.digit == "0"
+                    ? .broadcast : (channelRow.map { roster.presenceDotKind(for: $0) } ?? .idle))
+              )
             }
           }
           .accessibilitySortPriority(1)
@@ -2410,7 +2493,10 @@ private struct OverlayIntercomCard: View {
     let row = expanded ? IntercomRowControls.all : controller.rowControls
     let contentTier = controller.contentMetrics.cardContent(
       width: controller.groupWidth, cardHeight: controller.groupCardHeight)
-    let hasInlinePreview = contentTier == .preview
+    let hasInlinePreview =
+      controller.contentMetrics.compactPreviewLayout(
+        width: controller.groupWidth, cardHeight: controller.groupCardHeight)?.showsComposer
+      == true
     let hasMessage = conversation?.messages.isEmpty == false
     // A header-only card has no context strip below it, so the metadata joins
     // the name line instead of vanishing with the card height (Maciej,
@@ -2430,9 +2516,7 @@ private struct OverlayIntercomCard: View {
     let nameHint = OverlayHeaderControlChrome(
       title: identity.displayDigit + " · " + name, accent: nil, palette: palette,
       hintLeading: true,
-      showsHint: !expanded && !detached
-        && controller.groupCardHeight <= OverlayIntercomWidgetLayout.controlHeight(scale: scale)
-        && !hasInlinePreview,
+      showsHint: !expanded && !detached && !hasInlinePreview,
       hintContent: hasMessage && targetConversation != nil
         ? AnyView(
           OverlayRosterMessagePreview(
@@ -2548,7 +2632,7 @@ private struct OverlayIntercomCard: View {
       }
       .modifier(
         current && !identity.isHumanInbox
-          ? roster.agentPillMenu(for: identity.digit, showsInlineError: false)
+          ? roster.intercomContextMenu(for: identity.digit, showsInlineError: false)
           : OverlayBroadcastPolicyMenu(members: [], palette: palette, enabled: false))
     } else {
       // Reuse the menu execution, but Write stays in this card.
@@ -2671,7 +2755,7 @@ private struct OverlayIntercomCard: View {
       .modifier(OverlayDisconnectedRowDim(disconnected: !current))
       .modifier(
         current && !identity.isHumanInbox
-          ? roster.agentPillMenu(for: identity.digit, showsInlineError: false)
+          ? roster.intercomContextMenu(for: identity.digit, showsInlineError: false)
           : OverlayBroadcastPolicyMenu(members: [], palette: palette, enabled: false))
     }
   }
@@ -2771,9 +2855,11 @@ private func intercomStatusDot(
 }
 
 /// The roster row behind a fiszka: the bus evidence the list reads.
+/// Channel 0 is the shared broadcast conversation, never a single agent row.
 @MainActor
 private func intercomChannelRow(state: OverlayState, digit: String) -> OverlayChannelDelivery? {
-  state.visibleChannelRows.first { $0.channel == digit }
+  guard digit != "0" else { return nil }
+  return state.visibleChannelRows.first { $0.channel == digit }
 }
 
 /// The list's focus button, drawn flat on the fiszka from the pill menu's
@@ -3556,10 +3642,10 @@ private struct OverlayIntercomInstanceCard: View {
         onHover: { state.hoverAgentGestureTarget($0) })
     )
     // The same right-click menu as the row in the group: Show in Agents,
-    // microphone, playback, archive. A detached fiszka had none.
+    // microphone, playback, archive, or channel 0's broadcast policy menu.
     .modifier(
       current && !instance.isHumanInbox
-        ? roster.agentPillMenu(for: instance.digit, showsInlineError: false)
+        ? roster.intercomContextMenu(for: instance.digit, showsInlineError: false)
         : OverlayBroadcastPolicyMenu(members: [], palette: palette, enabled: false))
   }
 

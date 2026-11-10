@@ -592,10 +592,10 @@ struct OverlayIntercomCardIdentity: Hashable {
   }
 }
 
-/// Which conversation the group opened and whether it is folded. Hover moves
-/// no window: a row that grew under the pointer jutted out of the column and
-/// danced on its own edge; the preview is the click (Maciej, 2026-10-22
-/// 14:27Z, as Olga and the journal relay it: "podgląd dopiero na klik").
+/// Which conversation the group opened and whether it is folded. Hover shows
+/// the floating message preview without resizing the group window; a click on
+/// the row or preview opens the full conversation (Maciej, 2026-10-22 14:19Z
+/// and 14:27Z: hover = preview, click = expand/detach).
 /// Opening selects no capture destination; durable drafts stay in OverlayState.
 struct OverlayIntercomPresentation: Equatable {
   /// A visible card already presents its own draft capture. A main-overlay

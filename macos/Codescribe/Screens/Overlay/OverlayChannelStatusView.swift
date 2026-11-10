@@ -922,6 +922,7 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
   /// Roster rows: sync and the panel jump always live here, and show inline
   /// beside the receipt only when the row is wide enough for the whole name.
   var carriesRowMarks = false
+  var isBroadcast = false
   var focusState: OverlayAgentPanelFocusState? = nil
   @State private var commandError: String?
   @State private var exportOutcome: ThreadExportOutcome?
@@ -945,7 +946,7 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
   }
 
   func body(content: Content) -> some View {
-    if members.isEmpty {
+    if members.isEmpty && !isBroadcast {
       content
     } else {
       VStack(alignment: errorAlignment, spacing: 2) {
@@ -1023,7 +1024,7 @@ struct OverlayBroadcastPolicyMenu: ViewModifier {
       Text(verbatim: commandError)
       Divider()
     }
-    if members.count == 1, let member = members.first {
+    if !isBroadcast, members.count == 1, let member = members.first {
       if !secondaryActionsOnly, let agentActions {
         agentCommands(agentActions)
         Divider()
@@ -1823,7 +1824,7 @@ struct OverlayChannelStatusView: View {
     .modifier(
       inbox
         ? OverlayBroadcastPolicyMenu(members: [], palette: palette, enabled: false)
-        : agentPillMenu(for: digit))
+        : intercomContextMenu(for: digit))
   }
 
   func railPillDisplay(
@@ -2117,6 +2118,20 @@ struct OverlayChannelStatusView: View {
     return String(localized: "Sync draft")
   }
 
+  /// Context menu for an Intercom fiszka row, detached window or rail pill:
+  /// channel 0 exposes the broadcast policy and transcript export menu;
+  /// channels 1–9 expose the per-agent pill menu.
+  func intercomContextMenu(
+    for digit: String, showsInlineError: Bool = true
+  ) -> OverlayBroadcastPolicyMenu {
+    if digit == "0" {
+      return OverlayBroadcastPolicyMenu(
+        members: broadcastMembers, palette: palette, enabled: !unavailable,
+        showsInlineError: showsInlineError, isBroadcast: true)
+    }
+    return agentPillMenu(for: digit, showsInlineError: showsInlineError)
+  }
+
   /// The gap the Bus window's list column leaves under the window header
   /// (`DictationOverlayView.agentDrawerColumn`), above this body.
   static let listColumnTopGap: CGFloat = 8
@@ -2212,7 +2227,8 @@ struct OverlayChannelStatusView: View {
               chrome: true, diameter: OverlayAgentAudioControls.rosterDiameter)
           },
           broadcastPolicy: OverlayBroadcastPolicyMenu(
-            members: broadcastMembers, palette: palette, enabled: !unavailable),
+            members: broadcastMembers, palette: palette, enabled: !unavailable,
+            isBroadcast: true),
           palette: palette)
       }
     } content: { rowFocus in

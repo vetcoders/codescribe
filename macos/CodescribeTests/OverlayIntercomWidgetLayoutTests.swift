@@ -1298,4 +1298,32 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     XCTAssertEqual(hostingCount, 3)
     XCTAssertEqual(sizingResetCount, 3)
   }
+
+  func testIntercomDotsRingPulseAndBroadcastContextMenuContract() throws {
+    let step = OverlayIntercomDotsGlyph.stepInterval
+    XCTAssertEqual(
+      (0..<4).map { OverlayIntercomDotsGlyph.activeDotIndex(at: Double($0) * step + 0.01) },
+      [0, 1, 3, 2],
+      "4-dot header glyph steps clockwise around the 2x2 ring"
+    )
+    let channels = [
+      OverlayChannelDelivery(
+        channel: "0", agent: "All", deliveryID: nil, stage: nil, isOpen: false),
+      OverlayChannelDelivery(
+        channel: "2", agent: "lena", deliveryID: nil, stage: nil, isOpen: false),
+    ]
+    let roster = OverlayChannelStatusView(
+      channels: channels, unavailable: false, palette: .dark, animates: false,
+      hudStates: [
+        "2": OverlayChannelHudProjection(
+          open: false, loud: false, autosealDeadline: nil, followerAlive: true,
+          provider: "agy", providerSessionID: "session-2")
+      ])
+    let broadcastMenu = roster.intercomContextMenu(for: "0", showsInlineError: false)
+    XCTAssertTrue(broadcastMenu.isBroadcast)
+    XCTAssertEqual(broadcastMenu.members.map(\.channel), ["2"])
+    let agentMenu = roster.intercomContextMenu(for: "2", showsInlineError: false)
+    XCTAssertFalse(agentMenu.isBroadcast)
+    XCTAssertEqual(agentMenu.members.map(\.channel), ["2"])
+  }
 }
