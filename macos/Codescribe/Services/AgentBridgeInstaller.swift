@@ -110,7 +110,7 @@ enum AgentBridgeInstallationError: LocalizedError {
       )
     case .payloadUnavailable:
       return String(
-        localized: "The app bundle does not contain the x9bus agent bridge payload."
+        localized: "The app bundle does not contain the X9Bus agent bridge payload."
       )
     case .invalidManifest(let reason):
       return String(
@@ -119,7 +119,7 @@ enum AgentBridgeInstallationError: LocalizedError {
       )
     case .conflict(let path, let reason):
       return String(
-        localized: "x9bus will not overwrite \(path): \(reason)",
+        localized: "X9Bus will not overwrite \(path): \(reason)",
         comment: "First placeholder is a file path, second a technical diagnostic"
       )
     case .transaction(let reason):

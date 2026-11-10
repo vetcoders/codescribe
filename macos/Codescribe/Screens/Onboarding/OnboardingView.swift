@@ -92,7 +92,7 @@ struct OnboardingView: View {
         CSColor.chromeAccent,
         String(
           localized: LocalizedStringResource(
-            "What language should x9bus use?", locale: locale,
+            "What language should X9Bus use?", locale: locale,
             comment: "First setup step heading")),
         String(
           localized: LocalizedStringResource(
@@ -204,7 +204,7 @@ struct OnboardingView: View {
           CSColor.chromeAccent,
           String(
             localized: LocalizedStringResource(
-              "x9bus is ready.", locale: locale, comment: "Setup chapter heading")),
+              "X9Bus is ready.", locale: locale, comment: "Setup chapter heading")),
           summary
         )
       }
@@ -226,7 +226,7 @@ struct OnboardingView: View {
         CSColor.secondaryInk,
         String(
           localized: LocalizedStringResource(
-            "x9bus is not ready yet.", locale: locale,
+            "X9Bus is not ready yet.", locale: locale,
             comment: "Setup chapter heading when something required for transcription is missing")),
         summary
       )

@@ -676,7 +676,7 @@ final class SettingsChromeContractTests: XCTestCase {
       "sent; the conversation lasts until you hang up": "wysłane; rozmowa trwa do rozłączenia",
       "sent and hung up": "wysłane i rozłączone",
       "Silence limit in hands-free dictation": "Limit ciszy w dyktowaniu bez trzymania",
-      "Hold before sending to x9bus": "Czas na korektę przed wysłaniem (x9bus)",
+      "Hold before sending to X9Bus": "Czas na korektę przed wysłaniem (X9Bus)",
       "The API key was rejected, so there is no model list. The account remains saved.":
         "Klucz API został odrzucony, więc lista modeli jest niedostępna. Konto pozostaje zapisane.",
     ]
@@ -1069,7 +1069,7 @@ final class SettingsChromeContractTests: XCTestCase {
       "Awaits first run": "Oczekuje na uruchomienie",
       "Detected": "Wykryto",
       "Needs repair": "Wymaga naprawy",
-      "Built-in x9bus tool": "Wbudowane narzędzie x9bus",
+      "Built-in X9Bus tool": "Wbudowane narzędzie X9Bus",
       "tool: %@ · source: %@": "narzędzie: %1$@ · źródło: %2$@",
       "capability.tier.native": "Natywne",
       "capability.tier.enhanced": "Rozszerzone",
@@ -1468,7 +1468,7 @@ final class SettingsChromeContractTests: XCTestCase {
     let sources = try settingsSources()
     let panel = try XCTUnwrap(sources["UserPanel.swift"])
     XCTAssertTrue(panel.contains("SettingsSection.user.title,"))
-    XCTAssertTrue(panel.contains("\"Your license, x9bus version, local data and privacy.\""))
+    XCTAssertTrue(panel.contains("\"Your license, X9Bus version, local data and privacy.\""))
     // The license is a section of this pane, first in the column, not a tab.
     XCTAssertTrue(panel.contains("LicenseSection(model: model)"))
     XCTAssertFalse(sources.keys.contains("LicensePanel.swift"), "License is no longer a pane")
@@ -1478,7 +1478,7 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(panel.contains("model.onCheckForUpdates()"))
     XCTAssertTrue(panel.contains(".disabled(!model.canCheckForUpdates)"))
     // One version line; commit and build date only under Version details.
-    XCTAssertTrue(panel.contains("Text(verbatim: \"x9bus \\(model.buildInfo.version)\")"))
+    XCTAssertTrue(panel.contains("Text(verbatim: \"X9Bus \\(model.buildInfo.version)\")"))
     XCTAssertTrue(panel.contains("\"Build \\(model.buildInfo.build)\""))
     XCTAssertTrue(panel.contains("@State private var showingVersionDetails = false"))
     XCTAssertTrue(panel.contains("if showingVersionDetails {"))
@@ -1566,8 +1566,8 @@ final class SettingsChromeContractTests: XCTestCase {
     let polish = try polishCatalog()
     let expected: [String: String] = [
       "User": "Użytkownik",
-      "Your license, x9bus version, local data and privacy.":
-        "Twoja licencja, wersja x9bus, lokalne dane i prywatność.",
+      "Your license, X9Bus version, local data and privacy.":
+        "Twoja licencja, wersja X9Bus, lokalne dane i prywatność.",
       "Version": "Wersja",
       "Check for Updates…": "Sprawdź uaktualnienia…",
       "Build %@": "Kompilacja %@",
@@ -1757,8 +1757,8 @@ final class SettingsChromeContractTests: XCTestCase {
     let polish = try polishCatalog()
     let expected: [String: String] = [
       "Appearance": "Wygląd",
-      "Follow macOS, or keep x9bus light or dark on its own.":
-        "Podążaj za macOS albo trzymaj x9bus na stałe w jasnym lub ciemnym.",
+      "Follow macOS, or keep X9Bus light or dark on its own.":
+        "Podążaj za macOS albo trzymaj X9Bus na stałe w jasnym lub ciemnym.",
       "System": "System", "Light": "Jasny", "Dark": "Ciemny",
       "Panel shade, dark": "Odcień panelu, ciemny", "Panel shade, light": "Odcień panelu, jasny",
       // "Today" already lived in the catalog (thread rail) as "Dzisiaj"; one key, one word.
@@ -1887,7 +1887,7 @@ final class SettingsChromeContractTests: XCTestCase {
     let unknownBranch = license[unknown.upperBound..<noKey.lowerBound]
     XCTAssertTrue(unknownBranch.contains("problemBlock"))
     XCTAssertFalse(unknownBranch.contains("keyEditor("))
-    XCTAssertTrue(license.contains("\"x9bus Agent\""))
+    XCTAssertTrue(license.contains("\"X9Bus Agent\""))
     XCTAssertFalse(license.contains("license.mode.agent"))
     XCTAssertFalse(license.contains("license.offer.agentLifetime"))
     // UI-04: the level is the only switch.

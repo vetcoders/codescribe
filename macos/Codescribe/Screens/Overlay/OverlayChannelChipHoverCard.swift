@@ -108,6 +108,7 @@ struct OverlayChannelChipHoverCard: View {
 
   static let padding: CGFloat = 10
   static let lineSpacing: CGFloat = 4
+  static let replyPreviewLineLimit = 3
   static let symbolWidth: CGFloat = 14
   static let symbolGap: CGFloat = 5
   static let trailingGap: CGFloat = 8
@@ -459,8 +460,8 @@ struct OverlayChannelChipHoverCard: View {
   }
 
   /// A line's width unwrapped: what the card grows to, up to the ceiling.
-  /// The reply's time and preview stand on one line; past the ceiling the
-  /// preview is cut rather than wrapped.
+  /// The reply's time and preview share the available width; the preview may
+  /// wrap up to `replyPreviewLineLimit` lines without widening the card.
   @MainActor
   static func naturalWidth(_ line: Line) -> CGFloat {
     let text = textWidth(words(line))
@@ -470,12 +471,19 @@ struct OverlayChannelChipHoverCard: View {
   }
 
   /// A line's height with its words wrapped within the card's content
-  /// width; the reply's one line; the header at least its badge.
+  /// width; the reply's preview wraps within its line budget; the header at
+  /// least its badge.
   @MainActor
   static func height(_ line: Line, within content: CGFloat) -> CGFloat {
     switch line.kind {
     case .reply:
-      return oneLine(font(line))
+      let one = oneLine(font(line))
+      guard let preview = line.detail, !preview.isEmpty else { return one }
+      let available = content - symbolsWidth(line) - textWidth(words(line)) - symbolGap
+      let previewWords = NSAttributedString(string: preview, attributes: [.font: font(line)])
+      return min(
+        wrappedHeight(previewWords, font(line), within: available),
+        CGFloat(replyPreviewLineLimit) * one)
     case .header:
       let column = content - symbolsWidth(line) - marksWidth(line)
       let text = wrappedHeight(words(line), font(line, weight: .semibold), within: column)
@@ -521,11 +529,9 @@ struct OverlayChannelChipHoverCard: View {
   }
 }
 
-/// The agent's last reply on the hover card: the arrow, its time and one
-/// line of the roster's preview (`OverlayChannelStatusView.drawerPreview`),
-/// cut with an ellipsis as the roster row cuts it. A preview, not a label,
-/// so the card's no-cut rule does not apply; its own view, so the line can
-/// leave the card on its own (Monika, 2026-11-07: to be judged in use).
+/// The agent's last reply on the hover card: the arrow, its time and up to
+/// three lines of the roster's preview (`OverlayChannelStatusView.drawerPreview`).
+/// Longer replies end with an ellipsis at the card's measured height.
 struct OverlayChipHoverCardPreviewLine: View {
   let line: OverlayChannelChipHoverCard.Line
   let palette: OverlayAppearancePalette
@@ -547,8 +553,9 @@ struct OverlayChipHoverCardPreviewLine: View {
       if let preview = line.detail {
         Text(verbatim: preview)
           .font(.system(size: line.size))
-          .lineLimit(1)
+          .lineLimit(OverlayChannelChipHoverCard.replyPreviewLineLimit)
           .truncationMode(.tail)
+          .fixedSize(horizontal: false, vertical: true)
       }
     }
     .foregroundStyle(line.tone.color(in: palette))

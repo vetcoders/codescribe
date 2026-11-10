@@ -29,7 +29,7 @@ enum AgentBridgeCommandLine {
   }
 
   private static var usageLine: String {
-    "usage: Codescribe \(installFlag) [\(clientsFlag) <\(clientNames)>]"
+    "usage: \(AppBranding.productName()) \(installFlag) [\(clientsFlag) <\(clientNames)>]"
   }
 
   static func request(arguments: [String]) -> Request {

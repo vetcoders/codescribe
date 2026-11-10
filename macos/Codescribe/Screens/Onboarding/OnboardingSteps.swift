@@ -37,7 +37,7 @@ struct InterfaceLanguageStepView: View {
         Text(
           String(
             localized: LocalizedStringResource(
-              "x9bus will restart in this language and resume setup.",
+              "X9Bus will restart in this language and resume setup.",
               locale: model.interfaceLocale, comment: "Whole-app language application explanation"))
         )
         .font(CSFont.ui(12))
@@ -181,7 +181,7 @@ struct ModeStepView: View {
               comment: "Operating lane choice: dictation without the AI agent")),
           subtitle: String(
             localized: LocalizedStringResource(
-              "You speak, x9bus turns it into text.", locale: model.interfaceLocale,
+              "You speak, X9Bus turns it into text.", locale: model.interfaceLocale,
               comment: "Operating lane choice detail")),
           isSelected: model.onboardingMode == .basic
         ) { model.selectMode(.basic) }
@@ -391,16 +391,16 @@ struct AgenticReadinessStepView: View {
     if model.agentClientIsInstalled(client) {
       return String(
         localized: LocalizedStringResource(
-          "x9bus skill installed", locale: model.interfaceLocale,
+          "X9Bus skill installed", locale: model.interfaceLocale,
           comment:
-            "Detail under a coding-agent card: the x9bus skill is in this client's skills folder"
+            "Detail under a coding-agent card: the X9Bus skill is in this client's skills folder"
         ))
     }
     return String(
       localized: LocalizedStringResource(
-        "Install the x9bus skill", locale: model.interfaceLocale,
+        "Install the X9Bus skill", locale: model.interfaceLocale,
         comment:
-          "Detail under a coding-agent card: Continue installs the x9bus skill for this client"
+          "Detail under a coding-agent card: Continue installs the X9Bus skill for this client"
       ))
   }
 }
@@ -968,7 +968,7 @@ struct DoneStepView: View {
         Text(
           String(
             localized: LocalizedStringResource(
-              "You can close this window. Setup resumes here the next time x9bus starts.",
+              "You can close this window. Setup resumes here the next time X9Bus starts.",
               locale: model.interfaceLocale,
               comment: "Setup Done chapter while not ready: closing keeps setup unfinished"))
         )
@@ -1186,7 +1186,7 @@ struct DoneStepView: View {
       Text(
         String(
           localized: LocalizedStringResource(
-            "Speak normally for about ten seconds while x9bus measures your microphone. The audio is not kept.",
+            "Speak normally for about ten seconds while X9Bus measures your microphone. The audio is not kept.",
             locale: model.interfaceLocale,
             comment: "Setup calibration instruction shown with the Calibrate microphone button"))
       )
@@ -1355,7 +1355,7 @@ extension PermissionKind {
     case .spotifyAutomation:
       return String(
         localized: LocalizedStringResource(
-          "Let x9bus lower Spotify by 70 percent for the whole recording and restore it afterwards. Dictation works without this permission.",
+          "Let X9Bus lower Spotify by 70 percent for the whole recording and restore it afterwards. Dictation works without this permission.",
           locale: locale,
           comment: "Optional Automation grant for Spotify volume control, without pausing playback"))
     }

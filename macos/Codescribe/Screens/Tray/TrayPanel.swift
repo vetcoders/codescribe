@@ -32,8 +32,8 @@ final class TrayPanel: NSPanel, NSWindowDelegate {
     collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
     delegate = self
     title = String(
-      localized: "x9bus menu",
-      comment: "Accessibility title of the menu bar panel; x9bus is the product name"
+      localized: "X9Bus menu",
+      comment: "Accessibility title of the menu bar panel; X9Bus is the product name"
     )
     NotificationCenter.default.addObserver(
       self, selector: #selector(applicationDeactivated),

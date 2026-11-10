@@ -279,8 +279,12 @@ struct IntercomContentMetrics: Equatable, Sendable {
     let available =
       cardHeight - OverlayIntercomWidgetLayout.controlHeight(scale: scale)
       - OverlayIntercomWidgetLayout.contextStripHeight(scale: scale)
+    let minimumBodyHeight =
+      CGFloat(OverlayIntercomWidgetLayout.minimumCompactPreviewBodyLines)
+      * (type.lineHeight + OverlayIntercomWidgetLayout.compactPreviewBodyLineSpacing)
+      - OverlayIntercomWidgetLayout.compactPreviewBodyLineSpacing
     let minimum =
-      type.lineHeight + type.metadataLineHeight
+      minimumBodyHeight + type.metadataLineHeight
       + 2 * OverlayIntercomWidgetLayout.compactPreviewVerticalPadding
       + OverlayIntercomWidgetLayout.compactPreviewSpacing
     guard available >= minimum else { return nil }
@@ -342,6 +346,8 @@ struct IntercomContentMetrics: Equatable, Sendable {
 enum OverlayIntercomWidgetLayout {
   static let compactPreviewVerticalPadding: CGFloat = 4
   static let compactPreviewSpacing: CGFloat = 5
+  static let compactPreviewBodyLineSpacing: CGFloat = 5
+  static let minimumCompactPreviewBodyLines = 3
   static let headerHeight: CGFloat = 30
   static let rowHeight: CGFloat = 30
   /// Tight enough that the stack reads as one list, not a column of buttons.
@@ -353,6 +359,15 @@ enum OverlayIntercomWidgetLayout {
   /// typography so card bodies never build a layout manager for it.
   static func contextStripHeight(scale: CGFloat) -> CGFloat {
     IntercomPreviewTypography.measured(scale: scale).metadataLineHeight + 6
+  }
+
+  /// Keep the last-message hover preview until the inline body has room for a
+  /// readable three-line excerpt. Expanded cards and detached windows own
+  /// their own message surface instead.
+  static func showsRosterMessageHint(
+    expanded: Bool, detached: Bool, hasInlinePreview: Bool
+  ) -> Bool {
+    !expanded && !detached && !hasInlinePreview
   }
 
   /// Below this width a middle-truncated descriptor on the name line stops

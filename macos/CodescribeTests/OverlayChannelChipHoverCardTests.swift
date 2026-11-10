@@ -440,10 +440,9 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
     assertNothingCut(Self.testALines, "Test-A")
   }
 
-  /// A label longer than the ceiling wraps to a second line instead of an
-  /// ellipsis; a reply's long preview stays one line, cut, and never
-  /// widens the card past the ceiling.
-  func testLabelsOverTheCeilingWrapAndThePreviewStaysOneLine() {
+  /// Labels wrap without being cut. Reply previews use up to three lines and
+  /// never widen the card beyond its ceiling.
+  func testLabelsAndReplyPreviewsWrapWithinTheirSeparateBudgets() {
     var lines = Self.tolaLines
     lines[1] = .init(
       kind: .runtime,
@@ -464,12 +463,15 @@ final class OverlayChannelChipHoverCardTests: XCTestCase {
       symbol: "arrow.down.left")
     let size = OverlayChannelChipHoverCard.size(lines: long)
     XCTAssertEqual(size.width, ceiling, "a long preview takes the card to the ceiling, no further")
-    XCTAssertEqual(
-      size.height, OverlayChannelChipHoverCard.size(lines: Self.brunoLines).height,
-      "and stays one line")
+    let oneLineHeight = OverlayChannelChipHoverCard.oneLine(
+      OverlayChannelChipHoverCard.font(long[3]))
     XCTAssertEqual(
       OverlayChannelChipHoverCard.height(long[3], within: size.width - 20),
-      OverlayChannelChipHoverCard.oneLine(OverlayChannelChipHoverCard.font(long[3])))
+      CGFloat(OverlayChannelChipHoverCard.replyPreviewLineLimit) * oneLineHeight,
+      "the preview has room for three measured lines")
+    XCTAssertGreaterThan(
+      size.height, OverlayChannelChipHoverCard.size(lines: Self.brunoLines).height,
+      "a multiline reply grows the card instead of hiding the rest of its preview")
   }
 
   func testSizeStaysWithinTheCardBounds() {

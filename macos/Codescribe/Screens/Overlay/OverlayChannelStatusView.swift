@@ -2947,7 +2947,7 @@ struct OverlayChannelStatusView: View {
           .accessibilityIdentifier("overlay-agent-roster-loading")
       } else if showsConnectionHint {
         Text(
-          "No agents connected. To connect an agent to x9bus, run the `codescribe` skill in its session."
+          "No agents connected. To connect an agent to X9Bus, run the `codescribe` skill in its session."
         )
         .foregroundStyle(palette.roster.secondaryText.color)
         .fixedSize(horizontal: false, vertical: true)

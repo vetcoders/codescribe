@@ -2516,7 +2516,8 @@ private struct OverlayIntercomCard: View {
     let nameHint = OverlayHeaderControlChrome(
       title: identity.displayDigit + " · " + name, accent: nil, palette: palette,
       hintLeading: true,
-      showsHint: !expanded && !detached && !hasInlinePreview,
+      showsHint: OverlayIntercomWidgetLayout.showsRosterMessageHint(
+        expanded: expanded, detached: detached, hasInlinePreview: hasInlinePreview),
       hintContent: hasMessage && targetConversation != nil
         ? AnyView(
           OverlayRosterMessagePreview(
@@ -3148,7 +3149,7 @@ private struct OverlayIntercomMessagePreview: View {
   }
 
   /// Prose in `MarkdownText` is the body font with this much between lines.
-  static let proseLineSpacing: CGFloat = 5
+  static let proseLineSpacing: CGFloat = OverlayIntercomWidgetLayout.compactPreviewBodyLineSpacing
 
   /// The distance from one prose line's top to the next.
   static func linePitch(scale: CGFloat) -> CGFloat {

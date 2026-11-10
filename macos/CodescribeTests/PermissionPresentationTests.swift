@@ -9,6 +9,12 @@ final class PermissionPresentationTests: XCTestCase {
   private let en = Locale(identifier: "en")
   private let pl = Locale(identifier: "pl")
 
+  func testScreenRecordingPreflightDoesNotInventADenial() {
+    XCTAssertEqual(NativePermissionProbe.screenRecordingState(preflightGranted: true), .granted)
+    XCTAssertEqual(
+      NativePermissionProbe.screenRecordingState(preflightGranted: false), .notDetermined)
+  }
+
   /// A probe that only proves missing effective access never says the person
   /// refused; a scope whose API records a decision keeps "Denied".
   func testDeniedReadsAsNoAccessOnlyWhereTheProbeCannotSeeADecision() {
@@ -62,7 +68,7 @@ final class PermissionPresentationTests: XCTestCase {
   func testReopenHintStatesMissingAccessWithoutPromisingARestartFix() throws {
     let english = try XCTUnwrap(
       PermissionKind.accessibility.repairNote(for: .denied, requested: true, locale: en))
-    XCTAssertTrue(english.hasPrefix("x9bus doesn’t have access yet."), english)
+    XCTAssertTrue(english.hasPrefix("X9Bus doesn’t have access yet."), english)
     XCTAssertTrue(english.contains("may"), english)
     XCTAssertFalse(english.hasPrefix("Already turned on?"), english)
 

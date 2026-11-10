@@ -31,7 +31,7 @@ struct UserPanel: View {
       SettingsPageHeader(
         SettingsSection.user.title,
         blurb: String(
-          localized: "Your license, x9bus version, local data and privacy.",
+          localized: "Your license, X9Bus version, local data and privacy.",
           comment: "User panel blurb")
       )
       .onAppear { repairNotice = configRepairSummary().map(ConfigRepairNotice.init(raw:)) }
@@ -72,7 +72,7 @@ struct UserPanel: View {
       VStack(alignment: .leading, spacing: 0) {
         HStack(alignment: .center, spacing: CSSpace.md) {
           VStack(alignment: .leading, spacing: 2) {
-            Text(verbatim: "x9bus \(model.buildInfo.version)")
+            Text(verbatim: "X9Bus \(model.buildInfo.version)")
               .font(SettingsScale.settingName)
               .foregroundStyle(.primary)
               .textSelection(.enabled)
@@ -316,7 +316,7 @@ struct UserPanel: View {
           Self.termsURL, accessibility: "Open Terms of Use")
         externalLink(
           String(localized: "Documentation", comment: "User panel: docs link"),
-          Self.docsURL, accessibility: "Open x9bus documentation")
+          Self.docsURL, accessibility: "Open X9Bus documentation")
       }
       .padding(.top, CSSpace.sm)
     }

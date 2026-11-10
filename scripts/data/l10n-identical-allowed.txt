@@ -25,10 +25,9 @@
 %@ · %@ / %@ MB
 
 # Product, vendor and tool names.
-# InfoPlist.xcstrings: the localized bundle names carry the product name x9bus.
+# InfoPlist.xcstrings: the localized bundle names carry the product name X9Bus.
 CFBundleDisplayName
 CFBundleName
-x9bus - %@
 AICX MCP
 Loctree MCP
 

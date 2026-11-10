@@ -40,11 +40,11 @@ final class OverlayAgentArchiveTests: XCTestCase {
     XCTAssertEqual(emptyDrawer.savedConversations.map(\.id), [agent.id])
 
     let key =
-      "No agents connected. To connect an agent to x9bus, run the `codescribe` skill in its session."
+      "No agents connected. To connect an agent to X9Bus, run the `codescribe` skill in its session."
     let polish = try XCTUnwrap(Bundle.main.path(forResource: "pl", ofType: "lproj"))
     XCTAssertEqual(
       try XCTUnwrap(Bundle(path: polish)).localizedString(forKey: key, value: nil, table: nil),
-      "Brak podłączonych agentów. Aby połączyć agenta z x9bus, uruchom skill `codescribe` w jego sesji."
+      "Brak podłączonych agentów. Aby połączyć agenta z X9Bus, uruchom skill `codescribe` w jego sesji."
     )
     for locale in ["en", "pl"] {
       let host = NSHostingView(

@@ -520,7 +520,7 @@ final class VoiceLabTests: XCTestCase {
   func testLearnMessagesNameTheScopeAndTheRealGrowth() {
     XCTAssertEqual(
       learnScopeMessage(corrections: 12),
-      "x9bus reviews all 12 saved corrections and the suggested rules, then adds the new vocabulary rules it can derive to Dictionary rules. Existing rules, corrections and their history stay as they are."
+      "X9Bus reviews all 12 saved corrections and the suggested rules, then adds the new vocabulary rules it can derive to Dictionary rules. Existing rules, corrections and their history stay as they are."
     )
     XCTAssertEqual(
       learnResultMessage(added: 2, fromSuggestions: 0, activeRules: 9),
@@ -548,7 +548,7 @@ final class VoiceLabTests: XCTestCase {
       "No archived recording for this correction.")
     XCTAssertEqual(
       retranscribeUnavailableReason(asrMode: "cloud", lookup: .ambiguous(2), pending: false),
-      "2 archived recordings share this exact transcript, so x9bus cannot tell which one is this take."
+      "2 archived recordings share this exact transcript, so X9Bus cannot tell which one is this take."
     )
   }
 
@@ -639,7 +639,7 @@ final class VoiceLabTests: XCTestCase {
     XCTAssertEqual(model.totalQualityCorrections, 60, "the corpus count is not")
     XCTAssertEqual(
       learnScopeMessage(corrections: Int(clamping: model.totalQualityCorrections)),
-      "x9bus reviews all 60 saved corrections and the suggested rules, then adds the new vocabulary rules it can derive to Dictionary rules. Existing rules, corrections and their history stay as they are."
+      "X9Bus reviews all 60 saved corrections and the suggested rules, then adds the new vocabulary rules it can derive to Dictionary rules. Existing rules, corrections and their history stay as they are."
     )
   }
 

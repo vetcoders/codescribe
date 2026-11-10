@@ -40,7 +40,7 @@ struct AgentLanesTab: View {
       SettingsSectionLabel(
         String(
           localized: "Voice conversation with an agent",
-          comment: "AI models section: how a spoken x9bus channel session behaves")
+          comment: "AI models section: how a spoken X9Bus channel session behaves")
       )
       .padding(.top, SettingsScale.sectionGap)
 
@@ -199,7 +199,7 @@ struct AgentLanesTab: View {
       // The hold is a bus-only window: a held channel message can still be
       // revised or withdrawn before it lands.
       SettingsControlRow(
-        title: String(localized: "Hold before sending to x9bus"),
+        title: String(localized: "Hold before sending to X9Bus"),
         subtitle: String(
           localized: "Revise or withdraw the message during this window. 0 sends at once.")
       ) {

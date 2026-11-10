@@ -1246,7 +1246,7 @@ struct AttachmentPreviewSheet: View {
             title: String(localized: "Original file not available"),
             detail: String(
               localized:
-                "This turn was restored from history. x9bus kept the filename but not the bytes or path on disk."
+                "This turn was restored from history. X9Bus kept the filename but not the bytes or path on disk."
             )
           )
         } else if !fileExists {

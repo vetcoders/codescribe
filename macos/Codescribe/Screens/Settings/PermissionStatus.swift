@@ -134,20 +134,20 @@ enum PermissionKind: String, CaseIterable, Identifiable {
     case .spotifySetup:
       return String(
         localized: LocalizedStringResource(
-          "Open Spotify, then allow x9bus to lower its volume while recording. If access was denied, enable Spotify under x9bus in Privacy & Security > Automation.",
+          "Open Spotify, then allow X9Bus to lower its volume while recording. If access was denied, enable Spotify under X9Bus in Privacy & Security > Automation.",
           locale: locale,
           comment: "Optional Spotify control permission; Spotify must be running to ask macOS"))
     case .settingsOnly:
       return String(
         localized: LocalizedStringResource(
-          "macOS will not ask again. Turn on x9bus in System Settings.", locale: locale,
+          "macOS will not ask again. Turn on X9Bus in System Settings.", locale: locale,
           comment: "Denied Microphone or Speech Recognition; System Settings is the macOS app"))
     case .mayNeedReopen:
       // States what the probe knows (no access yet) and what may help,
       // without promising that a reopen grants anything.
       return String(
         localized: LocalizedStringResource(
-          "x9bus doesn’t have access yet. If it’s already on in System Settings, macOS may apply it only after you quit and reopen x9bus.",
+          "X9Bus doesn’t have access yet. If it’s already on in System Settings, macOS may apply it only after you quit and reopen X9Bus.",
           locale: locale,
           comment:
             "Informational hint, not an error: access is still missing after a request; reopening may help but is not guaranteed"
@@ -398,12 +398,17 @@ struct NativePermissionRequestClient: PermissionRequesting, Sendable {
 
 /// Live system probe. Reads — never prompts.
 struct NativePermissionProbe: PermissionProbing, Sendable {
+  static func screenRecordingState(preflightGranted: Bool) -> PermissionState {
+    preflightGranted ? .granted : .notDetermined
+  }
+
   func snapshot() -> PermissionSnapshot {
     PermissionSnapshot(
       microphone: microphoneState(),
       accessibility: AXIsProcessTrusted() ? .granted : .denied,
       inputMonitoring: inputMonitoringState(),
-      screenRecording: CGPreflightScreenCaptureAccess() ? .granted : .denied,
+      screenRecording: Self.screenRecordingState(
+        preflightGranted: CGPreflightScreenCaptureAccess()),
       speechRecognition: speechRecognitionState(),
       fullDiskAccess: fullDiskAccessState(),
       spotifyAutomation: SpotifyAppleEvents.automationPermission(askUserIfNeeded: false)

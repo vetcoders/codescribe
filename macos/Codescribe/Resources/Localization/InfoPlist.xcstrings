@@ -38,73 +38,73 @@
       }
     },
     "NSAppleEventsUsageDescription" : {
-      "comment" : "System permission prompt: why x9bus sends Apple Events to other apps.",
+      "comment" : "System permission prompt: why X9Bus sends Apple Events to other apps.",
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "x9bus uses Apple Events to deliver transcribed text and lower Spotify's volume during recording, then restore it."
+            "value" : "X9Bus uses Apple Events to deliver transcribed text and lower Spotify's volume during recording, then restore it."
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "x9bus używa Apple Events do wstawiania transkrybowanego tekstu oraz ściszania Spotify podczas nagrywania i przywracania jego głośności."
+            "value" : "X9Bus używa Apple Events do wstawiania transkrybowanego tekstu oraz ściszania Spotify podczas nagrywania i przywracania jego głośności."
           }
         }
       }
     },
     "NSMicrophoneUsageDescription" : {
-      "comment" : "System permission prompt: why x9bus needs the microphone.",
+      "comment" : "System permission prompt: why X9Bus needs the microphone.",
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "x9bus transcribes your speech locally with on-device Whisper."
+            "value" : "X9Bus transcribes your speech locally with on-device Whisper."
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "x9bus transkrybuje Twoją mowę lokalnie za pomocą modelu Whisper działającego na tym Macu."
+            "value" : "X9Bus transkrybuje Twoją mowę lokalnie za pomocą modelu Whisper działającego na tym Macu."
           }
         }
       }
     },
     "NSScreenCaptureUsageDescription" : {
-      "comment" : "System permission prompt: why x9bus captures the screen.",
+      "comment" : "System permission prompt: why X9Bus captures the screen.",
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "x9bus captures the screen when you ask the assistant to look at what is currently on screen."
+            "value" : "X9Bus captures the screen when you ask the assistant to look at what is currently on screen."
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "x9bus przechwytuje obraz ekranu tylko wtedy, gdy poprosisz Agenta, aby sprawdził, co jest na ekranie."
+            "value" : "X9Bus przechwytuje obraz ekranu tylko wtedy, gdy poprosisz Agenta, aby sprawdził, co jest na ekranie."
           }
         }
       }
     },
     "NSSpeechRecognitionUsageDescription" : {
-      "comment" : "System permission prompt: why x9bus uses on-device speech recognition.",
+      "comment" : "System permission prompt: why X9Bus uses on-device speech recognition.",
       "extractionState" : "manual",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "x9bus uses on-device speech recognition (including Polish) to turn your dictation into text without sending audio to the cloud."
+            "value" : "X9Bus uses on-device speech recognition (including Polish) to turn your dictation into text without sending audio to the cloud."
           }
         },
         "pl" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "x9bus korzysta z rozpoznawania mowy na urządzeniu, także w języku polskim, aby zamieniać dyktowanie na tekst bez wysyłania nagrań do chmury."
+            "value" : "X9Bus korzysta z rozpoznawania mowy na urządzeniu, także w języku polskim, aby zamieniać dyktowanie na tekst bez wysyłania nagrań do chmury."
           }
         }
       }

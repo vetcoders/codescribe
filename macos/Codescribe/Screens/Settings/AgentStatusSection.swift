@@ -161,7 +161,7 @@ struct AgentStatusSection: View {
       listCard {
         DisclosureGroup(isExpanded: $showingCapabilityRows) {
           VStack(alignment: .leading, spacing: SettingsScale.rowGap) {
-            Text("Native capabilities are served by x9bus's built-in tools.")
+            Text("Native capabilities are served by X9Bus's built-in tools.")
               .font(SettingsScale.helper)
               .foregroundStyle(CSColor.secondaryInk)
               .fixedSize(horizontal: false, vertical: true)

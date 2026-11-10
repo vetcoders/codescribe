@@ -157,7 +157,7 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
     XCTAssertEqual(presentation.expanded, [cards[1]])
   }
 
-  func testMetadataGetsOneReadableLineBeforePreview() throws {
+  func testCompactPreviewWaitsForThreeBodyLinesAndHintCoversTheGap() throws {
     for scale in [CGFloat(0.8), 1, 1.6, 2] {
       let metrics = IntercomContentMetrics(names: ["Agent"], digits: ["2"], scale: scale)
       let width = max(metrics.actionsWidth, 400 * scale)
@@ -168,7 +168,34 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       let metadataHeight = row + metadataLine + 6
       XCTAssertEqual(metrics.cardContent(width: width, cardHeight: metadataHeight), .context)
       XCTAssertNil(metrics.compactPreviewLayout(width: width, cardHeight: metadataHeight))
-      XCTAssertNotNil(metrics.compactPreviewLayout(width: width, cardHeight: 3 * row))
+
+      let type = IntercomPreviewTypography.measured(scale: scale)
+      let bodyLineCount = CGFloat(Layout.minimumCompactPreviewBodyLines)
+      let bodyHeight =
+        bodyLineCount * (type.lineHeight + Layout.compactPreviewBodyLineSpacing)
+        - Layout.compactPreviewBodyLineSpacing
+      let minimumPreviewHeight =
+        row + Layout.contextStripHeight(scale: scale)
+        + bodyHeight + 2 * Layout.compactPreviewVerticalPadding
+        + Layout.compactPreviewSpacing
+      let beforeInline = minimumPreviewHeight - 0.5
+      XCTAssertEqual(metrics.cardContent(width: width, cardHeight: beforeInline), .context)
+      XCTAssertNil(metrics.compactPreviewLayout(width: width, cardHeight: beforeInline))
+      XCTAssertTrue(
+        Layout.showsRosterMessageHint(
+          expanded: false, detached: false, hasInlinePreview: false),
+        "A tall context card still shows the hover preview until three inline lines fit")
+
+      let minimumInline = try XCTUnwrap(
+        metrics.compactPreviewLayout(width: width, cardHeight: minimumPreviewHeight))
+      XCTAssertEqual(
+        metrics.cardContent(width: width, cardHeight: minimumPreviewHeight), .preview)
+      XCTAssertGreaterThanOrEqual(minimumInline.height, bodyHeight + type.metadataLineHeight)
+      XCTAssertFalse(
+        Layout.showsRosterMessageHint(
+          expanded: false, detached: false, hasInlinePreview: true),
+        "The full three-line inline preview suppresses duplicate hover content")
+
       let later = try XCTUnwrap(metrics.compactPreviewLayout(width: width, cardHeight: 8 * row))
       XCTAssertEqual(metrics.cardContent(width: width, cardHeight: 8 * row), .preview)
       XCTAssertGreaterThan(later.height, 3 * row)
@@ -177,6 +204,67 @@ final class OverlayIntercomWidgetLayoutTests: XCTestCase {
       XCTAssertLessThan(shorter.height, later.height)
       XCTAssertGreaterThan(shorter.height, 0)
     }
+    XCTAssertFalse(
+      Layout.showsRosterMessageHint(expanded: true, detached: false, hasInlinePreview: false))
+    XCTAssertFalse(
+      Layout.showsRosterMessageHint(expanded: false, detached: true, hasInlinePreview: false))
+  }
+
+  @MainActor
+  func testTallCollapsedCardHoverPreviewRendersLatestOfFiveMessages() throws {
+    let owner = try XCTUnwrap(
+      OverlayConversationOwner(row: [
+        "provider": "codex", "provider_session_id": "hover-preview-fixture",
+        "lease_id": String(repeating: "h", count: 32), "channel": "3", "name": "Agent",
+      ]))
+    let messages = (1...5).map { index in
+      OverlayConversationMessage(
+        id: "hover-reply-\(index)", kind: .reply,
+        text: "Message \(index) remains available in the card hover preview.", order: index,
+        emittedAt: "2026-11-10T17:19:0\(index)Z", owner: owner, recipients: [],
+        deliveryID: nil, replyTo: nil, unsolicited: false, playback: nil, busPath: "")
+    }
+    let conversation = OverlayConversation(
+      id: owner.id, channel: "3", name: owner.name, owner: owner, messages: messages)
+    let session = OverlayRosterPreviewSession(conversation: conversation)
+    XCTAssertEqual(session.ids.count, 5)
+    XCTAssertEqual(session.index, 4, "A new hover preview opens on the latest message")
+
+    let metrics = IntercomContentMetrics(names: ["Agent"], digits: ["3"], scale: 1)
+    let width = max(metrics.actionsWidth, 400)
+    let type = IntercomPreviewTypography.measured(scale: 1)
+    let bodyLineCount = CGFloat(Layout.minimumCompactPreviewBodyLines)
+    let bodyHeight =
+      bodyLineCount * (type.lineHeight + Layout.compactPreviewBodyLineSpacing)
+      - Layout.compactPreviewBodyLineSpacing
+    let inlineThreshold =
+      Layout.controlHeight(scale: 1) + Layout.contextStripHeight(scale: 1)
+      + bodyHeight + type.metadataLineHeight
+      + 2 * Layout.compactPreviewVerticalPadding + Layout.compactPreviewSpacing
+    let cardHeight = inlineThreshold - 0.5
+    XCTAssertGreaterThan(cardHeight, Layout.controlHeight(scale: 1))
+    XCTAssertEqual(metrics.cardContent(width: width, cardHeight: cardHeight), .context)
+    XCTAssertTrue(
+      Layout.showsRosterMessageHint(
+        expanded: false, detached: false,
+        hasInlinePreview: metrics.cardContent(width: width, cardHeight: cardHeight) == .preview))
+
+    let host = NSHostingView(
+      rootView: OverlayRosterMessagePreview(session: session, palette: .dark)
+        .frame(width: 280, height: 180)
+        .environment(\.colorScheme, .dark)
+        .environment(\.csTextScale, 1))
+    host.sizingOptions = []
+    host.frame = NSRect(x: 0, y: 0, width: 280, height: 180)
+    host.layoutSubtreeIfNeeded()
+    let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+    host.cacheDisplay(in: host.bounds, to: bitmap)
+    let image = NSImage(size: host.bounds.size)
+    image.addRepresentation(bitmap)
+    let attachment = XCTAttachment(image: image)
+    attachment.name = "Intercom-tall-card-hover-preview-5-of-5"
+    attachment.lifetime = .keepAlways
+    add(attachment)
   }
 
   func testComposerAppearsAtReadableSizeAndSurvivesFurtherGrowth() throws {

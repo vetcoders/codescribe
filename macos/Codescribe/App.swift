@@ -444,7 +444,7 @@ enum InterfaceLanguageRestartError: Error, Equatable {
     case .unavailable:
       return String(
         localized: LocalizedStringResource(
-          "x9bus could not restart. Your language choice is saved; quit and reopen the app to apply it.",
+          "X9Bus could not restart. Your language choice is saved; quit and reopen the app to apply it.",
           locale: locale, comment: "Language restart unavailable; saved preference remains valid"))
     }
   }
@@ -862,7 +862,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
       let tagline =
         String(
           localized: "Voice orchestration for your agent fleet.",
-          comment: "About panel: the product descriptor under the name x9bus") + "\n\n"
+          comment: "About panel: the product descriptor under the name X9Bus") + "\n\n"
       let provenance =
         String(
           localized: "Commit: \(commit)",

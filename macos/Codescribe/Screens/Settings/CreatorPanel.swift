@@ -180,7 +180,7 @@ struct CreatorPanel: View {
     .settingsPage()
     .onAppear { model.refreshCreatorAgentBridge() }
     .confirmationDialog(
-      "Replace a manually installed x9bus skill?",
+      "Replace a manually installed X9Bus skill?",
       isPresented: Binding(
         get: { manualSkillClient != nil },
         set: { if !$0 { manualSkillClient = nil } }
@@ -194,7 +194,7 @@ struct CreatorPanel: View {
       Button("Cancel", role: .cancel) { manualSkillClient = nil }
     } message: { client in
       Text(
-        "The x9bus skill folder for \(client.displayName) will be moved to a retained backup beside it, then replaced with the copy bundled in this app. Your other skills and agent configuration are not changed. No listener will be started."
+        "The X9Bus skill folder for \(client.displayName) will be moved to a retained backup beside it, then replaced with the copy bundled in this app. Your other skills and agent configuration are not changed. No listener will be started."
       )
     }
     .task { await model.refreshMaxToolApprovals() }
@@ -323,10 +323,10 @@ struct CreatorPanel: View {
         plan.action == .update
           ? String(
             localized: "creator.agentBridge.confirmUpdate", defaultValue: "Update",
-            comment: "Confirms updating the x9bus skill for one coding-agent client")
+            comment: "Confirms updating the X9Bus skill for one coding-agent client")
           : String(
             localized: "creator.agentBridge.confirmInstall", defaultValue: "Install",
-            comment: "Confirms installing the x9bus skill for one coding-agent client")
+            comment: "Confirms installing the X9Bus skill for one coding-agent client")
       ) {
         model.installCreatorAgentBridge(for: plan.client)
         pendingSkillInstall = nil
@@ -344,9 +344,9 @@ struct CreatorPanel: View {
     Text(
       String(
         localized:
-          "The x9bus skill lets your coding agent work with x9bus. Once it is installed, the agent can join x9bus under a name of its own, receive what you dictate or type to it, and answer in text or out loud. Installing only adds the skill; a conversation connects when you invoke /codescribe in it.",
+          "The X9Bus skill lets your coding agent work with X9Bus. Once it is installed, the agent can join X9Bus under a name of its own, receive what you dictate or type to it, and answer in text or out loud. Installing only adds the skill; a conversation connects when you invoke /codescribe in it.",
         comment:
-          "Description at the top of the coding-agent card in Settings › Creator. x9bus is a product name; /codescribe is a command the user types — keep both verbatim"
+          "Description at the top of the coding-agent card in Settings › Creator. X9Bus is a product name; /codescribe is a command the user types — keep both verbatim"
       )
     )
     .font(SettingsScale.helper)
@@ -361,10 +361,10 @@ struct CreatorPanel: View {
   private func installConfirmationTitle(_ plan: CreatorAgentBridgeInstallPlan) -> String {
     plan.action == .update
       ? String(
-        localized: "Update the x9bus skill for \(plan.client.displayName)?",
+        localized: "Update the X9Bus skill for \(plan.client.displayName)?",
         comment: "Confirmation title; the placeholder is a coding-agent client such as Codex")
       : String(
-        localized: "Install the x9bus skill for \(plan.client.displayName)?",
+        localized: "Install the X9Bus skill for \(plan.client.displayName)?",
         comment: "Confirmation title; the placeholder is a coding-agent client such as Codex")
   }
 
@@ -376,7 +376,7 @@ struct CreatorPanel: View {
       parts.append(
         String(
           localized:
-            "x9bus will replace the skill folder it installed at \(plan.skillPath) with the codescribe skill bundled in this app. Changes made inside that folder are not kept.",
+            "X9Bus will replace the skill folder it installed at \(plan.skillPath) with the codescribe skill bundled in this app. Changes made inside that folder are not kept.",
           comment:
             "Update confirmation; the placeholder is a folder path such as ~/.codex/skills/codescribe. 'codescribe' is the skill's name — keep it verbatim"
         ))
@@ -384,7 +384,7 @@ struct CreatorPanel: View {
       parts.append(
         String(
           localized:
-            "x9bus will add the codescribe skill bundled in this app to \(plan.skillPath). Nothing is replaced: if that folder already exists and x9bus did not install it, installation stops without changing it.",
+            "X9Bus will add the codescribe skill bundled in this app to \(plan.skillPath). Nothing is replaced: if that folder already exists and X9Bus did not install it, installation stops without changing it.",
           comment:
             "Install confirmation; the placeholder is a folder path such as ~/.codex/skills/codescribe. 'codescribe' is the skill's name — keep it verbatim"
         ))
@@ -407,7 +407,7 @@ struct CreatorPanel: View {
     parts.append(
       String(
         localized:
-          "x9bus also refreshes its own commands in ~/.local/bin; a command it did not install is never overwritten. No listener is started.",
+          "X9Bus also refreshes its own commands in ~/.local/bin; a command it did not install is never overwritten. No listener is started.",
         comment: "Install confirmation; ~/.local/bin is a folder path — keep it verbatim"
       ))
     return parts.joined(separator: " ")
@@ -780,7 +780,7 @@ private struct AppearanceRow: View {
     SettingsControlRow(
       title: String(localized: "Appearance", comment: "Settings row: light, dark or system"),
       subtitle: String(
-        localized: "Follow macOS, or keep x9bus light or dark on its own.",
+        localized: "Follow macOS, or keep X9Bus light or dark on its own.",
         comment: "Appearance row explanation")
     ) {
       SettingsSegmentedChoice(

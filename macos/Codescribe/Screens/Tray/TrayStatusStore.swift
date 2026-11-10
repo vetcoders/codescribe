@@ -167,8 +167,8 @@ final class TrayStatusStore: ObservableObject {
   /// Menu bar tooltip.
   var tooltip: String {
     String(
-      localized: "x9bus - \(tooltipPhrase)",
-      comment: "Menu bar tooltip; x9bus is the product name, %@ is a status phrase"
+      localized: "X9Bus - \(tooltipPhrase)",
+      comment: "Menu bar tooltip; X9Bus is the product name, %@ is a status phrase"
     )
   }
 
@@ -181,7 +181,7 @@ final class TrayStatusStore: ObservableObject {
     case .error:
       return String(
         localized: "Backend unavailable!",
-        comment: "Menu bar tooltip: the x9bus core is not running")
+        comment: "Menu bar tooltip: the X9Bus core is not running")
     case .starting, .listening, .processing, .success, .thermal, .hotkeyConflict:
       return compactLabel
     }

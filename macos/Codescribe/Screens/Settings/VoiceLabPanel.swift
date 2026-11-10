@@ -1181,7 +1181,7 @@ struct VoiceLabPanel: View {
           stopPlayback()
           playbackMessage = String(
             localized:
-              "\(count) archived recordings share this exact transcript, so x9bus cannot tell which one is this take.",
+              "\(count) archived recordings share this exact transcript, so X9Bus cannot tell which one is this take.",
             comment: "Dictionary: why Retranscribe and playback are disabled; plural")
           return
         }

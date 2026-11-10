@@ -12,7 +12,7 @@ import SwiftUI
 struct LicenseSection: View {
   @ObservedObject var model: SettingsViewModel
   /// Product name, not copy: identical in every language.
-  private static let agentProductName = "x9bus Agent"
+  private static let agentProductName = "X9Bus Agent"
   /// The one SKU whose purchase kind has an on-screen name.
   private static let lifetimeSku = "agentic-lifetime"
   private static let licensePageURL = "https://codescribe.vetcoders.io/license/"
@@ -131,7 +131,7 @@ struct LicenseSection: View {
       Text(
         String(
           localized:
-            "x9bus goes back to Basic mode and Agent mode stops working. The key is deleted from this Mac's Keychain. To activate again you will need the key itself, which x9bus cannot show, or a new key from the license page.",
+            "X9Bus goes back to Basic mode and Agent mode stops working. The key is deleted from this Mac's Keychain. To activate again you will need the key itself, which X9Bus cannot show, or a new key from the license page.",
           comment: "License card: what removing the key does, in the confirmation"))
     }
   }
@@ -294,7 +294,7 @@ struct LicenseSection: View {
           CSFocusOutline(isFocused: keyFocused, cornerRadius: CSRadius.input)
         }
         .frame(maxWidth: .infinity)
-        .accessibilityLabel("x9bus license key")
+        .accessibilityLabel("X9Bus license key")
 
         Button("Activate", action: activate)
           .buttonStyle(.borderedProminent)

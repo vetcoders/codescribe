@@ -47,7 +47,7 @@ struct TrayMenuView: View {
         }
       TrayRow(
         icon: .info,
-        title: AppBranding.localized(x9bus: "About X9Bus", codescribe: "About x9bus")) {
+        title: AppBranding.localized(x9bus: "About X9Bus", codescribe: "About Codescribe")) {
           viewModel.onAbout()
         }
 

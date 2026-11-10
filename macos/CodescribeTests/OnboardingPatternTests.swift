@@ -79,8 +79,8 @@ final class OnboardingPatternTests: XCTestCase {
     XCTAssertTrue(pinned("Dictate, or talk to an AI agent."))
     XCTAssertTrue(pinned("You can do this later in Settings."))
     // Step 8 installs a skill for later use; nothing attaches to a session.
-    XCTAssertTrue(pinned("Install the x9bus skill"))
-    XCTAssertTrue(pinned("x9bus skill installed"))
+    XCTAssertTrue(pinned("Install the X9Bus skill"))
+    XCTAssertTrue(pinned("X9Bus skill installed"))
     // Step 9 never promises the agent when only dictation is ready.
     XCTAssertTrue(pinned("Dictation is ready."))
     let frame = try XCTUnwrap(sources["OnboardingView.swift"])
@@ -90,8 +90,8 @@ final class OnboardingPatternTests: XCTestCase {
     let expected: [String: String] = [
       "Dictate, or talk to an AI agent.": "Możesz dyktować albo rozmawiać z agentem AI.",
       "You can do this later in Settings.": "Możesz to zrobić później w Ustawieniach.",
-      "Install the x9bus skill": "Zainstaluj skill x9bus",
-      "x9bus skill installed": "Skill x9bus zainstalowany",
+      "Install the X9Bus skill": "Zainstaluj skill X9Bus",
+      "X9Bus skill installed": "Skill X9Bus zainstalowany",
       "Dictation is ready.": "Dyktowanie jest gotowe.",
       "Dictation language": "Język dyktowania",
       "Local transcription": "Transkrypcja lokalna",
@@ -257,7 +257,7 @@ final class OnboardingPatternTests: XCTestCase {
       "the not-ready heading icon is neutral ink")
     XCTAssertFalse(
       frame.contains(
-        "CSColor.chromeAccent,\n        String(\n          localized: LocalizedStringResource(\n            \"x9bus is not ready yet.\""
+        "CSColor.chromeAccent,\n        String(\n          localized: LocalizedStringResource(\n            \"X9Bus is not ready yet.\""
       ), "the not-ready heading never wears the accent")
     XCTAssertFalse(
       frame.contains("\"exclamationmark.circle\",\n        CSColor.terracottaLight,"),

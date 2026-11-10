@@ -2206,7 +2206,7 @@ final class OverlayState {
       switch error.code {
       case .fileNoSuchFile:
         return String(
-          localized: "the x9bus helper is not installed",
+          localized: "the X9Bus helper is not installed",
           comment: "Archive refusal reason: managed helper missing")
       case .fileReadCorruptFile:
         return String(
@@ -3385,7 +3385,7 @@ final class OverlayState {
       if send.phase == .dispatching {
         textMessageErrors[send.conversationID] = String(
           localized:
-            "x9bus quit while this message was being sent. It may already have reached the agent; check before sending it again."
+            "X9Bus quit while this message was being sent. It may already have reached the agent; check before sending it again."
         )
       }
       if let existing = unadoptedComposerDrafts[send.conversationID] {
@@ -5241,7 +5241,7 @@ final class OverlayState {
       presentTerminalError(
         message: String(
           localized:
-            "Microphone access is off for x9bus. Enable it in System Settings › Privacy & Security › Microphone."
+            "Microphone access is off for X9Bus. Enable it in System Settings › Privacy & Security › Microphone."
         ),
         toast: String(localized: "Microphone access denied")
       )
@@ -6691,7 +6691,7 @@ final class OverlayState {
     if message.contains("speech_auth_denied") || message.contains("speech_auth_restricted") {
       return String(
         localized:
-          "Speech Recognition is off for x9bus — enable it in System Settings › Privacy & Security › Speech Recognition"
+          "Speech Recognition is off for X9Bus — enable it in System Settings › Privacy & Security › Speech Recognition"
       )
     }
     return String(
