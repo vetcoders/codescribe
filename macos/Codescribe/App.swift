@@ -816,10 +816,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
   /// process is briefly activation-eligible — promote to regular for the
   /// request window, then restore the dock policy.
   private func ensureSpeechRecognitionAtLaunch() {
-    let probe = NativePermissionProbe().snapshot()
-    guard probe.speechRecognition == .notDetermined else {
+    let speechRecognition = NativePermissionProbe().speechRecognitionState()
+    guard speechRecognition == .notDetermined else {
       appLogger.info(
-        "Speech Recognition at launch already \(String(describing: probe.speechRecognition), privacy: .public)"
+        "Speech Recognition at launch already \(String(describing: speechRecognition), privacy: .public)"
       )
       return
     }

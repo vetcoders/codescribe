@@ -1,5 +1,6 @@
 import Carbon
 import Foundation
+import os
 
 protocol SpotifyVolumeAccess: Sendable {
   func isPlaying(pid: pid_t) throws -> Bool
@@ -11,20 +12,90 @@ protocol SpotifyVolumeAccess: Sendable {
 /// Events address a verified running PID, so they cannot launch the player.
 /// Calls are serialized off the main actor by SpotifyVolumeController.
 struct SpotifyAppleEvents: SpotifyVolumeAccess {
+  private struct PassiveProbeState: Sendable {
+    var inFlight = false
+    var lastState: PermissionState = .notDetermined
+  }
+
+  private static let passiveProbeState = OSAllocatedUnfairLock(initialState: PassiveProbeState())
+  private static let passiveProbeQueue = DispatchQueue(
+    label: "com.vetcoders.codescribe.spotify-automation-probe",
+    qos: .utility,
+    attributes: .concurrent
+  )
+
   /// Checking never sends an event or launches Spotify. Only an explicit
   /// permission action passes true; that call must run off the main actor.
-  static func automationPermission(askUserIfNeeded: Bool) -> PermissionState {
+  ///
+  /// Passive checks (`askUserIfNeeded == false`) run off the caller's thread
+  /// with a bounded timeout so a wedged `appleeventsd` / LaunchServices IPC
+  /// never hangs `@MainActor` startup or Settings/Onboarding snapshots.
+  static func automationPermission(
+    askUserIfNeeded: Bool,
+    probeTimeout: DispatchTimeInterval = .milliseconds(250),
+    queryStatus: (@Sendable (Bool) -> OSStatus)? = nil
+  ) -> PermissionState {
+    if askUserIfNeeded {
+      let status = (queryStatus ?? Self.determineAutomationStatus)(true)
+      DiagnosticLog.installed?.append(
+        category: "media", "action=spotify-automation-request status=\(status)")
+      let resolved = automationPermissionState(status: status)
+      if queryStatus == nil {
+        passiveProbeState.withLock { $0.lastState = resolved }
+      }
+      return resolved
+    }
+
+    if queryStatus == nil {
+      let cachedWhileInFlight: PermissionState? = passiveProbeState.withLock { state in
+        if state.inFlight {
+          return state.lastState
+        }
+        state.inFlight = true
+        return nil
+      }
+      if let cachedWhileInFlight {
+        return cachedWhileInFlight
+      }
+    }
+
+    let query = queryStatus ?? Self.determineAutomationStatus
+    let isProductionQuery = (queryStatus == nil)
+    let semaphore = DispatchSemaphore(value: 0)
+    let resultBox = OSAllocatedUnfairLock<PermissionState?>(initialState: nil)
+
+    passiveProbeQueue.async {
+      let status = query(false)
+      let resolved = automationPermissionState(status: status)
+      resultBox.withLock { $0 = resolved }
+      if isProductionQuery {
+        passiveProbeState.withLock {
+          $0.lastState = resolved
+          $0.inFlight = false
+        }
+      }
+      semaphore.signal()
+    }
+
+    if semaphore.wait(timeout: .now() + probeTimeout) == .timedOut {
+      DiagnosticLog.installed?.append(
+        category: "media", "action=spotify-automation-probe-timeout")
+      if isProductionQuery {
+        return passiveProbeState.withLock { $0.lastState }
+      }
+      return .notDetermined
+    }
+
+    return resultBox.withLock { $0 ?? .notDetermined }
+  }
+
+  static func determineAutomationStatus(askUserIfNeeded: Bool) -> OSStatus {
     let target = NSAppleEventDescriptor(bundleIdentifier: "com.spotify.client")
-    let status = withExtendedLifetime(target) {
+    return withExtendedLifetime(target) {
       guard let descriptor = target.aeDesc else { return OSStatus(paramErr) }
       return AEDeterminePermissionToAutomateTarget(
         descriptor, AEEventClass(kAECoreSuite), AEEventID(kAESetData), askUserIfNeeded)
     }
-    if askUserIfNeeded {
-      DiagnosticLog.installed?.append(
-        category: "media", "action=spotify-automation-request status=\(status)")
-    }
-    return automationPermissionState(status: status)
   }
 
   static func automationPermissionState(status: OSStatus) -> PermissionState {
