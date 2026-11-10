@@ -6,7 +6,12 @@ import UniformTypeIdentifiers
 /// publication adds verified metadata through x9bus, never inline file bytes.
 enum ConversationClipboardAttachment {
   static let maximumBytes = 50 * 1024 * 1024
+  /// Uncompressed Retina TIFFs written by clipboard managers like Paste.app can
+  /// exceed 50 MB on disk before lossless PNG compression reduces them to a few MB.
+  static let maximumRawTIFFBytes = 256 * 1024 * 1024
   static let inlineTextBytes = 4096
+
+  private static let filenamesPasteboardType = NSPasteboard.PasteboardType("NSFilenamesPboardType")
 
   @MainActor
   static func text(
@@ -15,49 +20,22 @@ enum ConversationClipboardAttachment {
     saveFile: (Data, String) throws -> URL
   ) throws -> String? {
     // Finder also publishes a text representation; actual file objects win.
-    if clipboard.availableType(from: [.fileURL]) != nil {
+    if clipboard.availableType(from: [.fileURL, filenamesPasteboardType]) != nil {
       guard
         let files = clipboard.readObjects(
           forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
         !files.isEmpty
       else { throw CocoaError(.fileReadCorruptFile) }
-      var total = 0
-      let pointers = try files.map { file in
-        let values = try file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-        let isTIFF = UTType(filenameExtension: file.pathExtension)?.conforms(to: .tiff) == true
-        // TIFF screenshots can be much larger than their normalized PNG.
-        // Bound the source read separately, then apply the user-facing cap to
-        // the bytes that we actually store and send.
-        let sourceLimit = isTIFF ? maximumBytes * 4 : maximumBytes - total
-        guard values.isRegularFile == true,
-          let size = values.fileSize, size > 0, size <= sourceLimit
-        else { throw CocoaError(.fileReadTooLarge) }
-        let handle = try FileHandle(forReadingFrom: file)
-        defer { try? handle.close() }
-        let data = try handle.read(upToCount: sourceLimit + 1) ?? Data()
-        guard data.count <= sourceLimit else { throw CocoaError(.fileReadTooLarge) }
-        if isTIFF {
-          guard let bitmap = NSBitmapImageRep(data: data),
-            let normalized = bitmap.representation(using: .png, properties: [:])
-          else { throw CocoaError(.fileReadCorruptFile) }
-          guard !normalized.isEmpty, normalized.count <= maximumBytes - total else {
-            throw CocoaError(.fileReadTooLarge)
-          }
-          total += normalized.count
-          return ConversationAttachmentPointer.line(try saveImage(normalized))
-        }
-        try validate(data)
-        total += data.count
-        guard total <= maximumBytes else { throw CocoaError(.fileReadTooLarge) }
-        return ConversationAttachmentPointer.line(try saveFile(data, file.lastPathComponent))
-      }
-      return "\n" + pointers.joined(separator: "\n") + "\n"
+      return try stageFiles(files, saveImage: saveImage, saveFile: saveFile)
     }
     if let image = try ConversationClipboardImage.png(from: clipboard) {
       try validate(image)
       return "\n" + ConversationAttachmentPointer.line(try saveImage(image)) + "\n"
     }
     if let text = clipboard.string(forType: .string) {
+      if let imageFiles = resolvedExistingFileURLs(from: text, imagesOnly: true) {
+        return try stageFiles(imageFiles, saveImage: saveImage, saveFile: saveFile)
+      }
       let data = Data(text.utf8)
       guard data.count > inlineTextBytes else { return text }
       try validate(data)
@@ -78,6 +56,103 @@ enum ConversationClipboardAttachment {
       }
     }
     return pointers.isEmpty ? nil : "\n" + pointers.joined(separator: "\n") + "\n"
+  }
+
+  /// Drag-and-drop entry point: promotes dragged plain-text file paths (such as
+  /// path cards dragged from Paste.app) to staged file attachments so the
+  /// composer never inserts raw file paths into the prose editor.
+  @MainActor
+  static func textForDrop(
+    from draggingPasteboard: NSPasteboard,
+    saveImage: (Data) throws -> URL,
+    saveFile: (Data, String) throws -> URL
+  ) throws -> String? {
+    if draggingPasteboard.availableType(from: [.fileURL, filenamesPasteboardType, .png, .tiff])
+      == nil,
+      let rawText = draggingPasteboard.string(forType: .string),
+      let files = resolvedExistingFileURLs(from: rawText, imagesOnly: false)
+    {
+      return try stageFiles(files, saveImage: saveImage, saveFile: saveFile)
+    }
+    return try text(from: draggingPasteboard, saveImage: saveImage, saveFile: saveFile)
+  }
+
+  private static func stageFiles(
+    _ files: [URL],
+    saveImage: (Data) throws -> URL,
+    saveFile: (Data, String) throws -> URL
+  ) throws -> String {
+    var total = 0
+    let pointers = try files.map { file in
+      let values = try file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+      if isTIFFFile(file) {
+        guard values.isRegularFile == true,
+          let size = values.fileSize, size > 0, size <= maximumRawTIFFBytes
+        else { throw CocoaError(.fileReadTooLarge) }
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        let raw = try handle.read(upToCount: maximumRawTIFFBytes + 1) ?? Data()
+        guard !raw.isEmpty, raw.count <= maximumRawTIFFBytes else {
+          throw CocoaError(.fileReadTooLarge)
+        }
+        let png = try pngData(fromTIFF: raw)
+        guard !png.isEmpty, png.count <= maximumBytes - total else {
+          throw CocoaError(.fileReadTooLarge)
+        }
+        total += png.count
+        return ConversationAttachmentPointer.line(try saveImage(png))
+      }
+      guard values.isRegularFile == true,
+        let size = values.fileSize, size > 0, size <= maximumBytes - total
+      else { throw CocoaError(.fileReadTooLarge) }
+      let handle = try FileHandle(forReadingFrom: file)
+      defer { try? handle.close() }
+      let data = try handle.read(upToCount: maximumBytes - total + 1) ?? Data()
+      try validate(data)
+      total += data.count
+      guard total <= maximumBytes else { throw CocoaError(.fileReadTooLarge) }
+      return ConversationAttachmentPointer.line(try saveFile(data, file.lastPathComponent))
+    }
+    return "\n" + pointers.joined(separator: "\n") + "\n"
+  }
+
+  static func isTIFFFile(_ url: URL) -> Bool {
+    UTType(filenameExtension: url.pathExtension)?.conforms(to: .tiff) == true
+  }
+
+  static func pngData(fromTIFF data: Data) throws -> Data {
+    guard let bitmap = NSBitmapImageRep(data: data),
+      let png = bitmap.representation(using: .png, properties: [:])
+    else { throw CocoaError(.fileReadCorruptFile) }
+    return png
+  }
+
+  static func resolvedExistingFileURLs(from text: String, imagesOnly: Bool) -> [URL]? {
+    let lines =
+      text
+      .components(separatedBy: .newlines)
+      .map { $0.trimmingCharacters(in: .whitespaces) }
+      .filter { !$0.isEmpty }
+    guard !lines.isEmpty else { return nil }
+    var urls: [URL] = []
+    for line in lines {
+      let candidate: URL
+      if line.hasPrefix("file://"), let url = URL(string: line), url.isFileURL {
+        candidate = url
+      } else if line.hasPrefix("/") {
+        candidate = URL(fileURLWithPath: line)
+      } else {
+        return nil
+      }
+      guard (try? candidate.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
+      else { return nil }
+      if imagesOnly {
+        guard UTType(filenameExtension: candidate.pathExtension)?.conforms(to: .image) == true
+        else { return nil }
+      }
+      urls.append(candidate)
+    }
+    return urls
   }
 
   private static func validate(_ data: Data) throws {

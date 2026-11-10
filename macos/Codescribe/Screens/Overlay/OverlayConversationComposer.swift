@@ -1037,6 +1037,8 @@ private struct ConversationMessageField: NSViewRepresentable {
       coordinator?.noteFocusChange($0)
     }
     editor.onMicrophoneRedirect = onMicrophoneRedirect
+    editor.registerForDraggedTypes(MessageTextView.supportedDragTypes)
+    scroll.registerForDraggedTypes(MessageTextView.supportedDragTypes)
     scroll.onHeightChange = { context.coordinator.updateHeight($0) }
     scroll.documentView = editor
     return scroll
@@ -1089,7 +1091,7 @@ private struct ConversationMessageField: NSViewRepresentable {
         from: clipboard, saveImage: saveImage, saveFile: saveFile)
     }
     editor.droppedText = { pasteboard in
-      try ConversationClipboardAttachment.text(
+      try ConversationClipboardAttachment.textForDrop(
         from: pasteboard, saveImage: saveImage, saveFile: saveFile)
     }
     editor.onPasteError = onPasteError
@@ -1609,9 +1611,34 @@ private struct ConversationMessageField: NSViewRepresentable {
         editor.scrollRangeToVisible(editor.selectedRange())
       }
     }
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+      (documentView as? MessageTextView)?.draggingEntered(sender) ?? []
+    }
+
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+      (documentView as? MessageTextView)?.draggingUpdated(sender) ?? []
+    }
+
+    override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+      (documentView as? MessageTextView)?.prepareForDragOperation(sender) ?? false
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+      (documentView as? MessageTextView)?.performDragOperation(sender) ?? false
+    }
   }
 
-  private final class MessageTextView: NSTextView, ComposerMicrophoneRedirecting {
+  final class MessageTextView: NSTextView, ComposerMicrophoneRedirecting {
+    static let supportedDragTypes: [NSPasteboard.PasteboardType] = [
+      .fileURL,
+      NSPasteboard.PasteboardType("NSFilenamesPboardType"),
+      .png,
+      .tiff,
+      .pdf,
+      .string,
+    ]
+
     var onMicrophoneRedirect: (() -> Void)?
     var sending = false
     var submissionBlocked = false
@@ -1634,6 +1661,14 @@ private struct ConversationMessageField: NSViewRepresentable {
       didSet {
         if oldValue != firstLineOffset { invalidateTextContainerOrigin() }
       }
+    }
+
+    override var acceptableDragTypes: [NSPasteboard.PasteboardType] {
+      var types = super.acceptableDragTypes
+      for extra in Self.supportedDragTypes where !types.contains(extra) {
+        types.append(extra)
+      }
+      return types
     }
 
     override var textContainerOrigin: NSPoint {
@@ -1752,39 +1787,66 @@ private struct ConversationMessageField: NSViewRepresentable {
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-      guard sender.draggingPasteboard.availableType(from: [.fileURL]) != nil else {
-        return super.draggingEntered(sender)
+      guard !sending, isEditable else { return [] }
+      if sender.draggingPasteboard.availableType(from: Self.supportedDragTypes) != nil {
+        return .copy
       }
-      return sending ? [] : .copy
+      return super.draggingEntered(sender)
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+      guard !sending, isEditable else { return [] }
+      if sender.draggingPasteboard.availableType(from: Self.supportedDragTypes) != nil {
+        return .copy
+      }
+      return super.draggingUpdated(sender)
     }
 
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
-      guard sender.draggingPasteboard.availableType(from: [.fileURL]) != nil else {
-        return super.prepareForDragOperation(sender)
+      guard !sending, isEditable else { return false }
+      if sender.draggingPasteboard.availableType(from: Self.supportedDragTypes) != nil {
+        return droppedText != nil
       }
-      return !sending && droppedText != nil
+      return super.prepareForDragOperation(sender)
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-      guard sender.draggingPasteboard.availableType(from: [.fileURL]) != nil else {
-        return super.performDragOperation(sender)
+      let board = sender.draggingPasteboard
+      let hasFileURL =
+        board.availableType(
+          from: [.fileURL, NSPasteboard.PasteboardType("NSFilenamesPboardType")]
+        ) != nil
+      return performDrop(from: board) {
+        // A file URL must never fall through to NSTextView's default path-text
+        // insertion. Treat a file drop while sending as consumed and leave the
+        // draft untouched.
+        hasFileURL ? true : super.performDragOperation(sender)
       }
-      // A file URL must never fall through to NSTextView's default path-text
-      // insertion. Treat a drop while sending as consumed and leave the draft
-      // untouched.
-      guard !sending else { return true }
+    }
+
+    @discardableResult
+    func performDrop(
+      from board: NSPasteboard,
+      fallback: () -> Bool = { false }
+    ) -> Bool {
+      let hasFileURL =
+        board.availableType(
+          from: [.fileURL, NSPasteboard.PasteboardType("NSFilenamesPboardType")]
+        ) != nil
+      guard !sending, isEditable else { return hasFileURL }
       do {
-        if let text = try droppedText?(sender.draggingPasteboard) {
+        if let text = try droppedText?(board) {
           insertAttachmentAwareText(text)
-        } else {
-          onPasteError(nil)
+          return true
         }
+        onPasteError(nil)
+        return fallback()
       } catch {
         onPasteError(
           String(
             localized: "Could not paste this attachment. Use files up to 50 MB and try again."))
+        return hasFileURL
       }
-      return true
     }
 
     override func paste(_ sender: Any?) {

@@ -804,6 +804,149 @@ final class OverlayClipboardPasteTests: XCTestCase {
     XCTAssertFalse(
       text.contains("[attachment]"), "canonical helper appends exactly one metadata pointer")
   }
+
+  /// Maciej, 2026-11-10: Paste.app stores Retina screenshots as uncompressed
+  /// `.tiff` files (> 50 MB on disk) and publishes `public.file-url`. Pasting
+  /// or dropping them must transcode the raw TIFF to a compact `.png` before
+  /// applying the 50 MB attachment cap.
+  @MainActor
+  func testLargeUncompressedTIFFFileTranscodesToCompactPNGOnPasteAndDrop() throws {
+    let board = NSPasteboard.withUniqueName()
+    defer { board.releaseGlobally() }
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    // 4000 x 3600 x 4 RGBA = 57,600,000 bytes (> 50 MB maximumBytes).
+    let rep = try XCTUnwrap(
+      NSBitmapImageRep(
+        bitmapDataPlanes: nil, pixelsWide: 4000, pixelsHigh: 3600,
+        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+        colorSpaceName: .deviceRGB, bytesPerRow: 4000 * 4, bitsPerPixel: 32))
+    let rawTIFF = try XCTUnwrap(
+      rep.representation(
+        using: .tiff, properties: [.compressionMethod: NSBitmapImageRep.TIFFCompression.none]))
+    XCTAssertGreaterThan(rawTIFF.count, ConversationClipboardAttachment.maximumBytes)
+
+    let tiffURL = directory.appendingPathComponent("Paste Retina Screenshot.tiff")
+    try rawTIFF.write(to: tiffURL)
+    XCTAssertTrue(board.writeObjects([tiffURL as NSURL]))
+
+    var savedBytes = Data()
+    let pointer = try XCTUnwrap(
+      ConversationClipboardAttachment.text(
+        from: board,
+        saveImage: { data in
+          savedBytes = data
+          return URL(fileURLWithPath: try savePastedImage(data: data))
+        },
+        saveFile: { _, _ in
+          XCTFail("file-URL TIFF path uses saveImage with transcoded .png")
+          return tiffURL
+        }))
+    XCTAssertLessThan(savedBytes.count, ConversationClipboardAttachment.maximumBytes)
+    XCTAssertEqual(Array(savedBytes.prefix(8)), [137, 80, 78, 71, 13, 10, 26, 10])
+    let extracted = ConversationAttachmentPointer.extract(from: pointer)
+    let savedPath = try XCTUnwrap(extracted.paths.first)
+    XCTAssertTrue(savedPath.hasSuffix(".png"), savedPath)
+    XCTAssertEqual(
+      NSBitmapImageRep(data: try Data(contentsOf: URL(fileURLWithPath: savedPath)))?.pixelsWide,
+      4000)
+  }
+
+  /// Maciej, 2026-11-10: dragging from Paste.app or Finder onto the Agents
+  /// composer inserted raw file paths into the text editor instead of staging
+  /// attachment pills with thumbnail previews.
+  @MainActor
+  func testDropOnComposerStagesAttachmentPillsWithoutLeakingPathsIntoProse() throws {
+    let isolatedRoot = CodescribeConfig().configDir()
+    guard isolatedRoot != NSHomeDirectory() + "/.codescribe" else {
+      return XCTFail("tests must run under an isolated config root")
+    }
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let pngBytes = try XCTUnwrap(bitmap().representation(using: .png, properties: [:]))
+    let droppedFile = directory.appendingPathComponent("dropped-from-finder.png")
+    let droppedPathClip = directory.appendingPathComponent("dropped-from-paste-path.png")
+    try pngBytes.write(to: droppedFile)
+    try pngBytes.write(to: droppedPathClip)
+
+    var draft = "Sprawdź zrzut:"
+    let host = NSHostingView(
+      rootView: OverlayConversationComposer(
+        palette: .dark, draft: Binding(get: { draft }, set: { draft = $0 }),
+        sending: false, onSubmit: {}))
+    host.sizingOptions = []
+    host.frame = NSRect(x: 0, y: 0, width: 400, height: 160)
+    let window = NSWindow(
+      contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    defer { window.close() }
+    host.layoutSubtreeIfNeeded()
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+    func editor(in view: NSView) -> NSTextView? {
+      if let text = view as? NSTextView, text.isEditable { return text }
+      return view.subviews.lazy.compactMap { editor(in: $0) }.first
+    }
+    let text = try XCTUnwrap(editor(in: host))
+
+    let fileBoard = NSPasteboard.withUniqueName()
+    defer { fileBoard.releaseGlobally() }
+    XCTAssertTrue(fileBoard.writeObjects([droppedFile as NSURL]))
+    XCTAssertTrue(text.performDragOperation(TestDraggingInfo(pasteboard: fileBoard)))
+
+    let pathBoard = NSPasteboard.withUniqueName()
+    defer { pathBoard.releaseGlobally() }
+    pathBoard.setString(droppedPathClip.path, forType: .string)
+    XCTAssertTrue(text.performDragOperation(TestDraggingInfo(pasteboard: pathBoard)))
+
+    host.layoutSubtreeIfNeeded()
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+
+    let parts = ConversationDraft.split(draft)
+    XCTAssertEqual(parts.text, "Sprawdź zrzut:")
+    XCTAssertEqual(
+      text.string, "Sprawdź zrzut:",
+      "dropping files or path clips must never leak raw file paths into the prose editor")
+    XCTAssertEqual(parts.attachments.count, 2, draft)
+    XCTAssertTrue(parts.attachments[0].hasSuffix("dropped-from-finder.png"))
+    XCTAssertTrue(parts.attachments[1].hasSuffix("dropped-from-paste-path.png"))
+  }
+}
+
+@MainActor
+private final class TestDraggingInfo: NSObject, @preconcurrency NSDraggingInfo {
+  let draggingPasteboard: NSPasteboard
+
+  init(pasteboard: NSPasteboard) {
+    self.draggingPasteboard = pasteboard
+  }
+
+  var draggingDestinationWindow: NSWindow? { nil }
+  var draggingSourceOperationMask: NSDragOperation { .copy }
+  var draggingLocation: NSPoint { .zero }
+  var draggedImageLocation: NSPoint { .zero }
+  var draggedImage: NSImage? { nil }
+  var draggingSource: Any? { nil }
+  var draggingSequenceNumber: Int { 1 }
+  var animatesToDestination: Bool = false
+  var draggingFormation: NSDraggingFormation = .default
+  var numberOfValidItemsForDrop: Int = 1
+  var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+
+  func slideDraggedImage(to screenPoint: NSPoint) {}
+  override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+  func enumerateDraggingItems(
+    options enumOpts: NSDraggingItemEnumerationOptions = [],
+    for view: NSView?,
+    classes classArray: [AnyClass],
+    searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [:],
+    using block: @escaping (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void
+  ) {}
+  func resetSpringLoading() {}
 }
 
 @MainActor

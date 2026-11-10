@@ -676,6 +676,20 @@ struct Composer: View {
       )
       return
     }
+    if ConversationClipboardAttachment.isTIFFFile(url) {
+      do {
+        let raw = try Data(contentsOf: url)
+        let png = try ConversationClipboardAttachment.pngData(fromTIFF: raw)
+        let saved = URL(fileURLWithPath: try savePastedImage(data: png))
+        store.addAttachments([saved])
+        return
+      } catch {
+        attachLog.error(
+          "\(source, privacy: .public): failed to transcode TIFF name=\(url.lastPathComponent, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+        )
+        return
+      }
+    }
     store.addAttachments([url])
   }
 
