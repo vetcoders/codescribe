@@ -143,7 +143,7 @@ struct ShortcutsPanel: View {
       HStack(spacing: 8) {
         Text(row.binding.visibleName)
           .font(SettingsScale.monoValue)
-          .foregroundStyle(CSColor.terracottaText)
+          .foregroundStyle(Color.primary)
         CSIconView(icon: .chevronUpDown, size: 9, weight: .semibold, color: CSColor.secondaryInk)
       }
       .padding(.horizontal, SettingsScale.controlInsetH)
@@ -181,10 +181,7 @@ struct ShortcutsPanel: View {
             .foregroundStyle(model.canSaveBindings ? Color.primary : CSColor.secondaryInk)
             .background(
               RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-                .fill(
-                  model.canSaveBindings
-                    ? CSColor.terracotta.opacity(0.9)
-                    : Color.primary.opacity(CSAlpha.fill))
+                .fill(Color.primary.opacity(CSAlpha.fill))
             )
         }
         .csFocusRing()
@@ -230,7 +227,7 @@ struct ShortcutsPanel: View {
       if let receipt = model.bindingSaveReceipt, let sentence = receipt.sentence {
         VStack(alignment: .leading, spacing: 3) {
           statusLine(
-            color: receipt.hasRejection ? CSColor.dangerLight : CSColor.oliveLight,
+            color: receipt.hasRejection ? CSColor.dangerLight : CSColor.secondaryInk,
             text: sentence
           )
           if let detail = receipt.failureDetail {
@@ -417,6 +414,8 @@ struct ShortcutsPanel: View {
           Toggle("Middle click picks an agent", isOn: middleGestureBinding)
             .settingsSwitch()
         }
+        divider
+        SharedChannelNameRow(model: model)
       }
       .settingsGroupedInset(padding: 0)
     }
@@ -816,7 +815,7 @@ struct GestureTestRow: View {
         .foregroundStyle(Color.primary)
         Text(statusText)
           .font(SettingsScale.helper)
-          .foregroundStyle(outcome == .recognized ? CSColor.oliveLight : CSColor.secondaryInk)
+          .foregroundStyle(outcome == .recognized ? CSColor.success : CSColor.secondaryInk)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("shortcuts-gesture-test-outcome")
       }
@@ -913,5 +912,64 @@ extension CsDoubleTapOutcomeKind {
         defaultValue: "No mode on this Option",
         comment: "Gesture test outcome: no mode is bound to the tapped Option side")
     }
+  }
+}
+
+/// Channel 0's display name on the Bus: one line, saved on Return or when the
+/// field loses focus, and **Restore default** brings back the interface's
+/// name. Only the name changes; channel 0's digit and routing stay.
+private struct SharedChannelNameRow: View {
+  @ObservedObject var model: SettingsViewModel
+  @State private var draft = ""
+  @FocusState private var focused: Bool
+
+  var body: some View {
+    HStack(alignment: .center, spacing: SettingsScale.rowInsetH) {
+      VStack(alignment: .leading, spacing: 2) {
+        Text("Shared channel name")
+          .font(SettingsScale.settingName)
+          .foregroundStyle(Color.primary)
+        Text("The name of channel 0 on the bar, in the agents list and in its conversation.")
+          .font(SettingsScale.helper)
+          .foregroundStyle(CSColor.secondaryInk)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      TextField(
+        String(localized: "Shared channel name"),
+        text: $draft, prompt: Text(verbatim: OverlaySharedChannelName.defaultName)
+      )
+      .textFieldStyle(.roundedBorder)
+      .frame(width: 160)
+      .focused($focused)
+      .onSubmit(commit)
+      .onChange(of: focused) { _, isFocused in
+        if !isFocused { commit() }
+      }
+      .accessibilityIdentifier("settings-shared-channel-name")
+      Button(
+        String(
+          localized: "Restore default",
+          comment: "Settings: puts the shared channel's default name back")
+      ) {
+        model.restoreDefaultSharedChannelName()
+        draft = ""
+      }
+      .font(SettingsScale.controlLabel)
+      .csLink()
+      .disabled(model.settings.sharedChannelName.isEmpty && draft.isEmpty)
+      .accessibilityIdentifier("settings-shared-channel-name-restore")
+    }
+    .padding(.horizontal, SettingsScale.rowInsetH)
+    .padding(.vertical, SettingsScale.rowInsetV)
+    .onAppear { draft = model.settings.sharedChannelName }
+    .onChange(of: model.settings.sharedChannelName) { _, stored in
+      if !focused { draft = stored }
+    }
+  }
+
+  private func commit() {
+    model.setSharedChannelName(draft)
+    draft = model.settings.sharedChannelName
   }
 }

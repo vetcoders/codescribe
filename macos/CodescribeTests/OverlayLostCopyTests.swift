@@ -135,7 +135,7 @@ final class OverlayLostCopyTests: XCTestCase {
 
   func testPassiveHoverDoesNotOpenIntercomKeyPermission() throws {
     let panel = OverlayIntercomPanel()
-    panel.setFrame(NSRect(x: -10000, y: -10000, width: 320, height: 200), display: false)
+    panel.resize(to: NSRect(x: -10000, y: -10000, width: 320, height: 200), display: false)
     let root = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 200))
     panel.contentView = root
     defer { panel.contentView = nil; panel.close() }
@@ -155,7 +155,7 @@ final class OverlayLostCopyTests: XCTestCase {
     // isolated GUI lane may execute this case; it has no event-timing waits.
     try BackgroundTestWindow.requireIsolatedGUI()
     let panel = OverlayIntercomPanel()
-    panel.setFrame(NSRect(x: -10000, y: -10000, width: 320, height: 200), display: false)
+    panel.resize(to: NSRect(x: -10000, y: -10000, width: 320, height: 200), display: false)
     let root = OverlayLostCopySupport.ClickSink(
       frame: NSRect(x: 0, y: 0, width: 320, height: 200))
     panel.contentView = root

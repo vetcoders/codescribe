@@ -7,7 +7,7 @@ import XCTest
 @MainActor
 final class OverlayLostTypographyTests: XCTestCase {
   func testBothRichBodyBranchesAndBothBudgetsReadOneBaseline() throws {
-    _ = try OverlayLostBehaviorSource.bodyFontSize()
+    let size = try OverlayLostBehaviorSource.bodyFontSize()
     let content = try OverlayLostBehaviorSource.section(
       OverlayLostBehaviorSource.overlay("OverlayConversationView.swift"),
       from: "struct OverlayConversationMessageContent: View {",
@@ -22,10 +22,28 @@ final class OverlayLostTypographyTests: XCTestCase {
     let minimum = try OverlayLostBehaviorSource.section(
       layout, from: "static func minimumReadableConversationHeight(",
       to: "static func rowCornerRadius(")
-    for budget in [preview, minimum] {
+    // The preview budget reads its measurements through the per-scale cache
+    // (72cded822) instead of measuring on every card body evaluation. The
+    // cache and the minimum both measure the one declared baseline.
+    let typography = try OverlayLostBehaviorSource.section(
+      layout, from: "struct IntercomPreviewTypography: Equatable, Sendable {",
+      to: "readableWordWidth = (")
+    XCTAssertTrue(
+      OverlayLostBehaviorSource.compact(preview).contains(
+        "let type = IntercomPreviewTypography.measured(scale: scale)"))
+    XCTAssertTrue(
+      OverlayLostBehaviorSource.compact(preview).contains(
+        "type.lineHeight + type.metadataLineHeight"))
+    for budget in [typography, minimum] {
       XCTAssertTrue(
         OverlayLostBehaviorSource.compact(budget).contains(
           ".systemFont(ofSize: OverlayConversationMessageContent.bodyFontSize * scale)"))
+    }
+    for scale in [CGFloat(1), 1.5, 2] {
+      XCTAssertEqual(
+        IntercomPreviewTypography.measured(scale: scale).lineHeight,
+        ceil(NSLayoutManager().defaultLineHeight(for: .systemFont(ofSize: size * scale))),
+        "the cached preview line follows the declared baseline at scale \(scale)")
     }
   }
 

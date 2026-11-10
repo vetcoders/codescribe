@@ -29,7 +29,7 @@ struct OAuthClientIdEditor: View {
           .onSubmit(onSave)
           .accessibilityLabel("\(accountBrand) OAuth client id")
         SettingsChipButton(
-          "Save", tint: CSColor.oliveLight,
+          "Save", tint: Color.primary,
           enabled: draft != savedClientId,
           action: onSave
         )

@@ -106,7 +106,7 @@ private struct LLMLaneEditor: View {
 
   private var discoveryDotColor: Color {
     switch laneModel.discovery.status {
-    case "fresh": return CSColor.olive
+    case "fresh": return CSColor.secondaryInk
     case "cached": return CSColor.amberLight
     case "no_key", "loading": return CSColor.secondaryInk
     default: return CSColor.dangerLight
@@ -205,19 +205,40 @@ private struct LLMLaneEditor: View {
       {
         VStack(alignment: .trailing, spacing: CSSpace.xs) {
           // Discovery state ("discovering…", cached, failed) is the line above.
-          if laneModel.usesDiscoveredPicker {
+          let modelGroups = model.availableModelGroups(for: lane)
+          if laneModel.usesDiscoveredPicker || !modelGroups.isEmpty {
             let current =
               laneModel.modelOptions.first { $0.id == laneModel.resolvedModel }?.displayName
               ?? laneModel.resolvedModel
             Menu {
-              ForEach(laneModel.modelOptions, id: \.id) { option in
-                Button {
-                  model.setLLMModel(option.id, for: lane)
-                } label: {
-                  if option.id == laneModel.resolvedModel {
-                    Label(option.displayName, systemImage: "checkmark")
-                  } else {
-                    Text(option.displayName)
+              if modelGroups.count <= 1 {
+                ForEach(laneModel.modelOptions, id: \.id) { option in
+                  Button {
+                    model.setLLMModel(option.id, for: lane)
+                  } label: {
+                    if option.id == laneModel.resolvedModel {
+                      Label(option.displayName, systemImage: "checkmark")
+                    } else {
+                      Text(option.displayName)
+                    }
+                  }
+                }
+              } else {
+                ForEach(modelGroups) { group in
+                  Section(group.providerDisplayName) {
+                    ForEach(group.models, id: \.id) { option in
+                      Button {
+                        model.selectLLMModel(option.id, providerId: group.providerId, for: lane)
+                      } label: {
+                        if group.providerId == laneModel.providerId,
+                          option.id == laneModel.resolvedModel
+                        {
+                          Label(option.displayName, systemImage: "checkmark")
+                        } else {
+                          Text(option.displayName)
+                        }
+                      }
+                    }
                   }
                 }
               }
@@ -405,7 +426,8 @@ private struct LLMLaneEditor: View {
         .font(SettingsScale.helper)
         .foregroundStyle(CSColor.secondaryInk)
       if let host = probe.endpointHost {
-        let credential = probe.credentialSource == "account"
+        let credential =
+          probe.credentialSource == "account"
           ? String(localized: "saved account") : String(localized: "API key or key-free endpoint")
         Text("Configured cloud route: \(probe.provider) · \(host) · \(credential)")
           .font(SettingsScale.helper)
@@ -429,13 +451,21 @@ private struct LLMLaneEditor: View {
     guard probe.status == "failed" || probe.status == "timed_out" else { return nil }
     switch probe.failureCode {
     case "unavailable":
-      return String(localized: "Formatting is unavailable. Check the provider, model and account settings.")
+      return String(
+        localized: "Formatting is unavailable. Check the provider, model and account settings.")
     case "account_authentication":
-      return String(localized: "Account access failed. Check your connection and account settings, then repeat the test.")
+      return String(
+        localized:
+          "Account access failed. Check your connection and account settings, then repeat the test."
+      )
     case "timeout":
-      return String(localized: "The request exceeded the formatting deadline. Check the connection or choose a faster model.")
+      return String(
+        localized:
+          "The request exceeded the formatting deadline. Check the connection or choose a faster model."
+      )
     case "transport":
-      return String(localized: "The provider could not be reached. Check the connection and provider address.")
+      return String(
+        localized: "The provider could not be reached. Check the connection and provider address.")
     case "http":
       switch probe.httpStatus {
       case 401:
@@ -446,12 +476,18 @@ private struct LLMLaneEditor: View {
         return String(localized: "Usage limit reached. Check billing and rate limits.")
       default:
         if let status = probe.httpStatus {
-          return String(localized: "Provider request failed (HTTP \(Int(status))). Check the model and provider settings.")
+          return String(
+            localized:
+              "Provider request failed (HTTP \(Int(status))). Check the model and provider settings."
+          )
         }
-        return String(localized: "The provider rejected the request. Check the model and provider settings.")
+        return String(
+          localized: "The provider rejected the request. Check the model and provider settings.")
       }
     default:
-      return String(localized: "The provider returned no usable formatting result. Check the model and repeat the test.")
+      return String(
+        localized:
+          "The provider returned no usable formatting result. Check the model and repeat the test.")
     }
   }
 

@@ -169,7 +169,8 @@ impl TryFrom<&EngineEvent> for EngineEventWire {
     /// `UtteranceFinal::raw_text` at the boundary.
     fn try_from(value: &EngineEvent) -> Result<Self, Self::Error> {
         let wire = match value {
-            EngineEvent::DirectTranscript { .. }
+            EngineEvent::DecoderCovered { .. }
+            | EngineEvent::DirectTranscript { .. }
             | EngineEvent::DirectTranscriptEnd { .. }
             | EngineEvent::LedgerMutation { .. }
             | EngineEvent::LedgerSeal { .. }

@@ -1247,6 +1247,16 @@ fn append_exact_fragment(rendered: &mut String, fragment: &str) {
     rendered.push_str(fragment);
 }
 
+/// The terminal presentation boundary never revisits an existing prefix.
+fn append_terminal_sentence_boundary(text: &mut String) {
+    if !matches!(
+        text.trim_end().chars().last(),
+        Some('.' | '!' | '?' | '…' | ':')
+    ) {
+        text.push('.');
+    }
+}
+
 impl TranscriptReducer {
     fn mint_derived_projection(
         &mut self,
@@ -3212,12 +3222,7 @@ impl TranscriptReducer {
         // whitespace shaping happens progressively on source-bound live spans.
         // Even a long last owner or an invalidated cache cannot reopen a prefix.
         let mut shaped = source.clone();
-        if !matches!(
-            source.trim_end().chars().last(),
-            Some('.' | '!' | '?' | '…' | ':')
-        ) {
-            shaped.push('.');
-        }
+        append_terminal_sentence_boundary(&mut shaped);
         if shaped == source {
             return None;
         }
@@ -4033,7 +4038,7 @@ pub struct PresentationEmitter {
 /// How stop-time formatter selection assembles occurrence projections.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProjectionAssembly {
-    AllOrWholeRaw,
+    TerminalDocument,
     RefusedPerOccurrence,
 }
 
@@ -4607,7 +4612,7 @@ impl PresentationEmitter {
         let session = self
             .transcript_bus
             .as_ref()
-            .map(|bus| bus.session_id())
+            .map(|bus| bus.capture_session_id())
             .or_else(|| {
                 self.cursor_capture
                     .get()
@@ -4694,14 +4699,20 @@ impl PresentationEmitter {
     /// emitted first, and only that callback may repaint the canvas.
     pub fn apply_user_revision(
         &self,
-        intent: UserRevisionIntent,
+        mut intent: UserRevisionIntent,
     ) -> Result<UserRevisionCommit, UserRevisionRefusal> {
+        let document_id = intent.session_id.clone();
+        intent.session_id = self.capture_session_for_document(&document_id)?;
         let ledger = self
             .acoustic_ledger
             .as_ref()
             .ok_or(UserRevisionRefusal::AuthorityUnavailable)?;
         let mut ledger = ledger.lock().unwrap_or_else(|error| error.into_inner());
         self.commit_document_revision(&mut ledger, DocumentRequest::Revise(intent))
+            .map(|mut commit| {
+                commit.session_id = document_id;
+                commit
+            })
     }
 
     /// Undo, Redo or a version pick: re-select accepted step `target` of the
@@ -4713,6 +4724,8 @@ impl PresentationEmitter {
         source_revision: u64,
         target: usize,
     ) -> Result<UserRevisionCommit, UserRevisionRefusal> {
+        let document_id = session_id;
+        let session_id = self.capture_session_for_document(&document_id)?;
         let ledger = self
             .acoustic_ledger
             .as_ref()
@@ -4726,6 +4739,42 @@ impl PresentationEmitter {
                 target,
             },
         )
+        .map(|mut commit| {
+            commit.session_id = document_id;
+            commit
+        })
+    }
+
+    pub fn owns_document(&self, document_id: &str) -> bool {
+        self.transcript_bus
+            .as_ref()
+            .map(|bus| bus.session_id())
+            .or_else(|| {
+                self.cursor_capture
+                    .get()
+                    .map(|(session, _)| session.as_str())
+            })
+            .is_some_and(|session| session == document_id)
+    }
+
+    /// UI commands name the document; ledger operations name its physical
+    /// capture. Neither a display label nor another document can select it.
+    pub fn capture_session_for_document(
+        &self,
+        document_id: &str,
+    ) -> Result<String, UserRevisionRefusal> {
+        if !self.owns_document(document_id) {
+            return Err(UserRevisionRefusal::SessionMismatch);
+        }
+        self.transcript_bus
+            .as_ref()
+            .map(|bus| bus.capture_session_id().to_string())
+            .or_else(|| {
+                self.cursor_capture
+                    .get()
+                    .map(|(session, _)| session.clone())
+            })
+            .ok_or(UserRevisionRefusal::AuthorityUnavailable)
     }
 
     /// Steps and cursor of the take the reducer holds, with the revision a
@@ -5236,6 +5285,27 @@ impl PresentationEmitter {
         self.run_light_plus_tick_for(ledger, budget, false, occurrences);
     }
 
+    /// Finish only this settled participant's lifecycle. Other participants
+    /// still own the live ledger; detaching must never seal their speech.
+    pub(crate) fn note_channel_detached(&self) {
+        let mut state = self
+            .session_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.mark_terminal_lifecycle();
+        // The settled interval owns a terminal direct document, even while
+        // other recipients keep the common recognizer running. This capability
+        // authenticates only its existing observations, never an acoustic seal.
+        let revision = self
+            .cursor_capture
+            .get()
+            .and_then(|(session, epoch)| state.apply_direct_transcript_end(session, *epoch));
+        drop(state);
+        if let Some(revision) = revision {
+            self.publish_direct_revision(revision);
+        }
+    }
+
     /// Authenticate formatter input without mutating reducer, ledger, Bus, or
     /// delivery state. The controller feeds these exact bytes into the one
     /// production formatter pipeline and retains the source revision as CAS.
@@ -5244,10 +5314,11 @@ impl PresentationEmitter {
         session_id: &str,
         source_revision: u64,
     ) -> Result<String, UserRevisionRefusal> {
+        let session_id = self.capture_session_for_document(session_id)?;
         self.session_state
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .terminal_revision_source(session_id, source_revision)
+            .terminal_revision_source(&session_id, source_revision)
     }
 
     /// The one paid formatter pass this terminal take is owed, if any.
@@ -5260,10 +5331,28 @@ impl PresentationEmitter {
         if self.literal_delivery() {
             return None;
         }
-        self.session_state
+        let mut request = self
+            .session_state
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .terminal_formatter_request()
+            .terminal_formatter_request()?;
+        if let Some(bus) = &self.transcript_bus {
+            if request.session_id != bus.capture_session_id() {
+                return None;
+            }
+            request.session_id = bus.session_id().to_string();
+        }
+        Some(request)
+    }
+
+    /// Inspect admitted Raw labels before presentation shaping in falsifiers.
+    #[cfg(test)]
+    pub(crate) fn raw_entries_for_test(&self) -> Vec<TranscriptDocumentEntry> {
+        let state = self
+            .session_state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.document_by_occurrence.values().cloned().collect()
     }
 
     /// Admit only a successful formatter result as a source-bound derived
@@ -5282,6 +5371,8 @@ impl PresentationEmitter {
             AiFormatStatus::Skipped => return Err(UserRevisionRefusal::FormatterUnavailable),
             AiFormatStatus::AiNoop => return Err(UserRevisionRefusal::FormatterNoop),
         }
+        let document_id = session_id;
+        let session_id = self.capture_session_for_document(&document_id)?;
         let ledger = self
             .acoustic_ledger
             .as_ref()
@@ -5296,6 +5387,10 @@ impl PresentationEmitter {
                 result,
             },
         )
+        .map(|mut commit| {
+            commit.session_id = document_id;
+            commit
+        })
     }
 
     /// Wait while background occurrence formatter jobs are still in flight for
@@ -5383,8 +5478,9 @@ impl PresentationEmitter {
         }
     }
 
-    /// Choose one whole-take version. An incomplete Smart set yields a single
-    /// Corrections floor over all Raw; late versions never trigger delivery.
+    /// Freeze one terminal version. Current accepted occurrence formats keep
+    /// their place; missing or failed fragments retain their committed text.
+    /// Late formatter answers never trigger another delivery.
     pub fn delivery_projection(
         &self,
         policy: FormattingPolicy,
@@ -5394,7 +5490,7 @@ impl PresentationEmitter {
             None,
             policy,
             raw_at_handoff,
-            ProjectionAssembly::AllOrWholeRaw,
+            ProjectionAssembly::TerminalDocument,
         )
     }
 
@@ -5405,8 +5501,21 @@ impl PresentationEmitter {
         raw_at_handoff: &str,
         assembly: ProjectionAssembly,
     ) -> Option<DerivedTranscriptProjection> {
+        if let Some(document) = take_id.map(|id| id.strip_suffix(":stopping").unwrap_or(id))
+            && !self.owns_document(document)
+        {
+            return None;
+        }
+        if matches!(
+            policy,
+            FormattingPolicy::Correction | FormattingPolicy::Smart
+        ) && let Some(projection) =
+            self.occurrence_delivery_projection(take_id, policy, raw_at_handoff)
+        {
+            return Some(projection);
+        }
         if assembly == ProjectionAssembly::RefusedPerOccurrence {
-            return self.refused_delivery_projection(take_id, policy, raw_at_handoff);
+            return None;
         }
         let mut reducer = self
             .session_state
@@ -5530,7 +5639,7 @@ impl PresentationEmitter {
         Some(projection)
     }
 
-    fn refused_delivery_projection(
+    fn occurrence_delivery_projection(
         &self,
         take_id: Option<&str>,
         policy: FormattingPolicy,
@@ -5556,8 +5665,9 @@ impl PresentationEmitter {
             .keys()
             .next()
             .map(|occurrence| occurrence.session.clone())?;
-        if let Some(expected) = take_id.map(|id| id.strip_suffix(":stopping").unwrap_or(id))
-            && session_id != expected
+        if let Some(document) = take_id.map(|id| id.strip_suffix(":stopping").unwrap_or(id))
+            && self.capture_session_for_document(document).ok().as_deref()
+                != Some(session_id.as_str())
         {
             return None;
         }
@@ -5565,7 +5675,6 @@ impl PresentationEmitter {
             || !reducer.direct_document.is_empty()
             || reducer.committed_rendered_text() != raw_at_handoff
             || reducer.raw_human_revision
-            || reducer.manual_rendered_text.is_some()
             || !reducer.context_markers.is_empty()
             || reducer.explicit_raw_step_selected()
             || reducer
@@ -5575,6 +5684,38 @@ impl PresentationEmitter {
         {
             return None;
         }
+        // A whole accepted version remains ahead of occurrence assembly.
+        if let Some(whole) = reducer
+            .derived_projections
+            .iter()
+            .rev()
+            .find(|projection| {
+                projection.source_observation.is_none()
+                    && projection.source_state == "raw_document"
+                    && projection.source_raw_revision == reducer.revision
+                    && projection.requested_mode == policy.as_str()
+                    && projection.source_raw_text == raw_at_handoff
+                    && projection.status == "applied"
+            })
+            .cloned()
+        {
+            reducer.delivery_selection = Some(whole.clone());
+            drop(reducer);
+            self.publish_derived_paint(&whole);
+            return Some(whole);
+        }
+        // Non-human manual presentation is Light+'s owned Stop boundary. It
+        // may append a period, but cannot replace the accepted live prefix.
+        let closes_sentence = if let Some(manual) = &reducer.manual_rendered_text {
+            let occurrences = reducer.rendered_occurrence_span(None);
+            match manual.strip_prefix(&occurrences) {
+                Some("") => false,
+                Some(".") => true,
+                _ => return None,
+            }
+        } else {
+            false
+        };
         let mut text = String::new();
         let mut any_formatted = false;
         for (occurrence, entry) in &reducer.document_by_occurrence {
@@ -5599,6 +5740,9 @@ impl PresentationEmitter {
         if !any_formatted || text.trim().is_empty() {
             return None;
         }
+        if closes_sentence {
+            append_terminal_sentence_boundary(&mut text);
+        }
         let source_revision = reducer.revision;
         let mut projection = reducer.mint_derived_projection(
             session_id.clone(),
@@ -5618,7 +5762,7 @@ impl PresentationEmitter {
             *reducer
                 .derived_projections
                 .last_mut()
-                .expect("minted refused selection") = projection.clone();
+                .expect("minted occurrence selection") = projection.clone();
         }
         if projection.rendered_text != raw_at_handoff {
             reducer.anchor_document_timeline(&session_id);
@@ -5666,6 +5810,17 @@ impl Drop for PresentationEmitter {
 }
 
 impl EventSink for PresentationEmitter {
+    fn close_participation(&self, session_id: &str, capture_epoch: u64) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.cursor_capture.get().is_some_and(|(session, epoch)| {
+                session == session_id && *epoch == capture_epoch && capture_epoch != 0
+            }),
+            "document participation completion capture identity mismatch"
+        );
+        self.note_channel_detached();
+        Ok(())
+    }
+
     fn wait_presentation_published<'a>(
         &'a self,
         session_id: &'a str,
@@ -5710,7 +5865,7 @@ impl EventSink for PresentationEmitter {
             || self
                 .transcript_bus
                 .as_ref()
-                .is_some_and(|bus| bus.session_id() != session_id)
+                .is_some_and(|bus| bus.capture_session_id() != session_id)
         {
             return;
         }
@@ -5774,6 +5929,7 @@ impl EventSink for PresentationEmitter {
             return;
         }
         match event {
+            EngineEvent::DecoderCovered { .. } => {}
             EngineEvent::DirectTranscript {
                 observation,
                 text,

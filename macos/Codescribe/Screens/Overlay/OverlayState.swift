@@ -1,6 +1,248 @@
 import AppKit
+import CoreServices
 import Observation
+import OSLog
 import SwiftUI
+import Synchronization
+
+/// One wake source, shared by the independent roster and history readers.
+/// Tests can inject a controlled stream without a timer or a live bridge.
+struct OverlayChannelObservationSource: Sendable {
+  let events: AsyncStream<Void>
+  let wake: @Sendable () -> Void
+  let setDeadline: @Sendable (Int64?) -> Void
+  let cancel: @Sendable () -> Void
+
+  /// An explicitly driven source for injected readers. It observes no real
+  /// files and owns no clock; a caller supplies the events it wants to read.
+  static func manual() -> Self {
+    let (events, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+    return Self(
+      events: events,
+      wake: { continuation.yield(()) },
+      setDeadline: { _ in },
+      cancel: { continuation.finish() })
+  }
+
+  static func fileSystem(root: URL) -> Self {
+    let observer = OverlayChannelFileObservation(root: root)
+    return Self(
+      events: observer.events,
+      wake: { observer.wake() },
+      setDeadline: { observer.setDeadline($0) },
+      cancel: { observer.cancel() })
+  }
+}
+
+/// The C callback owns only this sink, never the UI or the native observer.
+/// A mutex preserves a root-change signal even when wakeups are coalesced.
+private final class OverlayChannelObservationSink: Sendable {
+  let continuation: AsyncStream<Void>.Continuation
+  let root: String
+  private let rootChanged = Mutex(false)
+
+  init(continuation: AsyncStream<Void>.Continuation, root: String) {
+    self.continuation = continuation
+    self.root = root
+  }
+
+  func changedRoot() { rootChanged.withLock { $0 = true } }
+  func takeRootChange() -> Bool {
+    rootChanged.withLock { value in
+      let changed = value
+      value = false
+      return changed
+    }
+  }
+
+  func wake() { continuation.yield(()) }
+}
+
+/// FSEvents and one reschedulable timer are the only producers of wakeups.
+/// All native handles and scheduling state are owned under the same mutex;
+/// callbacks retain a Sendable sink and perform no file I/O or UI work.
+private final class OverlayChannelFileObservation: Sendable {
+  private struct State {
+    var stream: FSEventStreamRef?
+    var timer: DispatchSourceTimer?
+    var deadlineUnixMs: Int64?
+    var nextSafety = DispatchTime.now() + 60
+    var stopped = false
+  }
+
+  private static let logger = Logger(
+    subsystem: Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe",
+    category: "channel-observation")
+  let events: AsyncStream<Void>
+  private let sink: OverlayChannelObservationSink
+  private let root: URL
+  private let queue = DispatchQueue(label: "com.vetcoders.codescribe.channel-observation")
+  private let state: Mutex<State>
+
+  /// The path FSEvents will name. `resolvingSymlinksInPath` drops `/private`
+  /// from `/private/var` and `/private/tmp`, FSEvents does not, so a bridge
+  /// under a temporary directory matched none of its own events. `realpath`
+  /// answers for the deepest directory that exists; the rest is appended.
+  private static func physical(_ url: URL) -> URL {
+    var existing = url.standardizedFileURL
+    var missing: [String] = []
+    while existing.path != "/", !FileManager.default.fileExists(atPath: existing.path) {
+      missing.insert(existing.lastPathComponent, at: 0)
+      existing.deleteLastPathComponent()
+    }
+    guard let resolved = realpath(existing.path, nil) else {
+      return url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+    defer { free(resolved) }
+    return missing.reduce(URL(fileURLWithPath: String(cString: resolved), isDirectory: true)) {
+      $0.appendingPathComponent($1)
+    }
+  }
+
+  init(root: URL) {
+    let root = Self.physical(root)
+    self.root = root
+    let (events, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+    self.events = events
+    sink = OverlayChannelObservationSink(continuation: continuation, root: root.path)
+    state = Mutex(State())
+    state.withLock { value in
+      // Native callbacks touch only the sink. Keep timer callbacks, which take
+      // the state mutex, off the FSEvents queue used during stream shutdown.
+      let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+      timer.setEventHandler { [weak self] in self?.timerFired() }
+      value.timer = timer
+      value.stream = makeStream()
+      schedule(&value)
+      timer.activate()
+    }
+  }
+
+  deinit { cancel() }
+
+  func wake() { sink.wake() }
+
+  func setDeadline(_ deadlineUnixMs: Int64?) {
+    state.withLock { value in
+      guard !value.stopped else { return }
+      // A past deadline was already evaluated by the read that just finished.
+      // Do not turn an unchanged expired value into an immediate-wakeup loop.
+      value.deadlineUnixMs = deadlineUnixMs.flatMap {
+        Double($0) / 1000 > Date().timeIntervalSince1970 ? $0 : nil
+      }
+      if sink.takeRootChange(), let stream = value.stream {
+        FSEventStreamStop(stream)
+        FSEventStreamInvalidate(stream)
+        FSEventStreamRelease(stream)
+        value.stream = nil
+      }
+      if value.stream == nil { value.stream = makeStream() }
+      schedule(&value)
+    }
+  }
+
+  func cancel() {
+    let resources: (FSEventStreamRef?, DispatchSourceTimer?) = state.withLock { value in
+      guard !value.stopped else { return (nil, nil) }
+      value.stopped = true
+      let resources = (value.stream, value.timer)
+      value.stream = nil
+      value.timer = nil
+      return resources
+    }
+    resources.1?.cancel()
+    if let stream = resources.0 {
+      FSEventStreamStop(stream)
+      FSEventStreamInvalidate(stream)
+      FSEventStreamRelease(stream)
+    }
+    sink.continuation.finish()
+  }
+
+  private func timerFired() {
+    let active = state.withLock { value in
+      guard !value.stopped else { return false }
+      if DispatchTime.now() >= value.nextSafety { value.nextSafety = .now() + 60 }
+      if let deadline = value.deadlineUnixMs,
+        Double(deadline) / 1000 <= Date().timeIntervalSince1970
+      {
+        value.deadlineUnixMs = nil
+      }
+      schedule(&value)
+      return true
+    }
+    if active { sink.wake() }
+  }
+
+  private func schedule(_ value: inout State) {
+    let now = DispatchTime.now().uptimeNanoseconds
+    let safety = value.nextSafety.uptimeNanoseconds
+    var delay = safety > now ? Double(safety - now) / 1_000_000_000 : 0
+    if let deadline = value.deadlineUnixMs {
+      delay = min(delay, max(0, Double(deadline) / 1000 - Date().timeIntervalSince1970))
+    }
+    value.timer?.schedule(deadline: .now() + delay, leeway: .milliseconds(5))
+  }
+
+  private func makeStream() -> FSEventStreamRef? {
+    var context = FSEventStreamContext(
+      version: 0, info: Unmanaged.passUnretained(sink).toOpaque(),
+      retain: { info in
+        guard let info else { return nil }
+        _ = Unmanaged<OverlayChannelObservationSink>.fromOpaque(info).retain()
+        return info
+      },
+      release: { info in
+        guard let info else { return }
+        Unmanaged<OverlayChannelObservationSink>.fromOpaque(info).release()
+      }, copyDescription: nil)
+    // Watch the parent while the bridge is absent so its creation is a wakeup.
+    let watched = FileManager.default.fileExists(atPath: root.path)
+      ? root : root.deletingLastPathComponent()
+    let callback: FSEventStreamCallback = { _, info, count, paths, flags, _ in
+      guard let info else { return }
+      let sink = Unmanaged<OverlayChannelObservationSink>.fromOpaque(info).takeUnretainedValue()
+      let names = paths.assumingMemoryBound(to: UnsafePointer<CChar>.self)
+      var relevant = false
+      for index in 0..<count {
+        let path = String(cString: names[index])
+        let rootEvent = flags[index] & FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged) != 0
+        // Dropped/coalesced events can name "/", outside the selected root.
+        // They still require the reader's inventory/cursor reconciliation.
+        let rescan = flags[index] & FSEventStreamEventFlags(
+          kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagUserDropped
+            | kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagEventIdsWrapped) != 0
+        guard rescan || rootEvent || path == sink.root || path.hasPrefix(sink.root + "/") else {
+          continue
+        }
+        relevant = true
+        let replaced = FSEventStreamEventFlags(
+          kFSEventStreamEventFlagItemCreated | kFSEventStreamEventFlagItemRemoved
+            | kFSEventStreamEventFlagItemRenamed)
+        if rootEvent || (path == sink.root && flags[index] & replaced != 0) { sink.changedRoot() }
+      }
+      if relevant { sink.wake() }
+    }
+    guard let stream = FSEventStreamCreate(
+      nil, callback, &context, [watched.path] as CFArray,
+      FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.05,
+      FSEventStreamCreateFlags(
+        kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagWatchRoot
+          | kFSEventStreamCreateFlagNoDefer))
+    else {
+      Self.logger.error("Could not create bridge FSEvents observer; safety wakeup remains armed")
+      return nil
+    }
+    FSEventStreamSetDispatchQueue(stream, queue)
+    guard FSEventStreamStart(stream) else {
+      FSEventStreamInvalidate(stream)
+      FSEventStreamRelease(stream)
+      Self.logger.error("Could not start bridge FSEvents observer; safety wakeup remains armed")
+      return nil
+    }
+    return stream
+  }
+}
 
 /// Window presentation only; the reducer continues to own the transcript.
 enum OverlayPresentationMode: CaseIterable, Hashable {
@@ -174,6 +416,21 @@ extension DictationEngine {
   func channelRosterSnapshot() async -> [CsChannelRosterState] { [] }
   func toggleAgentChannel(digit _: UInt8) async throws {
     throw NSError(domain: "Agent channel unavailable", code: 1)
+  }
+}
+
+/// The kind of take the microphone feeds (`OverlayState.liveTakeMode`).
+enum OverlayTakeMode: Equatable, Sendable {
+  case dictation
+  case agent
+
+  /// The mode's colour on the bar: the brand terracotta or the agent indigo,
+  /// the same hues the waveform draws.
+  var color: Color {
+    switch self {
+    case .dictation: CSColor.modeDictation
+    case .agent: CSColor.modeAgent
+    }
   }
 }
 
@@ -747,6 +1004,24 @@ final class OverlayState {
     onPlacementChanged?()
   }
 
+  /// The header menu's Free motion switch: on is `selectFreeMotion()`, off
+  /// returns the panel to the last chosen anchor.
+  func setFreeMotion(_ on: Bool) {
+    if on {
+      selectFreeMotion()
+    } else {
+      selectPlacementAnchor(placementAnchor)
+    }
+  }
+
+  /// The place the header menu checks: the chosen anchor while Free motion
+  /// is off, none while it is on, so the menu's seven placement items carry
+  /// exactly one checkmark (Monika, 2026-11-07). The anchor itself stays
+  /// remembered under Free motion; turning Free motion off returns there.
+  func placementChecked(_ anchor: OverlayAnchor) -> Bool {
+    !freeMotion && placementAnchor == anchor
+  }
+
   /// The window already reached this point through a user drag. Save its origin
   /// for an explicit Free motion choice while preserving the selected anchor.
   func recordUserDrag(at origin: NSPoint) {
@@ -797,14 +1072,28 @@ final class OverlayState {
     }
   }
 
-  /// The header is an upward switch (header-click cut, 2026-10-17): mini opens
-  /// midi, and from there every click alternates midi <-> expanded. The header
-  /// never folds back to mini; the preview control keeps that exit.
+  /// A still click on the header's free background. Each layout owns its
+  /// answer (`OverlayLayoutContract`), so one layout's decision never
+  /// rewrites another's.
+  /// Belka (Monika, 2026-11-04, bus brief §12.1): mini opens the bar and the
+  /// bar folds back to mini, round and round; the window is never opened
+  /// from here, and from the window a header click returns to the bar.
+  /// Klasyczny and Fiszki (Maciej, 2026-11-06): a click on the collapsed
+  /// overlay opens the window on its last full view, and a click on the
+  /// window's header returns to the compact form the window replaced.
   func advancePresentationFromHeader() {
+    let contract = layoutContract
     switch presentationMode {
-    case .mini: setPresentationMode(.midi)
-    case .midi: setPresentationMode(.expanded)
-    case .expanded: setPresentationMode(.midi)
+    case .mini, .midi:
+      if contract.collapsedClickOpensWindow {
+        setPresentationMode(.expanded)
+      } else {
+        setPresentationMode(presentationMode == .mini ? .midi : .mini)
+      }
+    case .expanded:
+      setPresentationMode(
+        contract.windowHeaderClickRestoresCompactForm
+          ? autoCollapse.restoreMode ?? .midi : .midi)
     }
   }
 
@@ -954,10 +1243,7 @@ final class OverlayState {
   /// canonical ticket becomes terminal. Mirrors and polls add no timer.
   private var selectedReplyPlaybackActive: Bool {
     guard !showsAgentMonitor, let selectedConversation else { return false }
-    return selectedConversation.messages.contains { message in
-      message.kind == .reply
-        && message.playback.map { ["waiting", "playing"].contains($0.state) } == true
-    }
+    return selectedConversation.replyPlaybackActive
   }
 
   /// Editing, an uncommitted draft, the pointer over the panel, the focused
@@ -1137,7 +1423,12 @@ final class OverlayState {
   private var projectionOrder: [String: (sequence: UInt64, revision: UInt64, epoch: UInt64)] = [:]
   private var endedProjectionSessions: Set<String> = []
 
-  private(set) var recording = false
+  /// A change refits mini to its take (`miniTakeLive`, `noteChannelMapLayout`).
+  private(set) var recording = false {
+    didSet {
+      if recording != oldValue { noteChannelMapLayout() }
+    }
+  }
   /// Reason from `on_no_speech`, captured before the terminal stop.
   private var pendingNoSpeechMessage: String?
   /// The exact rendered text at the terminal projection.
@@ -1274,6 +1565,13 @@ final class OverlayState {
       }
     }
     autoCollapse.onDeadline = { [weak self] in self?.autoCollapseDeadlineReached() }
+    // Enter during the send hold publishes nothing: the app keeps the message
+    // until its deadline or Send now (Maciej, 2026-11-08 09:13Z).
+    publishConversationText = { [weak self] owner, text, reply, alsoSentTo in
+      guard let self else { throw CancellationError() }
+      return try await self.holdConversationText(
+        owner: owner, text: text, reply: reply, alsoSentTo: alsoSentTo)
+    }
   }
 
   func attach() {
@@ -1288,6 +1586,7 @@ final class OverlayState {
       let root = OverlayChannelDeliveryReader.productionRoot()
       let cacheRoot = URL(fileURLWithPath: CodescribeConfig().churnDir(), isDirectory: true)
       restoreReadState(cacheRoot: cacheRoot)
+      restoreComposerDrafts(cacheRoot: cacheRoot)
       restoreAgentsLayout(defaults: .standard)
       observeChannelDelivery(
         using: OverlayChannelDeliveryReader(
@@ -1299,22 +1598,40 @@ final class OverlayState {
   private(set) var channelDelivery: [OverlayChannelDelivery] = []
   private(set) var channelStatusUnavailable = false
   private(set) var channelHudStates: [String: OverlayChannelHudProjection] = [:] {
-    didSet { refreshCurrentMicrophoneOwners() }
+    didSet {
+      refreshCurrentMicrophoneOwners()
+      scheduleFollowerStallRefresh()
+    }
+  }
+  /// The one wake for the stall horizon. `isStalled(now:)` reads the clock
+  /// when a view draws, and an unchanged roster poll draws nothing, so the
+  /// "!" used to wait for another change on the bus. The wake is planned for
+  /// the moment the next live follower crosses the horizon, never a poll.
+  @ObservationIgnored private var followerStallTask: Task<Void, Never>?
+  /// When `followerStallTask` fires; nil while no live follower has a backlog
+  /// short of the horizon.
+  @ObservationIgnored private(set) var followerStallDeadline: Date?
+  /// The horizon's wall clock (`unreadSince` is wall time); tests inject it.
+  @ObservationIgnored var followerStallClock: () -> Date = { Date() }
+  /// Waits until the deadline; tests replace it to hold the wake.
+  @ObservationIgnored var followerStallSleep: @MainActor (Date) async throws -> Void = {
+    deadline in
+    try await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow)))
   }
   private(set) var channelRosterNames: [String: String] = [:]
   @ObservationIgnored var channelMapPreference = OverlayChannelMapPreference.shared
-  var channelMapEnabled: Bool { channelMapPreference.enabled }
+  /// The active layout's contract: the one owner of shared-surface decisions
+  /// per layout (Klasyczny / Belka / Fiszki). See `OverlayLayoutContract`.
+  var layoutContract: any OverlayLayoutContract { channelMapPreference.mode.contract }
+  var channelMapEnabled: Bool { layoutContract.mode != .classic }
   /// Compact's chips: the horizontal strip alone carries them in the header.
-  var channelMapInHeader: Bool {
-    channelMapEnabled && channelMapPreference.layout == .horizontal
-  }
-  /// Mini is one widget in both layouts and keeps its channel counter; only
-  /// the counter's face and destination differ (Maciej, 2026-10-23: mini "nie
-  /// musi i nie powinna się rozgałęziać inaczej niż jednym przyciskiem").
-  var channelMapInMini: Bool { channelMapEnabled }
-  /// The vertical layout's counter wears stacked cards and leads to the
-  /// Intercom group instead of compact.
-  var channelMapCounterStacked: Bool { channelMapEnabled && !channelMapInHeader }
+  var channelMapInHeader: Bool { layoutContract.mapInHeader }
+  /// With the map enabled mini drops the brand word, so the map setting
+  /// still shapes mini. The horizontal mini carries no channel counter
+  /// (Monika, 2026-11-04: the Agents list replaces it).
+  var channelMapInMini: Bool { layoutContract.mapInMini }
+  var isVerticalIntercom: Bool { layoutContract.mode == .vertical }
+  var channelMapCounterStacked: Bool { layoutContract.counterStacked }
 
   /// The view observes the same presentation preference as Creator. Refitting
   /// changes chrome only: no channel selection, microphone or document event.
@@ -1326,8 +1643,8 @@ final class OverlayState {
   /// reaches the overlay, so the map re-reads it when it appears and when the
   /// pointer enters it, before any hint is shown.
   private(set) var agentChannelModifier: OverlayChannelChordModifier = .control
-  /// The window owner refits mini and compact to the channel map (see
-  /// `noteChannelMapLayout`).
+  /// The window owner refits mini and compact to the channel map, and mini
+  /// to a live take (see `noteChannelMapLayout`).
   @ObservationIgnored var onChannelMapLayoutChanged: (() -> Void)?
   /// The window owner returns compact to its natural width, forgetting a
   /// width the user gave it (see `activateChannelMapCounter`).
@@ -1336,6 +1653,14 @@ final class OverlayState {
   /// (see `activateChannelMapCounter`).
   @ObservationIgnored var onRevealIntercom: (() -> Void)?
   @ObservationIgnored private var channelMapLayoutKey: [String] = []
+  /// The shared channel 0's stored display name (`SHARED_CHANNEL_NAME`),
+  /// empty for the interface's default (`OverlaySharedChannelName`).
+  private(set) var sharedChannelStoredName = ""
+  var sharedChannelName: String { OverlaySharedChannelName.display(sharedChannelStoredName) }
+  /// Test seam for the stored setting (`SHARED_CHANNEL_NAME`).
+  @ObservationIgnored var sharedChannelNameSetting: () -> String = {
+    CodescribeConfig().loadSettings().sharedChannelName
+  }
   /// Test seam for the stored setting (`AGENT_CHANNEL_MODIFIER`).
   @ObservationIgnored var agentChannelModifierSetting: () -> String = {
     CodescribeConfig().loadSettings().channelModifier
@@ -1370,7 +1695,9 @@ final class OverlayState {
   }
   private(set) var pendingAgentArchives: Set<OverlayConversationOwner> = []
   private(set) var agentArchiveError: String?
-  @ObservationIgnored private var agentArchiveRevision: UInt64 = 0
+  @ObservationIgnored private var agentArchiveRevision: UInt64 = 0 {
+    didSet { channelObservationSource?.wake() }
+  }
   /// Test seam for the archive helper: the owner and whether its live reader
   /// is to be stopped first.
   @ObservationIgnored var archiveAgentCommand:
@@ -1502,6 +1829,16 @@ final class OverlayState {
       conversationSelected: selectedConversationID != nil)
   }
 
+  /// The full roster chosen for the Agents canvas. The canvas and the header
+  /// hover share this verdict; a folded rail is not the full list.
+  var agentListPresented: Bool {
+    windowContentSurface == .agents
+      && (showsAgentMonitor
+        || OverlayAgentDrawerLayout.listPinned(
+          layout: agentsLayout, docked: agentDrawerDocked,
+          conversationSelected: selectedConversation != nil))
+  }
+
   func setAgentDrawerDocked(_ docked: Bool) {
     agentDrawerDocked = docked
   }
@@ -1597,6 +1934,57 @@ final class OverlayState {
   /// history survives a launch, so its read marks survive with it.
   private var viewedReplyIDs: Set<String> = []
   @ObservationIgnored private var readStateRoot: URL?
+  /// Where unsent drafts are mirrored once `restoreComposerDrafts(cacheRoot:)` ran.
+  @ObservationIgnored private var composerDraftRoot: URL?
+  /// What the draft file holds, so an unchanged draft keeps its `savedAt`.
+  @ObservationIgnored private var storedComposerDrafts: [String: OverlayComposerDraftStore.Entry] =
+    [:]
+  /// Restored drafts whose exact conversation has not appeared yet. They stay
+  /// in the file but out of `conversationDrafts`: an owner that never returns
+  /// must not hold `founderComposing`, and with it every idle restart, forever.
+  @ObservationIgnored private var unadoptedComposerDrafts:
+    [String: OverlayComposerDraftStore.Entry] = [:]
+  @ObservationIgnored private var composerDraftPersistTask: Task<Void, Never>?
+  /// Typing is coalesced; a crash loses at most this much of it.
+  static let composerDraftPersistDelay: Duration = .milliseconds(250)
+  /// Typed messages on the send hold. The app owns them until dispatch.
+  private(set) var heldSends: [OverlayHeldSend] = []
+  @ObservationIgnored private var heldSendClockTask: Task<Void, Never>?
+  /// The reader's last inventory, so the hold clock can repaint local rows
+  /// without waiting for the bus.
+  @ObservationIgnored private var busConversationSource: [OverlayConversation] = []
+  /// Seams: hold length, clock, sleep and the real publication (zero hold).
+  @ObservationIgnored var heldSendSeconds: () -> UInt32 = {
+    CodescribeConfig().loadSettings().agentSendHoldSec
+  }
+  @ObservationIgnored var heldSendNow: () -> Date = { Date() }
+  @ObservationIgnored var heldSendSleep: @MainActor (Duration) async -> Void = { duration in
+    try? await Task.sleep(for: duration)
+  }
+  @ObservationIgnored var dispatchConversationText:
+    @MainActor (
+      OverlayConversationOwner?, String, OverlayUserReplyReference?, [OverlayConversationOwner]
+    ) async throws -> AgentBusTextPublication =
+      {
+        owner, text, reply, alsoSentTo in
+        try await OverlayState.dispatchHeldText(owner, text, reply, alsoSentTo) {
+          try await RealAgentBridgeInstaller.sendBusText(
+            owner: $0, text: $1, holdSeconds: $2, userReplyTo: $3, alsoSentTo: $4)
+        }
+      }
+  /// The app already held the message; the helper must not hold it again.
+  static func dispatchHeldText(
+    _ owner: OverlayConversationOwner?, _ text: String, _ reply: OverlayUserReplyReference?,
+    _ alsoSentTo: [OverlayConversationOwner],
+    publisher: (
+      OverlayConversationOwner?, String, UInt32, OverlayUserReplyReference?,
+      [OverlayConversationOwner]
+    ) async throws -> AgentBusTextPublication
+  ) async throws -> AgentBusTextPublication {
+    try await publisher(owner, text, 0, reply, alsoSentTo)
+  }
+  /// Settled rows wait this long for the reader before they retire anyway.
+  static let heldSendSettleWindow: TimeInterval = 5
   /// No marks were ever stored at `readStateRoot`. The first inventory is
   /// adopted as read once, so an update does not resurface the whole history.
   @ObservationIgnored private var readStateNeedsAdoption = false
@@ -1622,8 +2010,8 @@ final class OverlayState {
   /// stored in `observedReplyIDs`.
   @ObservationIgnored private var composerTypingDeadline: TimeInterval?
   static let composerTypingHorizon: TimeInterval = 15
-  @ObservationIgnored private(set) var conversationIsVisible = false
-  @ObservationIgnored private(set) var intercomWidgetIsVisible = false
+  private(set) var conversationIsVisible = false
+  private(set) var intercomWidgetIsVisible = false
 
   var isDeliveryObservationActive: Bool {
     conversationIsVisible || intercomWidgetIsVisible || selectedConversationID != nil
@@ -1639,6 +2027,42 @@ final class OverlayState {
   /// it does not. Ten minutes outlives any tool call a reading agent makes.
   nonisolated static let followerStallHorizon: TimeInterval = 10 * 60
 
+  /// When the next live follower turns stalled: the oldest backlog among
+  /// live followers not yet stalled, plus the horizon. Nil when none will.
+  static func nextFollowerStall(
+    in huds: [String: OverlayChannelHudProjection], now: Date
+  ) -> Date? {
+    huds.values.compactMap { hud -> Date? in
+      guard hud.followerAlive == true, let since = hud.unreadSince, !hud.isStalled(now: now)
+      else { return nil }
+      return since.addingTimeInterval(followerStallHorizon)
+    }.min()
+  }
+
+  /// Plans the stall wake for the current roster. An unchanged deadline keeps
+  /// the wake it has. When it fires, the same projection is announced again
+  /// (`withMutation`), so every reader of `channelHudStates` (the bar's
+  /// chips, the list under ✦, the roster, the Bus window) draws the "!"
+  /// at the horizon; then the next deadline is planned.
+  private func scheduleFollowerStallRefresh() {
+    let deadline = Self.nextFollowerStall(in: channelHudStates, now: followerStallClock())
+    guard deadline != followerStallDeadline else { return }
+    followerStallTask?.cancel()
+    followerStallDeadline = deadline
+    guard let deadline else {
+      followerStallTask = nil
+      return
+    }
+    let sleep = followerStallSleep
+    followerStallTask = Task { @MainActor [weak self] in
+      do { try await sleep(deadline) } catch { return }
+      guard let self, !Task.isCancelled else { return }
+      self.followerStallDeadline = nil
+      self.withMutation(keyPath: \.channelHudStates) {}
+      self.scheduleFollowerStallRefresh()
+    }
+  }
+
   /// The owner the drawer's cross acts on. Every bound digit (1–9) whose
   /// owner is known and not yet archived is a candidate — dead, stalled or
   /// alive (Founder, 2026-10-14: the cross is always there). Whether the
@@ -1648,15 +2072,30 @@ final class OverlayState {
       let hud = channelHudStates[channel],
       let provider = hud.provider, !provider.isEmpty,
       let session = hud.providerSessionID, !session.isEmpty,
-      let name = channelRosterNames[channel]
+      let name = channelRosterNames[channel],
+      let leaseID = archiveLeaseIdentifier(provider: provider, session: session)
     else { return nil }
     let owner = OverlayConversationOwner(row: [
       "provider": provider, "provider_session_id": session, "channel": channel, "name": name,
-      "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: provider, session: session),
+      "lease_id": leaseID,
     ])
     guard let owner, !archivedAgentOwners.contains(owner) else { return nil }
     return owner
   }
+
+  /// The lease id is a SHA-256 digest hex-formatted byte by byte. The roster
+  /// asks for every visible row on each observation tick, so the digest is
+  /// computed once per provider session and then read back.
+  private func archiveLeaseIdentifier(provider: String, session: String) -> String? {
+    let key = provider + "\u{0}" + session
+    if let cached = archiveLeaseIdentifiers[key] { return cached }
+    if archiveLeaseIdentifiers.count >= 64 { archiveLeaseIdentifiers.removeAll() }
+    guard let lease = AgentPlaybackIdentity.leaseIdentifier(provider: provider, session: session)
+    else { return nil }
+    archiveLeaseIdentifiers[key] = lease
+    return lease
+  }
+  @ObservationIgnored private var archiveLeaseIdentifiers: [String: String] = [:]
 
   func archiveAgent(_ owner: OverlayConversationOwner) async {
     guard archiveCandidate(for: owner.channel) == owner,
@@ -1741,6 +2180,12 @@ final class OverlayState {
     hostPID, hostBundleID in
     await RealAgentBridgeInstaller.activateAgentTerminalHost(
       hostPID: hostPID, hostBundleID: hostBundleID)
+  }
+  /// Names the application whose Frame client shows a session now; tests
+  /// replace it so they never read this machine's processes.
+  @ObservationIgnored var resolveFrameViewerHost: @MainActor (String) async -> FrameViewerHost = {
+    session in
+    await FrameViewerHostResolver.resolveLive(session: session)
   }
   /// Opens a Codex thread link (`codex://threads/<id>`); tests replace it.
   @ObservationIgnored var openCodexThreadLink: @MainActor (URL) -> Bool = { url in
@@ -1891,6 +2336,23 @@ final class OverlayState {
     }
   }
 
+  private func agentPanelOwnerStillBound(
+    _ owner: OverlayConversationOwner, channel: String, binding: AgentPlaybackBinding?
+  ) -> Bool {
+    canFocusAgentPanel(owner)
+      && channelPlaybackAgents[channel]?.frame == binding?.frame
+      && channelPlaybackAgents[channel]?.terminal == binding?.terminal
+  }
+
+  private func failAgentPanelFocus(
+    _ channel: String, request: OverlayAgentPanelFocusState, target: OverlayAgentPanelFocusTarget
+  ) {
+    agentPanelFocusStates[channel] = OverlayAgentPanelFocusState(
+      requestID: request.requestID, owner: request.owner, phase: .failed,
+      statusText: target.failureText, updatedAt: Date(), target: target)
+    onChannelPresentationChanged?()
+  }
+
   private func reconcileAgentPanelFocusResults(
     _ results: [String: OverlayPanelFocusResult]
   ) {
@@ -1910,14 +2372,17 @@ final class OverlayState {
       if result.isSuccess {
         let hostPID: Int32?
         let hostBundleID: String
+        let viewerSession: String?
         let binding = channelPlaybackAgents[channel]
         if result.frame == nil, let terminalBundleID = result.terminal?.hostBundleID {
           hostPID = nil
           hostBundleID = terminalBundleID
+          viewerSession = nil
         } else {
           hostPID = result.frame?.hostPID ?? binding?.frame?.hostPID
           hostBundleID =
             result.frame?.hostBundleID ?? binding?.frame?.hostBundleID ?? "io.vetcoders.vibecrafted"
+          viewerSession = result.frame?.session ?? binding?.frame?.session
         }
         // Consume the pane receipt once. While activation is being observed,
         // another snapshot cannot dispatch the same request a second time.
@@ -1934,26 +2399,57 @@ final class OverlayState {
             self.agentPanelFocusStates[channel]?.requestID == state.requestID,
             self.agentPanelFocusStates[channel]?.phase == .activating
           else { return }
-          guard self.canFocusAgentPanel(state.owner),
-            self.channelPlaybackAgents[channel]?.frame == binding?.frame,
-            self.channelPlaybackAgents[channel]?.terminal == binding?.terminal
+          // Owner and binding are read again after every suspension. The
+          // roster can replace either while the viewer or the activation is
+          // awaited, and the old binding's window must not be raised.
+          guard self.agentPanelOwnerStillBound(state.owner, channel: channel, binding: binding)
           else {
-            self.agentPanelFocusStates[channel] = OverlayAgentPanelFocusState(
-              requestID: state.requestID, owner: state.owner, phase: .failed,
-              statusText: target.failureText, updatedAt: Date(), target: target)
-            self.onChannelPresentationChanged?()
+            self.failAgentPanelFocus(channel, request: state, target: target)
             return
           }
-          let activated = await self.activateTerminalHost(hostPID, hostBundleID)
+          var activationPID = hostPID
+          var activationBundleID: String? = hostBundleID
+          if let viewerSession {
+            // The follower's host comes from the environment the agent
+            // inherited and outlives the window it named. The window that
+            // shows the session is read now; without proof nothing is raised.
+            let viewer = await self.resolveFrameViewerHost(viewerSession)
+            guard self.agentPanelFocusStates[channel]?.requestID == state.requestID,
+              self.agentPanelFocusStates[channel]?.phase == .activating
+            else { return }
+            guard self.agentPanelOwnerStillBound(state.owner, channel: channel, binding: binding)
+            else {
+              FrameViewerHostResolver.logger.notice(
+                "owner or binding changed while Frame session \(viewerSession, privacy: .public) was read"
+              )
+              self.failAgentPanelFocus(channel, request: state, target: target)
+              return
+            }
+            guard case .host(let viewerPID) = viewer else {
+              FrameViewerHostResolver.logger.notice(
+                "no window to raise for Frame session \(viewerSession, privacy: .public): \(String(describing: viewer), privacy: .public)"
+              )
+              self.failAgentPanelFocus(channel, request: state, target: target)
+              return
+            }
+            if viewerPID != hostPID {
+              FrameViewerHostResolver.logger.info(
+                "Frame session \(viewerSession, privacy: .public) is shown by \(viewerPID, privacy: .public), not the follower's \(String(describing: hostPID), privacy: .public)"
+              )
+            }
+            activationPID = viewerPID
+            // The live registration names its own bundle; the follower's
+            // bundle hint may belong to another host.
+            activationBundleID = nil
+          }
+          let activated = await self.activateTerminalHost(activationPID, activationBundleID)
           // A timeout, retry or replacement owner wins over a late completion.
           guard self.agentPanelFocusStates[channel]?.requestID == state.requestID,
             self.agentPanelFocusStates[channel]?.phase == .activating
           else { return }
-          let bindingMatches =
-            self.canFocusAgentPanel(state.owner)
-            && self.channelPlaybackAgents[channel]?.frame == binding?.frame
-            && self.channelPlaybackAgents[channel]?.terminal == binding?.terminal
-          let succeeded = activated && bindingMatches
+          let succeeded =
+            activated
+            && self.agentPanelOwnerStillBound(state.owner, channel: channel, binding: binding)
           self.agentPanelFocusStates[channel] = OverlayAgentPanelFocusState(
             requestID: state.requestID,
             owner: state.owner,
@@ -2074,6 +2570,21 @@ final class OverlayState {
       descriptors[channel] = binding.descriptor
     }
     return descriptors
+  }
+
+  /// The project (repository) each bound agent works in, from the same
+  /// verified lease as its descriptor (L16, 2026-11-06: "Agy · Codescribe"
+  /// on the chip's hover card).
+  var channelAgentProjects: [String: String] {
+    var projects: [String: String] = [:]
+    for (channel, binding) in channelPlaybackAgents where playbackIdentity(for: channel) != nil {
+      if let project = binding.repositoryName?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !project.isEmpty
+      {
+        projects[channel] = project
+      }
+    }
+    return projects
   }
 
   /// The existing lease reader supplies this projection. Equality avoids an
@@ -2242,7 +2753,9 @@ final class OverlayState {
     let identities = Set(bound.values.map(\.identity))
       .union(conversations.compactMap { playbackIdentity(for: $0) })
     let snapshot = await RealAgentBridgeInstaller.playbackMuteSnapshot(for: identities)
-    let broadcastSnapshot = await RealAgentBridgeInstaller.broadcastPolicySnapshot(for: identities)
+    // Receipts only: the row projection below fails open to `.on`, and the
+    // ledger keeps which identities actually had a receipt.
+    let broadcastReceipts = await RealAgentBridgeInstaller.broadcastPolicyReceipts(for: identities)
     let globalSnapshot = await RealAgentBridgeInstaller.globalPlaybackMuteSnapshot()
     let panelFocusAvailable = await detectAgentPanelFocusAvailability()
     guard !Task.isCancelled, revision == playbackPreferenceRevision, roster == channelRoster else {
@@ -2256,10 +2769,9 @@ final class OverlayState {
     applyBoundAgents(bound)
     // A reception change during this poll makes its receipts older than the
     // change's read-back; the next poll paints them instead.
-    if broadcastLedger.admitsPoll(startedAt: broadcastRevision),
-      broadcastPolicies != broadcastSnapshot
-    {
-      broadcastPolicies = broadcastSnapshot
+    if broadcastLedger.admitsPoll(startedAt: broadcastRevision) {
+      if broadcastPolicies != broadcastReceipts { broadcastPolicies = broadcastReceipts }
+      broadcastLedger.noteReceipts(Set(broadcastReceipts.keys))
     }
     if !globalPlaybackPending, globalPlaybackMuted != globalSnapshot {
       globalPlaybackMuted = globalSnapshot
@@ -2271,8 +2783,15 @@ final class OverlayState {
     if playbackMutes != mutes { playbackMutes = mutes }
   }
 
+  /// The conversation's replies not read yet: neither viewed nor heard. A
+  /// reply whose playback finished (`spoken`, the state its bubble reads as
+  /// "Spoken") was heard to the end, so it counts as read (L14b,
+  /// 2026-11-07); an interrupted, failed or refused one stays unread.
   func unreadReplies(in conversation: OverlayConversation) -> Int {
-    conversation.replyIDs.filter { !viewedReplyIDs.contains($0) }.count
+    conversation.messages.filter { message in
+      message.kind == .reply && !viewedReplyIDs.contains(message.id)
+        && message.playback?.state != "spoken"
+    }.count
   }
 
   /// Viewing only changes presentation metadata. Capture stays controller-owned.
@@ -2311,8 +2830,57 @@ final class OverlayState {
   }
 
   func showTranscription() {
+    rememberAgentsView()
     selectConversation(nil)
     expandAgentSurface(cause: .user)
+  }
+
+  /// The Agents view the window showed when it last left for the
+  /// transcription: an open conversation (`lastAgentConversationID`, with the
+  /// panes as they were) or the agents list with no conversation, in the
+  /// layout it had. Nil until the window has left an Agents view.
+  enum RememberedAgentsView: Equatable {
+    case conversation
+    case monitor(OverlayAgentsLayout)
+  }
+  @ObservationIgnored private(set) var rememberedAgentsView: RememberedAgentsView?
+
+  /// Folding keeps the surface, so a fold does not forget the view either.
+  private func rememberAgentsView() {
+    guard windowContentSurface == .agents else { return }
+    if selectedConversationID != nil {
+      rememberedAgentsView = .conversation
+    } else if showsAgentMonitor || agentsLayout == .agents {
+      rememberedAgentsView = .monitor(agentsLayout == .rail ? .agents : agentsLayout)
+    }
+  }
+
+  /// From the expanded transcription the Agents control and "Show agents"
+  /// return to the Agents view the user left. False when there is none.
+  private func restoreRememberedAgentsView() -> Bool {
+    switch rememberedAgentsView {
+    case .conversation:
+      guard let last = lastAgentConversationID,
+        conversations.contains(where: { $0.id == last })
+      else { return false }
+      // The panes stay as the user left them, folded list or split.
+      selectConversation(last)
+      return true
+    case .monitor(let layout):
+      setAgentsLayout(layout)
+      showAgentMonitor()
+      return true
+    case nil:
+      return false
+    }
+  }
+
+  /// "Show agents" in the header menu.
+  func showAgents() {
+    if !isCollapsed, windowContentSurface == .transcription, restoreRememberedAgentsView() {
+      return
+    }
+    showAgentMonitor()
   }
 
   func showAgentMonitor(expand: Bool = true) {
@@ -2342,6 +2910,12 @@ final class OverlayState {
   /// in a conversation the press opens the drawer to change agents, and on
   /// the drawer it closes it. The drawer opens first only with nothing to show.
   func toggleAgentSidebar() {
+    // Only the folded Fiszki header is the Intercom router. In the expanded
+    // window the same control switches the window to its Agents view.
+    if isVerticalIntercom && isCollapsed {
+      onRevealIntercom?()
+      return
+    }
     // Maciej, 2026-10-19 08:52: "całe nagrywanie agentowe przenosimy na
     // przycisk fioletowy, który nam rozwija agenta, jeśli jest zwinięty. I
     // jeśli już ma nagranie, to po prostu pulsuje jako mikrofon." While a
@@ -2356,7 +2930,14 @@ final class OverlayState {
       }
       return
     }
+    // From the expanded transcription the press returns to the Agents view
+    // the user left, conversation or list, before any automatic destination.
+    if !isCollapsed, windowContentSurface == .transcription, restoreRememberedAgentsView() {
+      return
+    }
     if showsAgentMonitor && !isCollapsed {
+      // The next press from the transcription brings this list back.
+      rememberAgentsView()
       hideAgentSidebar()
     } else if !isCollapsed && selectedConversationID != nil {
       showAgentMonitor()
@@ -2397,7 +2978,7 @@ final class OverlayState {
     }
     func newest(_ candidates: [OverlayConversation]) -> OverlayConversation? {
       candidates.max {
-        ($0.messages.map(\.order).max() ?? 0) < ($1.messages.map(\.order).max() ?? 0)
+        $0.maxMessageOrder < $1.maxMessageOrder
       }
     }
     if let unread = newest(live.filter { unreadReplies(in: $0) > 0 }) { return unread.id }
@@ -2616,6 +3197,11 @@ final class OverlayState {
   /// Follow controller intent, never a name guessed from transcript text.
   /// A late observer snapshot may supply the matching conversation afterward.
   private func followChannelConversation(_ row: CsChannelRosterState) {
+    if isVerticalIntercom {
+      // In Fiszki mode, channel recording/presence lives in the intercom cards.
+      // The main agents view is strictly opt-in and never automatically opened.
+      return
+    }
     pendingChannelConversation = row
     resolveChannelConversation()
     if channelOpenExpandsSurface { expandAgentSurface(cause: .automatic) }
@@ -2658,12 +3244,16 @@ final class OverlayState {
   }
 
   func setConversationVisible(_ visible: Bool) {
-    conversationIsVisible = visible
+    if conversationIsVisible != visible {
+      conversationIsVisible = visible
+    }
     markVisibleConversationRead()
   }
 
   func setIntercomVisible(_ visible: Bool) {
-    intercomWidgetIsVisible = visible
+    if intercomWidgetIsVisible != visible {
+      intercomWidgetIsVisible = visible
+    }
   }
 
   private func markVisibleConversationRead() {
@@ -2715,6 +3305,320 @@ final class OverlayState {
     }
   }
 
+  /// Unsent drafts live next to the read marks. Call before the first
+  /// conversation snapshot: each draft returns to its exact conversation when
+  /// that conversation appears, never to another owner on the same channel.
+  func restoreComposerDrafts(cacheRoot: URL, now: Date = Date()) {
+    composerDraftRoot = cacheRoot
+    let stored = OverlayComposerDraftStore.load(cacheRoot: cacheRoot, now: now) ?? [:]
+    storedComposerDrafts = stored
+    unadoptedComposerDrafts = stored
+    // A message still on the hold when the app died comes back to its
+    // composer for review. A relaunch never publishes on its own; one that was
+    // being handed to the helper may already have reached the agent.
+    let interrupted = OverlayHeldSendStore.load(cacheRoot: cacheRoot).filter {
+      $0.phase != .dispatched
+    }
+    for send in interrupted {
+      // The warning does not depend on where the words end up: they may be
+      // in the draft file already and still have reached the agent.
+      if send.phase == .dispatching {
+        textMessageErrors[send.conversationID] = String(
+          localized:
+            "Codescribe quit while this message was being sent. It may already have reached the agent; check before sending it again."
+        )
+      }
+      if let existing = unadoptedComposerDrafts[send.conversationID] {
+        guard !existing.text.contains(send.text) else { continue }
+        unadoptedComposerDrafts[send.conversationID] = .init(
+          text: existing.text + "\n\n" + send.text, reply: existing.reply ?? send.reply,
+          savedAt: now)
+      } else {
+        unadoptedComposerDrafts[send.conversationID] = .init(
+          text: send.text, reply: send.reply, savedAt: now)
+      }
+    }
+    adoptRestoredComposerDrafts(in: conversations)
+    guard !interrupted.isEmpty else { return }
+    persistComposerDrafts(now: now)
+    // Drop the held file only once every message is safe in the draft file.
+    if interrupted.allSatisfy({
+      storedComposerDrafts[$0.conversationID]?.text.contains($0.text) == true
+        || conversationDraft(for: $0.conversationID).contains($0.text)
+    }) {
+      try? OverlayHeldSendStore.save(cacheRoot: cacheRoot, sends: [])
+    }
+  }
+
+  private func adoptRestoredComposerDrafts(in available: [OverlayConversation]) {
+    guard !unadoptedComposerDrafts.isEmpty else { return }
+    for conversation in available {
+      guard let entry = unadoptedComposerDrafts.removeValue(forKey: conversation.id) else {
+        continue
+      }
+      // Words typed since launch are newer than the file and stay.
+      guard
+        conversationDraft(for: conversation.id).trimmingCharacters(in: .whitespacesAndNewlines)
+          .isEmpty
+      else { continue }
+      conversationDrafts[conversation.id] = entry.text
+      if conversationReplies[conversation.id] == nil, let reply = entry.reply {
+        conversationReplies[conversation.id] = reply
+      }
+    }
+  }
+
+  private func composerDraftsChanged(emptied: Bool) {
+    guard composerDraftRoot != nil else { return }
+    if emptied {
+      // A sent or cleared draft leaves the file at once: a crash right after
+      // Send must not bring the sent words back.
+      persistComposerDrafts()
+      return
+    }
+    guard composerDraftPersistTask == nil else { return }
+    composerDraftPersistTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(for: OverlayState.composerDraftPersistDelay)
+      guard let self, !Task.isCancelled else { return }
+      self.persistComposerDrafts()
+    }
+  }
+
+  /// Mirror every non-blank draft, and every restored draft still waiting for
+  /// its conversation, to the private file.
+  func persistComposerDrafts(now: Date = Date()) {
+    composerDraftPersistTask?.cancel()
+    composerDraftPersistTask = nil
+    guard let composerDraftRoot else { return }
+    var next = unadoptedComposerDrafts
+    for (id, text) in conversationDrafts
+    where !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      let reply = conversationReplies[id]
+      if let stored = storedComposerDrafts[id], stored.text == text, stored.reply == reply {
+        next[id] = stored
+      } else {
+        next[id] = OverlayComposerDraftStore.Entry(text: text, reply: reply, savedAt: now)
+      }
+    }
+    guard next != storedComposerDrafts else { return }
+    do {
+      try OverlayComposerDraftStore.save(cacheRoot: composerDraftRoot, drafts: next)
+      storedComposerDrafts = next
+    } catch {
+      NSLog("codescribe: composer drafts not saved: \(error)")
+    }
+  }
+
+  // MARK: Held sends: the hold belongs to the UI
+
+  /// Enter while a hold is set: freeze the message in the app and return at
+  /// once, so the composer frees and the send path clears the draft as before.
+  /// Nothing reaches the helper until the deadline or Send now.
+  func holdConversationText(
+    owner: OverlayConversationOwner?, text: String, reply: OverlayUserReplyReference?,
+    alsoSentTo: [OverlayConversationOwner]
+  ) async throws -> AgentBusTextPublication {
+    let seconds = heldSendSeconds()
+    guard seconds > 0 else {
+      return try await dispatchConversationText(owner, text, reply, alsoSentTo)
+    }
+    let now = heldSendNow()
+    let send = OverlayHeldSend(
+      id: OverlayHeldSend.newID(), conversationID: owner?.id ?? "0", owner: owner, text: text,
+      reply: reply, alsoSentTo: alsoSentTo, acceptedAt: now,
+      deadline: now.addingTimeInterval(TimeInterval(seconds)), phase: .holding)
+    heldSends.append(send)
+    // The caller clears the only other copy (the draft) when this returns.
+    do {
+      try persistHeldSends()
+    } catch {
+      heldSends.removeAll { $0.id == send.id }
+      throw error
+    }
+    refreshHeldSendRows(now: now)
+    runHeldSendClock()
+    return AgentBusTextPublication(
+      messageID: send.id, holdUntil: ISO8601DateFormatter().string(from: send.deadline),
+      recipients: [owner].compactMap { $0 } + alsoSentTo)
+  }
+
+  /// Held-message controls from both conversation surfaces. A local hold is
+  /// the app's own; a bus message (a dictated take) stays the helper's.
+  func controlDelivery(
+    _ control: OverlayDeliveryControl, message: OverlayConversationMessage,
+    owner: OverlayConversationOwner?, text: String?
+  ) async throws {
+    if OverlayHeldSend.isLocal(message.controlIdentity) {
+      try await controlHeldSend(control, id: message.controlIdentity ?? message.id)
+      return
+    }
+    guard let identity = message.controlIdentity else { throw CocoaError(.fileReadCorruptFile) }
+    try await RealAgentBridgeInstaller.controlBusMessage(
+      control, identity: message.captureSessionID ?? identity, owner: owner,
+      busPath: message.busPath, text: text)
+  }
+
+  /// Cancel/Edit succeeds only while the message is on the clock: removing it
+  /// then means zero publications. After that it already belongs to the bus.
+  func controlHeldSend(_ control: OverlayDeliveryControl, id: String) async throws {
+    switch control {
+    case .withdraw:
+      guard let index = heldSends.firstIndex(where: { $0.id == id }),
+        heldSends[index].phase == .holding
+      else { throw OverlayHeldSendError.alreadySending }
+      heldSends.remove(at: index)
+      do {
+        try persistHeldSends()
+      } catch {
+        NSLog("codescribe: held sends not saved: \(error)")
+      }
+      refreshHeldSendRows(now: heldSendNow())
+    case .release:
+      guard let send = beginHeldDispatch(id) else { return }
+      await completeHeldDispatch(send)
+    case .revise:
+      throw OverlayHeldSendError.alreadySending
+    }
+  }
+
+  /// The deadline and Send now meet here. The phase moves before any await,
+  /// so whichever comes first publishes and the other finds nothing to do.
+  private func beginHeldDispatch(_ id: String) -> OverlayHeldSend? {
+    guard let index = heldSends.firstIndex(where: { $0.id == id }),
+      heldSends[index].phase == .holding
+    else { return nil }
+    heldSends[index].phase = .dispatching
+    do {
+      try persistHeldSends()
+    } catch {
+      NSLog("codescribe: held sends not saved: \(error)")
+    }
+    refreshHeldSendRows(now: heldSendNow())
+    return heldSends[index]
+  }
+
+  private func completeHeldDispatch(_ send: OverlayHeldSend) async {
+    do {
+      let publication = try await dispatchConversationText(
+        send.owner, send.text, send.reply, send.alsoSentTo)
+      if !publication.skipped.isEmpty {
+        if !publication.messageID.isEmpty {
+          publishedMessageSkips[publication.messageID] = publication.skipped
+        }
+        textMessageErrors[send.conversationID] = Self.formatSkippedRecipientsNotice(
+          publication.skipped)
+      }
+      if let index = heldSends.firstIndex(where: { $0.id == send.id }) {
+        heldSends[index].phase = .dispatched
+        heldSends[index].messageID = publication.messageID.isEmpty ? nil : publication.messageID
+        heldSends[index].dispatchedAt = heldSendNow()
+      }
+    } catch {
+      // Refused: the words go back to the composer they came from, newer
+      // typing kept in front of them, with the helper's reason beside it.
+      heldSends.removeAll { $0.id == send.id }
+      returnHeldSendToComposer(send)
+      textMessageErrors[send.conversationID] = error.userFacingMessage
+    }
+    do {
+      try persistHeldSends()
+    } catch {
+      NSLog("codescribe: held sends not saved: \(error)")
+    }
+    refreshHeldSendRows(now: heldSendNow())
+    runHeldSendClock()
+  }
+
+  private func returnHeldSendToComposer(_ send: OverlayHeldSend) {
+    let current = conversationDraft(for: send.conversationID)
+    setConversationDraft(
+      current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        ? send.text : current + "\n\n" + send.text,
+      for: send.conversationID)
+    if conversationReplies[send.conversationID] == nil, let reply = send.reply {
+      conversationReplies[send.conversationID] = reply
+    }
+  }
+
+  /// Only messages the helper has not taken yet are restored after a crash.
+  private func persistHeldSends() throws {
+    guard let composerDraftRoot else { return }
+    try OverlayHeldSendStore.save(
+      cacheRoot: composerDraftRoot, sends: heldSends.filter { $0.phase != .dispatched })
+  }
+
+  /// One pass of the hold clock: due messages dispatch, settled rows retire,
+  /// the countdown repaints. Returns the wait until the next visible change,
+  /// or nil once nothing is held.
+  @discardableResult
+  func tickHeldSends() -> Duration? {
+    let now = heldSendNow()
+    for send in heldSends where send.phase == .holding && send.deadline <= now {
+      if let started = beginHeldDispatch(send.id) {
+        Task { @MainActor [weak self] in await self?.completeHeldDispatch(started) }
+      }
+    }
+    retireSettledHeldSends(seenIn: busConversationSource, now: now)
+    refreshHeldSendRows(now: now)
+    guard !heldSends.isEmpty else { return nil }
+    // Wake when a painted second changes or a deadline passes.
+    let waits = heldSends.filter { $0.phase == .holding }.map { send -> TimeInterval in
+      let remaining = send.deadline.timeIntervalSince(now)
+      let fraction = remaining - remaining.rounded(.down)
+      return fraction > 0.02 ? fraction : 1
+    }
+    let wait = min(waits.min() ?? 1, 1)
+    return .milliseconds(max(20, Int((wait * 1000).rounded(.up))))
+  }
+
+  private func runHeldSendClock() {
+    guard heldSendClockTask == nil, !heldSends.isEmpty else { return }
+    heldSendClockTask = Task { @MainActor [weak self] in
+      while !Task.isCancelled {
+        guard let wait = self?.tickHeldSends(), let sleep = self?.heldSendSleep else { break }
+        await sleep(wait)
+      }
+      self?.heldSendClockTask = nil
+    }
+  }
+
+  /// A published row gives way to the reader's copy, or after a short window.
+  private func retireSettledHeldSends(seenIn conversations: [OverlayConversation], now: Date) {
+    guard heldSends.contains(where: { $0.phase == .dispatched }) else { return }
+    let published = Set(
+      conversations.flatMap(\.messages).compactMap(\.controlIdentity))
+    heldSends.removeAll { send in
+      guard send.phase == .dispatched else { return false }
+      guard let messageID = send.messageID else { return true }
+      return published.contains(messageID)
+        || now.timeIntervalSince(send.dispatchedAt ?? now) >= Self.heldSendSettleWindow
+    }
+  }
+
+  private func mergingHeldSends(into conversations: [OverlayConversation], now: Date)
+    -> [OverlayConversation]
+  {
+    guard !heldSends.isEmpty else { return conversations }
+    var merged = conversations
+    for send in heldSends {
+      // Only a conversation in the snapshot can be a composer target
+      // (`availableComposerRecipients`), so the held row always has a home.
+      guard let index = merged.firstIndex(where: { $0.id == send.conversationID }) else {
+        continue
+      }
+      var messages = merged[index].messages
+      messages.append(send.row(order: merged[index].maxMessageOrder + 1, now: now))
+      merged[index].messages = messages
+    }
+    return merged
+  }
+
+  private func refreshHeldSendRows(now: Date) {
+    let next = mergingHeldSends(
+      into: busConversationSource.map { $0.projectingDelivery(at: now) }, now: now)
+    if conversations != next { conversations = next }
+  }
+
   func applyConversationSnapshot(_ snapshot: OverlayChannelDeliverySnapshot, now: Date = Date()) {
     defer { reconcileDraftSyncOwners() }
     let playbackWasActive = selectedReplyPlaybackActive
@@ -2725,12 +3629,16 @@ final class OverlayState {
     }
     applyChannelDelivery(snapshot.deliveries)
     reconcileAgentPanelFocusResults(snapshot.panelFocusResults)
-    let projected = snapshot.conversations.map { $0.projectingDelivery(at: now) }
+    busConversationSource = snapshot.conversations
+    retireSettledHeldSends(seenIn: snapshot.conversations, now: now)
+    let projected = mergingHeldSends(
+      into: snapshot.conversations.map { $0.projectingDelivery(at: now) }, now: now)
     if activeCaptureAttachmentSessions != snapshot.activeCaptureAttachmentSessions {
       activeCaptureAttachmentSessions = snapshot.activeCaptureAttachmentSessions
     }
     resolveWaitingCaptureAttachments(in: projected)
     recoverClosedCaptureAttachments(in: projected)
+    adoptRestoredComposerDrafts(in: projected)
     guard conversations != projected else {
       // The first snapshot can already match the stored inventory, including
       // an empty one. That snapshot is still the baseline, so the next genuine
@@ -2806,16 +3714,19 @@ final class OverlayState {
     return composerTypingDeadline - nowProvider() > 0
   }
 
-  /// Restart uses AppKit's current keyboard recipient. Retained editor
-  /// ownership also holds automatic collapse after window blur, but cannot
-  /// prove that the Founder is still writing in that window. Recent typing
-  /// and every unsent draft remain protected (Maciej, 2026-10-23).
+  /// Restart uses AppKit's current keyboard recipient when it holds text.
+  /// A resting caret in an empty field after the typing horizon is idle
+  /// (Founder, 2026-11-05), while recent typing and every unsent draft remain
+  /// protected (Maciej, 2026-10-23).
   var founderComposing: Bool {
     OverlayConversationComposer.hasFocusedEditor()
       || (composerTypingDeadline.map { $0 - nowProvider() > 0 } ?? false)
       || conversationDrafts.values.contains {
         !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       }
+      // A held message is the Founder's until it is handed to the helper; a
+      // restart would turn an intended send into a draft.
+      || heldSends.contains { $0.phase != .dispatched }
   }
 
   /// Bring the owner of one newly admitted message to the Founder into the
@@ -2851,10 +3762,12 @@ final class OverlayState {
       "from=\(traceSelectedChannel) to=\(conversation.channel)",
     ].joined(separator: " ")
     OverlayPresentationTrace.shared.record(.conversationAutoSelected, note: note)
-    if selectedConversationID == conversation.id {
-      if isCollapsed && expandedByDefault { expandAgentSurface(cause: .automatic) }
-    } else {
-      selectConversation(conversation.id, expansion: expandedByDefault ? .automatic : nil)
+    if !isVerticalIntercom {
+      if selectedConversationID == conversation.id {
+        if isCollapsed && expandedByDefault { expandAgentSurface(cause: .automatic) }
+      } else {
+        selectConversation(conversation.id, expansion: expandedByDefault ? .automatic : nil)
+      }
     }
     // A fresh reply is content activity for an already expanded surface.
     noteAutoCollapseActivity()
@@ -2960,12 +3873,20 @@ final class OverlayState {
 
   var conversationDrafts: [String: String] = [:] {
     didSet {
+      var changed = false
+      var emptied = false
       for id in Set(oldValue.keys).union(conversationDrafts.keys) {
         if !OverlayComposerProseEdit.identical(oldValue[id] ?? "", conversationDrafts[id] ?? "") {
           conversationDraftRevisions[id] = UUID()
           conversationDraftReceipts.removeValue(forKey: id)
+          changed = true
+          emptied =
+            emptied
+            || (conversationDrafts[id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+              .isEmpty
         }
       }
+      if changed { composerDraftsChanged(emptied: emptied) }
     }
   }
   /// Groups own only membership/epoch metadata; the dictionary is keyed by exact owner.
@@ -2976,12 +3897,15 @@ final class OverlayState {
   @ObservationIgnored var conversationDraftReceipts: [String: OverlayComposerDraftPublication] = [:]
   var conversationReplies: [String: OverlayUserReplyReference] = [:] {
     didSet {
+      var changed = false
       for id in Set(oldValue.keys).union(conversationReplies.keys) {
         if oldValue[id] != conversationReplies[id] {
           conversationReplyRevisions[id] = UUID()
           conversationDraftReceipts.removeValue(forKey: id)
+          changed = true
         }
       }
+      if changed { composerDraftsChanged(emptied: false) }
     }
   }
   var draftCapture = OverlayDraftCapture()
@@ -3005,16 +3929,28 @@ final class OverlayState {
   @ObservationIgnored private var otherComposerOwnsCapture: (() -> Bool)?
   private(set) var pendingTextMessages: Set<String> = []
   private(set) var textMessageErrors: [String: String] = [:]
-  private(set) var conversationFocusRevision: UInt64 = 0
+  var publishedMessageSkips: [String: [AgentBusSkippedRecipient]] = [:]
+  private(set) var conversationFocusRevision: UInt64 = 0 {
+    didSet { channelObservationSource?.wake() }
+  }
   @ObservationIgnored var publishConversationText:
     @MainActor (
       OverlayConversationOwner?, String, OverlayUserReplyReference?, [OverlayConversationOwner]
-    ) async throws -> Void =
+    ) async throws -> AgentBusTextPublication =
       {
         owner, text, reply, alsoSentTo in
         try await RealAgentBridgeInstaller.sendBusText(
           owner: owner, text: text, userReplyTo: reply, alsoSentTo: alsoSentTo)
       }
+
+  static func formatSkippedRecipientsNotice(_ skipped: [AgentBusSkippedRecipient]) -> String? {
+    guard !skipped.isEmpty else { return nil }
+    return skipped.map { item in
+      String(
+        localized: "Skipped \(item.displayName) (channel \(item.channel)): \(item.reasonText)",
+        comment: "Line under a conversation after a broadcast skipped an agent: name, channel, why")
+    }.joined(separator: "; ")
+  }
 
   func sendConversationText(_ conversation: OverlayConversation) async {
     // The open conversation is the destination. A linked draft goes to every
@@ -3055,7 +3991,7 @@ final class OverlayState {
       : ConversationDraft.compose(text: parts.text, attachments: parts.attachments + adopted)
     guard !outgoing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
     do {
-      try await publishConversationText(destination.owner, outgoing, reply, [])
+      let publication = try await publishConversationText(destination.owner, outgoing, reply, [])
       // A newer draft or reply belongs to the Founder, even if publication finishes late.
       if conversationDraftRevisions[conversation.id] == draftRevision,
         conversationReplyRevisions[conversation.id] == replyRevision,
@@ -3065,6 +4001,14 @@ final class OverlayState {
         if conversationReplies[conversation.id] == reply {
           conversationReplies.removeValue(forKey: conversation.id)
         }
+      }
+      if !publication.skipped.isEmpty {
+        if !publication.messageID.isEmpty {
+          publishedMessageSkips[publication.messageID] = publication.skipped
+        }
+        textMessageErrors[conversation.id] = Self.formatSkippedRecipientsNotice(publication.skipped)
+      } else {
+        textMessageErrors.removeValue(forKey: conversation.id)
       }
     } catch {
       textMessageErrors[conversation.id] = error.userFacingMessage
@@ -3150,8 +4094,11 @@ final class OverlayState {
           }.compactMap { resolveComposerRecipient($0.recipient)?.owner }
         )
         .filter { $0.id != destination.owner?.id }.sorted { $0.id < $1.id }
-        try await publishConversationText(
+        let publication = try await publishConversationText(
           destination.owner, recipient.payload, recipient.reply, alsoSentTo)
+        if !publication.skipped.isEmpty, !publication.messageID.isEmpty {
+          publishedMessageSkips[publication.messageID] = publication.skipped
+        }
         // Membership can retire while the publication is in flight. Its
         // receipt still belongs to an unchanged, still-current exact owner.
         if draftPublicationIsCurrent(recipient) {
@@ -3488,43 +4435,88 @@ final class OverlayState {
     channelAudioCaptureActive
       || (recording && !finalized && !transcribing && !isFinalPass && mode == .listening)
   }
+
+  /// The mode of the take the microphone feeds now, or nil at rest: an agent
+  /// (an open channel or the assistive take) or a dictation. The bar wears
+  /// this mode's colour on its brand dot and its active recording control
+  /// (decision D6, 2026-11-06): terracotta for a dictation, the agent indigo
+  /// for an agent. Red stays for errors and orange for transcribing.
+  var liveTakeMode: OverlayTakeMode? {
+    guard audioCaptureActive else { return nil }
+    return usesAgentAccent ? .agent : .dictation
+  }
+
+  /// The header's Stop while an agent channel records: closes every open
+  /// channel through the same toggle the chord and the pills use, one at a
+  /// time, re-reading the roster after each, so a channel the controller
+  /// already closed is never opened again. A toggle that leaves its channel
+  /// open (refused or failed) ends the loop; its error is the toggle's.
+  func stopOpenChannels() {
+    Task { @MainActor in
+      while let digit = channelHudStates.filter(\.value.open).keys
+        .compactMap({ UInt8($0) }).sorted().first
+      {
+        await toggleAgentChannel(digit)
+        if channelHudStates[String(digit)]?.open == true { break }
+      }
+    }
+  }
+
+  /// A take is live for mini (Founder, 2026-11-04, bus brief §6, §11D): a
+  /// dictation from its start to the controller's stop, or any channel,
+  /// channel 0 included, with its microphone open. Mini then shows the
+  /// waveform, the clock and the addressees between the brand and its tools,
+  /// and folds back to its resting width when the take ends.
+  var miniTakeLive: Bool { recording || channelAudioCaptureActive }
   @ObservationIgnored var onChannelPresentationChanged: (() -> Void)?
   @ObservationIgnored private var channelObservationTask: Task<Void, Never>?
+  @ObservationIgnored private var channelObservationSource: OverlayChannelObservationSource?
+  /// One more pass of the history reader alone, while an observation runs.
+  @ObservationIgnored private var wakeChannelHistory: (() -> Void)?
 
   deinit {
     channelObservationTask?.cancel()
+    channelObservationSource?.cancel()
   }
 
   func observeChannelDelivery(using reader: OverlayChannelDeliveryReader) {
-    observeChannelDelivery { selectedOwner in
+    // Retire native handles before constructing the replacement source.
+    stopObservingChannelDelivery()
+    observeChannelDelivery(
+      source: .fileSystem(root: reader.root)
+    ) { selectedOwner in
       try await reader.readSnapshot(selectedOwner: selectedOwner)
     }
   }
 
   /// The reader remains the document projection owner. Injecting only its read
   /// operation lets a suspended history read falsify roster responsiveness.
-  /// One parent task owns both loops and propagates cancellation to both.
+  /// One parent owns two event consumers and propagates cancellation to both.
+  /// The closure-only seam is explicitly driven; production supplies FSEvents.
   @discardableResult
   func observeChannelDelivery(
+    source: OverlayChannelObservationSource = .manual(),
+    nextDeadlineUnixMs: @escaping @MainActor @Sendable () -> Int64? = { nil },
     readSnapshot:
       @escaping @MainActor (OverlayConversationOwner?) async throws
       -> OverlayChannelDeliverySnapshot
   ) -> Task<Void, Never> {
     stopObservingChannelDelivery()
-    let readRoster: @MainActor @Sendable () async -> Void = { [weak self] in
-      while !Task.isCancelled {
-        guard self != nil else { return }
+    channelObservationSource = source
+    let readRoster: @MainActor @Sendable (AsyncStream<Void>) async -> Void = { [weak self] events in
+      for await _ in events {
+        guard !Task.isCancelled, self != nil else { return }
         if let snapshot = await self?.engine?.channelRosterSnapshot() {
           guard !Task.isCancelled, let self else { return }
           self.applyChannelRoster(snapshot)
         }
-        let interval: Duration = (self?.isDeliveryObservationActive == true) ? .milliseconds(500) : .milliseconds(2000)
-        do { try await Task.sleep(for: interval) } catch { return }
+        guard !Task.isCancelled else { return }
+        source.setDeadline(nextDeadlineUnixMs())
       }
     }
-    let readHistory: @MainActor @Sendable () async -> Void = { [weak self] in
-      while !Task.isCancelled {
-        guard self != nil else { return }
+    let readHistory: @MainActor @Sendable (AsyncStream<Void>) async -> Void = { [weak self] events in
+      for await _ in events {
+        guard !Task.isCancelled, self != nil else { return }
         do {
           let archiveRevision = self?.agentArchiveRevision
           let focusRevision = self?.conversationFocusRevision
@@ -3535,7 +4527,7 @@ final class OverlayState {
           let snapshot = try await readSnapshot(archivedOwner)
           guard !Task.isCancelled, self != nil else { return }
           // A focus change can discard this paint, but not turn that archive's
-          // first-read history into a fresh admission on the next poll.
+          // first-read history into a fresh admission on the next wakeup.
           self?.observedReplyIDs.formUnion(snapshot.historyReplyIDs)
           if archiveRevision == self?.agentArchiveRevision,
             focusRevision == self?.conversationFocusRevision
@@ -3551,14 +4543,34 @@ final class OverlayState {
         }
         guard !Task.isCancelled else { return }
         await self?.refreshPlaybackMutes()
-        let interval: Duration = (self?.isDeliveryObservationActive == true) ? .milliseconds(500) : .milliseconds(2000)
-        do { try await Task.sleep(for: interval) } catch { return }
+        guard !Task.isCancelled else { return }
+        source.setDeadline(nextDeadlineUnixMs())
       }
     }
-    let observation = Task {
-      await withTaskGroup(of: Void.self) { group in
-        group.addTask { await readRoster() }
-        group.addTask { await readHistory() }
+    // Register the native source before bootstrap. Each consumer has one
+    // pending wakeup, so slow history never blocks roster updates or loses a
+    // change that arrived during its read.
+    source.wake()
+    let observation = Task { @MainActor [weak self] in
+      await withTaskCancellationHandler {
+        defer { source.cancel() }
+        let roster = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let history = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        self?.wakeChannelHistory = { history.continuation.yield(()) }
+        await withTaskGroup(of: Void.self) { group in
+          group.addTask { await readRoster(roster.stream) }
+          group.addTask { await readHistory(history.stream) }
+          for await _ in source.events {
+            guard !Task.isCancelled, self != nil else { break }
+            roster.continuation.yield(())
+            history.continuation.yield(())
+          }
+          roster.continuation.finish()
+          history.continuation.finish()
+          group.cancelAll()
+        }
+      } onCancel: {
+        source.cancel()
       }
     }
     channelObservationTask = observation
@@ -3566,8 +4578,11 @@ final class OverlayState {
   }
 
   func stopObservingChannelDelivery() {
+    wakeChannelHistory = nil
     channelObservationTask?.cancel()
     channelObservationTask = nil
+    channelObservationSource?.cancel()
+    channelObservationSource = nil
   }
 
   /// The compact channel map as the window owner sizes it: the projection
@@ -3576,42 +4591,48 @@ final class OverlayState {
   var channelMapLayoutModel: OverlayChannelMapModel {
     OverlayChannelMapModel(
       channels: visibleChannelRows, hudStates: channelHudStates, selectableDigits: [],
-      unreadDigits: [])
+      unreadDigits: [], sharedChannelName: sharedChannelStoredName)
   }
 
-  /// Reports a change of the map's agents or names, or of its open digits.
-  /// Mini's counter turns from the agent count into the open digits, so
-  /// mini's width follows the chord; compact's natural width ignores open
-  /// microphones (channel 0's chip included), so the chord never resizes the
-  /// strip and its refit is a no-op.
+  /// Reports a change of the map's agents or names, of its open digits, or
+  /// of a live take. Mini grows by the waveform, the clock and the open
+  /// channels' circles while a take is live (`miniTakeLive`), so its width
+  /// follows the take and the chord; the bar's waveform and clock keep their
+  /// width at rest, so a take alone never resizes the bar; channel 0's
+  /// circle leads the map at rest too, so a broadcast does not resize it.
   private func noteChannelMapLayout() {
     let map = channelMapLayoutModel
     let key =
-      map.agents.map { $0.digit + "\u{1F}" + $0.name }
+      map.chips.map { $0.digit + "\u{1F}" + $0.name }
       + ["\u{1E}" + map.openDigits.joined(separator: ",")]
+      + ["\u{1D}" + (miniTakeLive ? "take" : "")]
     guard key != channelMapLayoutKey else { return }
     channelMapLayoutKey = key
     onChannelMapLayoutChanged?()
   }
 
-  /// The channel counter's click (bus intercom spec §13.4). Mini switches to
-  /// compact, where the chips are clickable, as the form toggle's "Expand to
-  /// compact widget" does. Compact shows the counter when the user narrowed
-  /// it, so there the click returns the strip to its natural width and the
-  /// chips come back. In the vertical layout the chips live in the Intercom
-  /// group, so the same click brings that group forward (Maciej, 2026-10-23:
-  /// "musi zaprowadzić w inne miejsce po prostu"). None selects a
-  /// conversation or touches capture.
+  /// The channel counter's click (bus intercom spec §13.4). The horizontal
+  /// mini has no counter (Founder, 2026-11-04). Compact shows the counter when the user
+  /// narrowed it, so there the click returns the strip to its natural width
+  /// and the chips come back. In the vertical layout the chips live in the
+  /// Intercom group, so the same click brings that group forward (Maciej,
+  /// 2026-10-23: "musi zaprowadzić w inne miejsce po prostu"). None selects
+  /// a conversation or touches capture.
   func activateChannelMapCounter() {
     if channelMapCounterStacked {
       onRevealIntercom?()
       return
     }
-    switch presentationMode {
-    case .mini: setPresentationMode(.midi)
-    case .midi: onRestoreMidiNaturalWidth?()
-    case .expanded: break
-    }
+    if presentationMode == .midi { onRestoreMidiNaturalWidth?() }
+  }
+
+  /// Re-reads channel 0's name; a new name refits the bar, whose caption
+  /// under or beside the 0 it is.
+  func refreshSharedChannelName() {
+    let stored = sharedChannelNameSetting()
+    guard stored != sharedChannelStoredName else { return }
+    sharedChannelStoredName = stored
+    noteChannelMapLayout()
   }
 
   func refreshAgentChannelModifier() {
@@ -3639,6 +4660,9 @@ final class OverlayState {
             codexThreadLocal: row.codexThreadLocal,
             unreadSince: row.unreadSinceUnixMs.map {
               Date(timeIntervalSince1970: Double($0) / 1_000)
+            },
+            lastHeartbeat: row.lastHeartbeatUnixMs.map {
+              Date(timeIntervalSince1970: Double($0) / 1_000)
             })
         )
       }, uniquingKeysWith: { _, latest in latest })
@@ -3656,11 +4680,23 @@ final class OverlayState {
     let wasOpen = hasOpenChannel
     let wasChannelCapturing = channelAudioCaptureActive
     let wasCapturingAudio = audioCaptureActive
+    func bindings(_ rows: [CsChannelRosterState]) -> Set<String> {
+      Set(
+        rows.map {
+          "\($0.channel)|\(String(describing: $0.provider))|\(String(describing: $0.providerSessionId))"
+        })
+    }
+    let rebound = bindings(snapshot) != bindings(channelRoster)
     channelRoster = snapshot
     hasLoadedChannelRoster = rosterReady
     channelHudStates = projected
     channelRosterNames = names
     noteChannelMapLayout()
+    // A digit bound to another session changes who owns its descriptor and
+    // its mute, and no file need change for that. The history reader wakes
+    // on file events only, so ask it for one pass. The roster reader is not
+    // asked: it has just delivered this very snapshot.
+    if rebound { wakeChannelHistory?() }
     if wasCapturingAudio != audioCaptureActive {
       levelMeter.reset()
       hasMeasuredAudioLevel = false
@@ -3680,10 +4716,12 @@ final class OverlayState {
     if followed.count == 1, let row = followed.first {
       followChannelConversation(row)
     } else if followed.count > 1 {
-      // Simultaneous recipients belong to the existing aggregate conversation.
-      let expansion: OverlayPresentationCause? = channelOpenExpandsSurface ? .automatic : nil
-      selectConversation(conversations.first { $0.channel == "0" }?.id, expansion: expansion)
-      if selectedConversationID == nil { showAgentMonitor(expansion: expansion) }
+      if !isVerticalIntercom {
+        // Simultaneous recipients belong to the existing aggregate conversation.
+        let expansion: OverlayPresentationCause? = channelOpenExpandsSurface ? .automatic : nil
+        selectConversation(conversations.first { $0.channel == "0" }?.id, expansion: expansion)
+        if selectedConversationID == nil { showAgentMonitor(expansion: expansion) }
+      }
     }
     if hasOpenChannel {
       cancelAutoHide()
@@ -4287,7 +5325,7 @@ final class OverlayState {
     }
   }
 
-  private func relayInsertPasteIntent() {
+  func relayInsertPasteIntent() {
     if engine == nil {
       presentActionFailure(
         String(localized: "Insert needs the recording engine"),
@@ -4333,8 +5371,13 @@ final class OverlayState {
       case .success(let result):
         switch result.outcome {
         case .deferredInsertArmed:
-          let shortcut = result.deferredInsertShortcut ?? "⌘⌥V"
-          self.showFooterNotice(shortcut, persists: true)
+          if let failure = result.deferredInsertFailure {
+            self.showFooterNotice(failure, persists: true)
+          } else if let shortcut = result.deferredInsertShortcut {
+            self.showFooterNotice(shortcut, persists: true)
+          } else {
+            self.showFooterNotice(String(localized: "insert unavailable"), persists: true)
+          }
         case .copiedToClipboard:
           self.showFooterNotice(String(localized: "copied"))
         case .accessibilityPermissionNeeded:
@@ -4682,6 +5725,8 @@ final class OverlayState {
   /// one-shot format carries its own level, so neither is touched. Reads
   /// only: transcript, document and presentation state stay as they are.
   func canonicalConfigurationDidChange() {
+    // A display name, not a take policy: it follows the write at once.
+    refreshSharedChannelName()
     guard !warmingUp, !recording, !transcribing, !isFinalPass else { return }
     refreshOverlayPolicyTruth()
   }
@@ -6731,8 +7776,13 @@ final class OverlayState {
   /// resolves a channel snapshot that still describes the preceding capture.
   private func selectDictationSurfaceIfNeeded() {
     guard !draftCapture.hasRequest else { return }
-    if !hasOpenChannel, indicatorMode != .assistive, windowContentSurface != .transcription {
-      selectConversation(nil)
+    if isVerticalIntercom || (!hasOpenChannel && indicatorMode != .assistive) {
+      if windowContentSurface != .transcription || selectedConversationID != nil
+        || showsAgentMonitor
+      {
+        selectConversation(nil)
+        showsAgentMonitor = false
+      }
     }
   }
 

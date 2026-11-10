@@ -26,14 +26,14 @@ final class ProviderReadinessAcceptanceTests: XCTestCase {
       provider: provider, loginPending: false, loginNotice: nil, onStart: {}, onSignOut: {})
     let accepted = KeyProbeChip(result: CsApiKeyProbeResult(
       account: "FIXTURE_API_KEY", status: .ok, message: "fixture accepted", probedEndpoint: nil))
-    let rejected = KeyProbeChip(result: CsApiKeyProbeResult(
-      account: "FIXTURE_API_KEY", status: .rejected,
-      message: "fixture rejected", probedEndpoint: nil))
+    let blocked = KeyProbeChip(result: CsApiKeyProbeResult(
+      account: "FIXTURE_API_KEY", status: .invalid,
+      message: "fixture invalid", probedEndpoint: nil))
     XCTAssertGreaterThan(try greenPixels(accepted, name: "accepted-probe"), 10)
-    XCTAssertGreaterThan(try greenPixels(savedKey, name: "saved-key"), 0, "the olive circle")
+    XCTAssertGreaterThan(try greenPixels(savedKey, name: "saved-key"), 0, "the saved circle")
     XCTAssertGreaterThan(
-      try greenPixels(savedAccount, name: "saved-account"), 0, "the olive circle")
-    XCTAssertLessThanOrEqual(try greenPixels(rejected, name: "rejected-probe"), 2)
+      try greenPixels(savedAccount, name: "saved-account"), 0, "the saved circle")
+    XCTAssertLessThanOrEqual(try greenPixels(blocked, name: "blocked-probe"), 2)
 
     let keyRowsURL = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
@@ -57,6 +57,7 @@ final class ProviderReadinessAcceptanceTests: XCTestCase {
       "the accepted probe is the only verified sign in the key rows")
     XCTAssertTrue(keyRows.contains("case .invalid, .noQuota: return .blocked"))
     XCTAssertTrue(keyRows.contains("case .unsupported: return .saved"))
+    XCTAssertTrue(keyRows.contains("case .rejected, .network, .missing: return .none"))
   }
 
   private func greenPixels<V: View>(_ view: V, name: String) throws -> Int {
@@ -73,14 +74,21 @@ final class ProviderReadinessAcceptanceTests: XCTestCase {
     attachment.name = name
     attachment.lifetime = .keepAlways
     add(attachment)
-    let green = try XCTUnwrap(NSColor(CSColor.oliveLight).usingColorSpace(.sRGB))
+    var resolved: NSColor?
+    host.appearance?.performAsCurrentDrawingAppearance {
+      resolved = CSPalette.secondaryInk.usingColorSpace(.sRGB)
+    }
+    let secondary = try XCTUnwrap(resolved)
+    let targetR = secondary.redComponent * secondary.alphaComponent
+    let targetG = secondary.greenComponent * secondary.alphaComponent
+    let targetB = secondary.blueComponent * secondary.alphaComponent
     var count = 0
     for y in 0..<bitmap.pixelsHigh {
       for x in 0..<bitmap.pixelsWide {
         guard let c = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
-        if abs(c.redComponent - green.redComponent) < 0.04,
-          abs(c.greenComponent - green.greenComponent) < 0.04,
-          abs(c.blueComponent - green.blueComponent) < 0.04 { count += 1 }
+        if abs(c.redComponent - targetR) < 0.04,
+          abs(c.greenComponent - targetG) < 0.04,
+          abs(c.blueComponent - targetB) < 0.04 { count += 1 }
       }
     }
     return count

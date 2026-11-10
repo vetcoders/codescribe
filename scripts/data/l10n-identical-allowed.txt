@@ -66,9 +66,16 @@ Commit: %@
 Model
 Plan
 OK
+# Channel chip hover card presence: "Online" is the word Polish uses as well (chip card contract, 2026-11-04).
+Online
+# Widget size picker: the small form is named "Mini" in both languages (2026-11-04).
+Mini
 
 # Appearance choice that follows macOS: "System" is the same word in Polish.
 System
+
+# Dictation language choice for automatic detection: "Auto" is the same short label in Polish.
+Auto
 
 # Founder-named appearance theme; retain the name Nightly in Polish.
 Nightly

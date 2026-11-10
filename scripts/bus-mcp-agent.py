@@ -27,10 +27,11 @@ import uuid
 PROTOCOL_VERSION = "2026-07-28"
 BUS_SLOTS = tuple(str(n) for n in range(1, 10))
 
-#: `bus-demux` keys every lease on `provider.casefold()` and forwards the value
-#: straight to `cs-bus --provider`, so a provider is a bounded, already
-#: casefolded client id such as `codex` or `claude-code`. No provider list is
-#: compiled in here: the lease, binding and reply checks below decide ownership.
+#: `bus-demux` keys every lease on `provider_token(provider)` (the one rule,
+#: stated there) and this value goes straight to `cs-bus --provider`, so a
+#: provider here is already that token: an ASCII client id such as `codex` or
+#: `claude-code`. No provider list is compiled in here: the lease, binding and
+#: reply checks below decide ownership.
 PROVIDER_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 
 #: One reviewed per-connection directory directly under `<bridge_home>/runtime`.
@@ -153,7 +154,7 @@ class Scope:
             raise ValueError("Exact locally reviewed session configuration required")
         provider = config["provider"]
         if not isinstance(provider, str) or not PROVIDER_PATTERN.fullmatch(provider):
-            raise ValueError("A bounded casefolded provider id is required")
+            raise ValueError("A bounded lower-case ASCII provider id is required")
         name = config["name"]
         if (not isinstance(name, str) or not name.strip() or len(name) > 80
                 or any(ord(c) < 32 for c in name)):

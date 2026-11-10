@@ -161,14 +161,119 @@ final class OverlayHeaderChromeTests: XCTestCase {
       interactive: true)
     owner.hide(allowPointerRetention: true)
     XCTAssertTrue(owner.isPresented, "the row-to-preview gap has a short grace period")
-    try await Task.sleep(for: .milliseconds(300))
-    XCTAssertFalse(owner.isPresented)
+    // The grace is a 220 ms timer on the main actor. A fixed 300 ms wait
+    // raced it by 80 ms and lost under a loaded full suite; wait for the
+    // dismissal itself, bounded.
+    let deadline = ContinuousClock.now + .seconds(3)
+    while owner.isPresented, ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    XCTAssertFalse(owner.isPresented, "the card closes once the grace has passed")
     XCTAssertNil(OverlayHintPanel.shared.presentedTitle)
+  }
+
+  /// The list under ✦ hangs below the pinned bar, outside the bar's frame.
+  /// At the default normal level a foreground application lay over it, so
+  /// the pointer never entered the list (it closed after the grace) and the
+  /// clicks reached that application. The list takes the bar's level, stays
+  /// ordered above it and follows its presence policy.
+  func testAgentsListCrossesTheGapAboveAPinnedBarAndFollowsItsLevel() async throws {
+    let parent = NSPanel(
+      contentRect: NSRect(x: 300, y: 500, width: 400, height: 46),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    parent.level = OverlayPresencePolicy.rest.windowLevel
+    let star = NSView(frame: NSRect(x: 300, y: 12, width: 22, height: 22))
+    parent.contentView?.addSubview(star)
+    BackgroundTestWindow.present(parent)
+    let owner = OverlayHintAnchor()
+    owner.view = star
+    defer {
+      owner.hide()
+      parent.orderOut(nil)
+    }
+    owner.show(
+      "Agents", palette: .dark,
+      content: AnyView(Button("1 · Kaja") {}.frame(maxWidth: .infinity, maxHeight: .infinity)),
+      size: CGSize(width: 180, height: 60), interactive: true)
+    let list = try XCTUnwrap(OverlayHintPanel.shared.presentedPanel)
+    XCTAssertTrue(list.parent === parent)
+    XCTAssertFalse(list.ignoresMouseEvents, "the list takes its own clicks")
+    XCTAssertEqual(list.level, parent.level, "the list cannot sit under a foreground app")
+
+    func listRegion(in view: NSView) -> OverlayMenuCursorRegionView? {
+      if let region = view as? OverlayMenuCursorRegionView, region.bounds.width > 150 {
+        return region
+      }
+      return view.subviews.lazy.compactMap { listRegion(in: $0) }.first
+    }
+    let root = try XCTUnwrap(list.contentView)
+    root.layoutSubtreeIfNeeded()
+    let region = try XCTUnwrap(listRegion(in: root))
+    region.updateTrackingAreas()
+    XCTAssertTrue(region.trackingAreas.contains { $0.options.contains(.activeAlways) })
+
+    // Exit ✦, then enter the list inside the grace window.
+    owner.hide(allowPointerRetention: true)
+    try await Task.sleep(for: .milliseconds(60))
+    region.updateHover(
+      at: region.convert(NSPoint(x: region.bounds.midX, y: region.bounds.midY), to: nil))
+    try await Task.sleep(for: .milliseconds(300))
+    XCTAssertTrue(owner.isPresented, "the pointer crosses from ✦ into the list")
+    XCTAssertTrue(list.isVisible)
+    XCTAssertTrue(parent.childWindows?.contains(list) == true, "ordered above its bar")
+    XCTAssertGreaterThanOrEqual(list.level.rawValue, parent.level.rawValue)
+
+    // The bar's presence policy moves; the open list moves with it.
+    parent.level = .statusBar
+    OverlayHintPanel.shared.synchronizeLevel(with: parent)
+    XCTAssertEqual(list.level, .statusBar)
+    parent.level = .normal
+    OverlayHintPanel.shared.synchronizeLevel(with: parent)
+    XCTAssertEqual(list.level, .normal)
+
+    // Leaving the list closes it after the grace.
+    region.updateHover(at: NSPoint(x: -10_000, y: -10_000))
+    try await Task.sleep(for: .milliseconds(400))
+    XCTAssertFalse(owner.isPresented)
+  }
+
+  /// Window-server routing: a point over a list row belongs to the list's
+  /// window, never to the bar or whatever lies under the list. Needs real
+  /// window ordering, so it runs only in the isolated GUI session.
+  func testAgentsListRowPointRoutesToTheListWindow() throws {
+    try BackgroundTestWindow.requireIsolatedGUI()
+    let parent = NSPanel(
+      contentRect: NSRect(x: 300, y: 500, width: 400, height: 46),
+      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    parent.level = OverlayPresencePolicy.rest.windowLevel
+    let star = NSView(frame: NSRect(x: 300, y: 12, width: 22, height: 22))
+    parent.contentView?.addSubview(star)
+    BackgroundTestWindow.present(parent)
+    let owner = OverlayHintAnchor()
+    owner.view = star
+    defer {
+      owner.hide()
+      parent.orderOut(nil)
+    }
+    owner.show(
+      "Agents", palette: .dark,
+      content: AnyView(Button("1 · Kaja") {}.frame(maxWidth: .infinity, maxHeight: .infinity)),
+      size: CGSize(width: 180, height: 60), interactive: true)
+    let list = try XCTUnwrap(OverlayHintPanel.shared.presentedPanel)
+    let row = NSPoint(x: list.frame.midX, y: list.frame.midY)
+    XCTAssertEqual(
+      NSWindow.windowNumber(at: row, belowWindowWithWindowNumber: 0), list.windowNumber,
+      "a click over a row reaches the list, not the bar or the app beneath")
+    let root = try XCTUnwrap(list.contentView)
+    root.layoutSubtreeIfNeeded()
+    XCTAssertNotNil(
+      root.hitTest(root.convert(list.convertPoint(fromScreen: row), from: nil)),
+      "the row's content answers the click")
   }
 
   func testAccentsShareOneHoverHue() {
     for palette in [OverlayAppearancePalette.light, .dark] {
-      let hover = OverlayHeaderAccent.transcription.color(in: palette)
+      let hover = OverlayHeaderAccent.state.color(in: palette)
       XCTAssertEqual(OverlayHeaderAccent.agents.color(in: palette), hover)
       XCTAssertEqual(OverlayHeaderAccent.state.color(in: palette), hover)
       XCTAssertNotEqual(hover, palette.successStatus.color)
@@ -205,8 +310,9 @@ final class OverlayHeaderChromeTests: XCTestCase {
 
   /// Founder, 2026-10-15: the chosen mode was "lekko rozjaśnione tylko kółko"
   /// that ignored hover. A chosen control sits on a pastel of its mode's
-  /// colour (Agents lavender, Transcription the listening terracotta, Pin the
-  /// system accent): noticeable, never the full colour, and hover still moves it.
+  /// colour (Agents lavender, Pin the system accent) or, for the
+  /// transcription since decision D7, the window state's neutral primary ink:
+  /// noticeable, never the full colour, and hover still moves it.
   func testSelectedControlsWearAPastelOfTheirModeAndStillAnswerHover() throws {
     let pinned = OverlayState()
     pinned.engine = OverlayChromePolicyEngine()
@@ -223,7 +329,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
         unreadCounts: [:], onShowMonitor: {})
       let cases: [(String, OverlayColorToken, AnyView, AnyView)] = [
         (
-          "transcription", palette.listeningStatus,
+          "transcription", palette.primaryText,
           AnyView(HeaderHoverTranscription(palette: palette, selected: true)),
           AnyView(HeaderHoverTranscription(palette: palette))
         ),
@@ -237,7 +343,9 @@ final class OverlayHeaderChromeTests: XCTestCase {
       for (name, token, selectedView, restingView) in cases {
         let label = "\(name)-\(palette.appearance == .dark ? "dark" : "light")"
         let selected = try hoverFrames(selectedView, palette: palette)
-        let resting = try hoverFrames(restingView, palette: palette)
+        // Only the resting frame of the unchosen control is compared. The
+        // full hover cycle for it put this test at 9.8 s under a 10 s ceiling.
+        let resting = try hoverFrames(restingView, palette: palette, restOnly: true)
         XCTAssertGreaterThan(
           headerShift(resting.rest, selected.rest, toward: token), 0.04,
           "\(label): the choice is not tinted toward its mode colour")
@@ -265,10 +373,7 @@ final class OverlayHeaderChromeTests: XCTestCase {
   func testEveryHeaderControlUsesTheHoverChromeInsteadOfANativeTooltip() throws {
     let view = try source("Overlay/DictationOverlayView.swift")
     XCTAssertTrue(
-      view.contains("title: transcriptPreviewHelp, accent: .transcription, palette: palette"))
-    XCTAssertTrue(
-      view.contains("? OverlayHeaderAccent.transcription.selectionTint(in: palette)"),
-      "the fixture mirrors the production Transcription tint")
+      view.contains("title: transcriptPreviewHelp, accent: .state, palette: palette"))
     XCTAssertTrue(view.contains("accent: recordingDisabled ? nil : .state, palette: palette"))
     XCTAssertTrue(
       view.contains("title: previewAccessibilityLabel, accent: .state, palette: palette"))
@@ -282,7 +387,13 @@ final class OverlayHeaderChromeTests: XCTestCase {
     }
 
     let roster = try source("Overlay/OverlayChannelStatusView.swift")
-    XCTAssertTrue(roster.contains("title: headerTitle, accent: .agents, palette: palette"))
+    // The Agents button wraps the one hover chrome in its list chrome
+    // (bar redesign, 2026-11-04): the title and the agents hue stay.
+    XCTAssertTrue(
+      roster.contains("OverlayAgentsHoverListChrome(\n        title: headerTitle, palette: palette")
+    )
+    let listChrome = try source("Overlay/OverlayChannelMapHoverView.swift")
+    XCTAssertTrue(listChrome.contains("title: title, accent: .agents, palette: palette"))
     XCTAssertTrue(
       roster.contains("guard agentCaptureOpen else { return String(localized: \"Agents\") }"),
       "without an agent recording the hover chrome still says Agents")
@@ -520,11 +631,13 @@ final class OverlayHeaderChromeTests: XCTestCase {
         palette: palette, microphone: true, preview: false, canFinish: true,
         recordingLight: .holdToTalk),
       palette: palette)
+    // A dictation records in the brand terracotta (decision D6).
+    let dictation = OverlayColorToken(CSPalette.terracotta, in: palette.appearance)
     XCTAssertTrue(
-      headerContains(frames.rest, near: palette.errorStatus, tolerance: 0.2),
+      headerContains(frames.rest, near: dictation, tolerance: 0.2),
       "\(name) microphone lost its recording color before hover")
     XCTAssertTrue(
-      headerContains(frames.hover, near: palette.errorStatus, tolerance: 0.2),
+      headerContains(frames.hover, near: dictation, tolerance: 0.2),
       "\(name) microphone lost its recording color on hover")
     XCTAssertGreaterThan(
       headerShift(frames.rest, frames.hover, toward: headerSystemAccent(palette)), 0.03,
@@ -550,7 +663,8 @@ final class OverlayHeaderChromeTests: XCTestCase {
   private func hoverFrames<V: View>(
     _ view: V, palette: OverlayAppearancePalette,
     size: NSSize = NSSize(width: 64, height: 64),
-    minimumWidth: CGFloat = 0
+    minimumWidth: CGFloat = 0,
+    restOnly: Bool = false
   ) throws -> (rest: [HeaderPixel], hover: [HeaderPixel], leave: [HeaderPixel], width: Int) {
     let root =
       view
@@ -573,6 +687,9 @@ final class OverlayHeaderChromeTests: XCTestCase {
     headerSettle(host)
     let rest = headerRaster(host)
     XCTAssertFalse(rest.pixels.isEmpty, "control did not render")
+    // A caller that compares resting frames alone skips the hover round trip
+    // and its two animation waits.
+    if restOnly { return (rest.pixels, rest.pixels, rest.pixels, rest.width) }
     try headerPointer(
       true, on: host, minimumWidth: minimumWidth)
     headerSettle(host, seconds: CSMotion.Tempo.hover + 0.05)
@@ -982,25 +1099,19 @@ private struct HeaderPixel {
 }
 
 /// The transcription button is private to the overlay. This mounts the same
-/// production glyph and chrome the header uses.
-/// Mirrors the production Transcription control in `DictationOverlayView`.
+/// production glyph (`OverlayTranscriptionGlyph`) and chrome the header uses.
 private struct HeaderHoverTranscription: View {
   let palette: OverlayAppearancePalette
   var selected = false
 
   var body: some View {
     Button(action: {}) {
-      OverlayMicrophoneGlyph(
-        character: OverlayHeaderGlyph.transcription,
-        tint: selected
-          ? OverlayHeaderAccent.transcription.selectionTint(in: palette)
-          : palette.mutedText.color,
-        plateOpacity: selected ? 0 : 0.12)
+      OverlayTranscriptionGlyph(selected: selected, palette: palette)
     }
     .buttonStyle(.plain)
     .modifier(
       OverlayHeaderControlChrome(
-        title: "Show transcription", accent: .transcription, palette: palette,
+        title: "Show transcription", accent: .state, palette: palette,
         selected: selected))
   }
 }
@@ -1020,6 +1131,8 @@ private struct HeaderHoverAgents: View {
     )
   }
 }
+
+@MainActor
 
 private func headerHoverControls(
   palette: OverlayAppearancePalette,

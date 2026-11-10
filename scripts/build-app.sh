@@ -212,6 +212,42 @@ if [[ "$PROFILE" != "release" && "${CODESCRIBE_DEVELOPER_SURFACE:-0}" == "1" ]];
 fi
 export CODESCRIBE_DEVELOPER_SURFACE="$CS_DEVELOPER_SURFACE"
 
+# An install or developer-surface lane must never compile with the dev license
+# fallback or stamp an empty Sparkle public key when invoked outside Makefile.
+if [[ "$CS_DEVELOPER_SURFACE" == "1" || "${CODESCRIBE_INSTALL_LANE:-0}" == "1" ]]; then
+  # The documented file-path overrides (Makefile, developer-surface-gate.sh)
+  # are read first; the default key directories are the fallback.
+  if [[ -z "${SPARKLE_ED_PUBLIC_KEY:-}" && -n "${CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE:-}" \
+     && -f "$CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE" ]]; then
+    SPARKLE_ED_PUBLIC_KEY="$(tr -d '[:space:]' <"$CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE" || true)"
+  fi
+  if [[ -z "${CODESCRIBE_LICENSE_PUBLIC_KEY_HEX:-}" && -n "${CODESCRIBE_LICENSE_PUBLIC_KEY_FILE:-}" \
+     && -f "$CODESCRIBE_LICENSE_PUBLIC_KEY_FILE" ]]; then
+    CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(tr -d '[:space:]' <"$CODESCRIBE_LICENSE_PUBLIC_KEY_FILE" || true)"
+  fi
+  for key_dir in "$HOME/.codescribe/config/dev/keys" "$HOME/.vibecrafted/secrets/codescribe"; do
+    if [[ -z "${SPARKLE_ED_PUBLIC_KEY:-}" && -f "$key_dir/sparkle-public.b64" ]]; then
+      SPARKLE_ED_PUBLIC_KEY="$(tr -d '[:space:]' <"$key_dir/sparkle-public.b64" || true)"
+    fi
+    if [[ -z "${CODESCRIBE_LICENSE_PUBLIC_KEY_HEX:-}" && -f "$key_dir/license-public.hex" ]]; then
+      CODESCRIBE_LICENSE_PUBLIC_KEY_HEX="$(tr -d '[:space:]' <"$key_dir/license-public.hex" || true)"
+    fi
+  done
+  # Under set -u an unset key must reach the message below, not "unbound
+  # variable": measure the defaulted values.
+  sparkle_key="${SPARKLE_ED_PUBLIC_KEY:-}"
+  license_key="${CODESCRIBE_LICENSE_PUBLIC_KEY_HEX:-}"
+  if [[ ${#sparkle_key} -lt 32 || ! "$sparkle_key" =~ ^[A-Za-z0-9+/=]+$ ]]; then
+    echo "error: install/developer build requires SPARKLE_ED_PUBLIC_KEY (or CODESCRIBE_SPARKLE_PUBLIC_KEY_FILE / sparkle-public.b64)" >&2
+    exit 1
+  fi
+  if [[ ${#license_key} -ne 64 || ! "$license_key" =~ ^[0-9A-Fa-f]+$ ]]; then
+    echo "error: install/developer build requires 64-hex CODESCRIBE_LICENSE_PUBLIC_KEY_HEX (or CODESCRIBE_LICENSE_PUBLIC_KEY_FILE / license-public.hex)" >&2
+    exit 1
+  fi
+  export SPARKLE_ED_PUBLIC_KEY CODESCRIBE_LICENSE_PUBLIC_KEY_HEX
+fi
+
 # Every build that is not the release DMG is a nightly; nightlies wear a
 # darker dark mode (Maciej, 2026-10-18). CODESCRIBE_BUILD_CHANNEL overrides.
 if [[ "$PROFILE" == "release" ]]; then

@@ -15,23 +15,32 @@ struct OverlayAppearancePalette: Equatable, Sendable {
   let mutedText: OverlayColorToken
   let listeningStatus: OverlayColorToken
   let processingStatus: OverlayColorToken
+  /// The coverage pill's microphone glyph: `processingStatus`'s orange with
+  /// only its brightness lowered until it reads at the 3:1 non-text floor on
+  /// every sheet shade of this appearance (Bruno, 2026-11-07). The dark
+  /// sheets already clear it, so there it is `processingStatus` itself.
+  let microphoneWarning: OverlayColorToken
+  /// `CSPalette.success`: the presence dot of a connected agent and a
+  /// succeeded focus action; every other correct state is ink and a glyph.
   let successStatus: OverlayColorToken
   let errorStatus: OverlayColorToken
-  /// The assistive violet (voice routed to an agent), raised for contrast on
-  /// either canvas; the Agents control's hover hue.
+  /// Voice routed to an agent: the system indigo; the Agents control's hover hue.
   let agentAccent: OverlayColorToken
-  /// A6 uncertain-word text: the processing orange at label strength. Distinct
-  /// from `processingStatus`, which wears the amber of engine completeness
-  /// warnings; this role means "the engine was unsure of THIS word".
+  /// A6 uncertain-word text: the same system orange as `processingStatus`
+  /// (Founder, 2026-11-05: one attention colour); the role still means "the
+  /// engine was unsure of THIS word".
   let uncertainWord: OverlayColorToken
-  /// Lexicon marker for `surface_rewritten` words (d5): the dictionary owns
-  /// this surface, so it gets the steel blue of `CSPalette.lexicon`, never the
-  /// uncertainty orange.
+  /// Lexicon marker for `surface_rewritten` words (d5): secondary ink; the
+  /// underline, not a colour, says the dictionary rewrote the word.
   let lexiconMarker: OverlayColorToken
   let shadowOpacity: Double
 
-  static var light: OverlayAppearancePalette { OverlayAppearancePalette(.light) }
-  static var dark: OverlayAppearancePalette { OverlayAppearancePalette(.dark) }
+  /// Stored once per process. Each construction samples twelve roles through
+  /// `NSAppearance.performAsCurrentDrawingAppearance` + ColorSync, so a
+  /// computed property here put that cost on every SwiftUI body and every
+  /// live-transcript tick that resolves the palette.
+  static let light = OverlayAppearancePalette(.light)
+  static let dark = OverlayAppearancePalette(.dark)
 
   private init(_ appearance: OverlayAppearance) {
     self.appearance = appearance
@@ -42,11 +51,16 @@ struct OverlayAppearancePalette: Equatable, Sendable {
     mutedText = OverlayColorToken(CSPalette.textMuted, in: appearance)
     listeningStatus = OverlayColorToken(CSPalette.terracottaLight, in: appearance)
     processingStatus = OverlayColorToken(CSPalette.amberLight, in: appearance)
-    successStatus = OverlayColorToken(CSPalette.oliveStatus, in: appearance)
+    microphoneWarning = processingStatus.darkened(
+      toContrast: 3.0,
+      on: (appearance == .dark ? SheetShade.darkChoices : SheetShade.lightChoices)
+        .map { OverlayColorToken($0.hex) })
+    successStatus = OverlayColorToken(CSPalette.success, in: appearance)
     errorStatus = OverlayColorToken(CSPalette.dangerLight, in: appearance)
     agentAccent = OverlayColorToken(CSPalette.assistiveLight, in: appearance)
     uncertainWord = OverlayColorToken(CSPalette.modeProcessingLight, in: appearance)
-    lexiconMarker = OverlayColorToken(CSPalette.lexicon, in: appearance)
+    // A word the dictionary rewrote: label ink with an underline, no colour.
+    lexiconMarker = OverlayColorToken(CSPalette.textHigh, in: appearance)
     shadowOpacity = appearance == .dark ? 0.20 : 0.16
   }
 

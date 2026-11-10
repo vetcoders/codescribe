@@ -26,7 +26,9 @@ final class DictionaryRecentTakesTests: XCTestCase {
     var object: [String: Any] = [
       "schema_version": 2,
       "session_id": session,
-      "words": words.map { ["word": $0.0, "sample_start": $0.1, "sample_end": $0.2, "pin": "whisper"] },
+      "words": words.map {
+        ["word": $0.0, "sample_start": $0.1, "sample_end": $0.2, "pin": "whisper"]
+      },
       "ledger": ledger,
     ]
     if let generatedAt { object["generated_at"] = generatedAt }
@@ -116,10 +118,14 @@ final class DictionaryRecentTakesTests: XCTestCase {
     XCTAssertEqual(try RecentTakesReader.read(root: root.path), [])
   }
 
+  @MainActor
+
   func testShareLabelRoundsToWholePercent() {
     XCTAssertTrue(DictionaryRecentTakes.shareLabel(29.7).hasPrefix("30"))
     XCTAssertTrue(DictionaryRecentTakes.shareLabel(29.7).contains("%"))
   }
+
+  @MainActor
 
   func testDurationLabelUsesMinutesPastSixty() {
     XCTAssertEqual(DictionaryRecentTakes.durationLabel(38.4), "38 s")
@@ -160,8 +166,12 @@ final class DictionaryRecentTakesTests: XCTestCase {
 
   private func header(rate: UInt32, blockAlign: UInt16, dataBytes: UInt32) -> Data {
     var data = Data()
-    func put(_ value: UInt32) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
-    func put16(_ value: UInt16) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
+    func put(_ value: UInt32) {
+      withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) }
+    }
+    func put16(_ value: UInt16) {
+      withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) }
+    }
     data.append(contentsOf: Array("RIFF".utf8))
     put(36 + dataBytes)
     data.append(contentsOf: Array("WAVE".utf8))

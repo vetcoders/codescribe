@@ -156,25 +156,25 @@ struct LicenseSection: View {
     }
   }
 
-  /// Green dot and "Active" in olive on a soft capsule while the license
-  /// works; every other state is plain secondary text.
+  /// A working license keeps its dot and capsule in neutral ink; the state
+  /// is carried by its label, not a decorative success colour.
   private var statusBadge: some View {
     HStack(alignment: .center, spacing: CSSpace.xs) {
       if isActive {
         Circle()
-          .fill(CSColor.oliveLight)
+          .fill(CSColor.secondaryInk)
           .frame(width: 7, height: 7)
       }
       Text(statusLabel)
         .font(SettingsScale.controlLabel)
-        .foregroundStyle(isActive ? CSColor.oliveLight : CSColor.secondaryInk)
+        .foregroundStyle(CSColor.secondaryInk)
         .lineLimit(1)
     }
     .padding(.horizontal, isActive ? SettingsScale.controlInsetH : 0)
     .padding(.vertical, isActive ? SettingsScale.controlInsetV : 0)
     .background {
       if isActive {
-        Capsule().fill(CSColor.oliveLight.opacity(0.12))
+        Capsule().fill(Color.primary.opacity(CSAlpha.fill))
       }
     }
     .fixedSize()

@@ -133,6 +133,19 @@ pub struct AcpLaunchSettings {
     pub cwd: String,
 }
 
+/// Secret-free selection accepted with a composer turn. It survives queue
+/// persistence without copying credentials; the sole loader resolves the chosen
+/// account again while keeping provider topology, model and effort fixed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AgentTurnSelection {
+    pub provider: String,
+    pub model: String,
+    pub reasoning: Option<String>,
+    pub custom_provider: Option<CustomProvider>,
+    pub acp: Option<AcpLaunchSettings>,
+}
+
 /// Validated local launch facts sealed by the same pass as the Agent lane.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RuntimeAcpConfiguration {
@@ -234,6 +247,11 @@ pub struct UserSettings {
     /// Agent-channel modifier: `"ctrl"` (default) or `"fn"`. Command is rejected.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel_modifier: Option<String>,
+    /// Display name of the shared channel 0 on the Bus. `None` (or an empty
+    /// write) shows the localized default ("Shared" / "Wspólny"). The channel
+    /// itself, its digit and its routing do not depend on it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shared_channel_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub widget_shortcut: Option<String>,
     /// Quick Fn press below the hold delay toggles dictation. `None` keeps the default off.
@@ -419,8 +437,6 @@ pub struct UserSettings {
     pub history_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quick_notes_enabled: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub quick_notes_save_only: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_at_login: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1530,6 +1546,24 @@ impl RuntimeSettingsSnapshot {
         &self.captured_inputs
     }
 
+    /// Capture only the Agent selection, never credential or prompt bytes.
+    pub fn agent_turn_selection(&self) -> AgentTurnSelection {
+        let lane = self.llm_lanes.assistive();
+        AgentTurnSelection {
+            provider: lane.provider().as_str().to_string(),
+            model: lane.model().to_string(),
+            reasoning: lane.reasoning().map(|effort| effort.as_str().to_string()),
+            custom_provider: lane.provider().custom_id().and_then(|id| {
+                self.user_settings
+                    .llm_custom_providers
+                    .iter()
+                    .find(|p| p.id == id)
+                    .cloned()
+            }),
+            acp: self.user_settings.agent_acp.clone(),
+        }
+    }
+
     /// Borrow the frozen runtime values.
     pub fn values(&self) -> &Config {
         &self.values
@@ -1787,6 +1821,8 @@ struct InteractionV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     channel_modifier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    shared_channel_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     widget_shortcut: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fn_tap_toggles_dictation: Option<bool>,
@@ -2014,9 +2050,6 @@ struct FeaturesV2 {
     history_enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     quick_notes_enabled: Option<bool>,
-    // De-ghosted (2026-05-30): previously dropped on V2 round-trip.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    quick_notes_save_only: Option<bool>,
 }
 
 /// `system` section: install-level state and app identity — launch at login,
@@ -2082,6 +2115,7 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "HOLD_EXCLUSIVE",
     "HOLD_ARM_MODIFIER",
     "AGENT_CHANNEL_MODIFIER",
+    "SHARED_CHANNEL_NAME",
     "FN_TAP_TOGGLES_DICTATION",
     "MIDDLE_MOUSE_ACTS_AS_FN",
     "MIDDLE_MOUSE_AGENT_GESTURE",
@@ -2135,7 +2169,6 @@ pub const PROMOTED_SETTINGS_KEYS: &[&str] = &[
     "CODESCRIBE_APPLE_LIVE_ENABLED",
     "HISTORY_ENABLED",
     "QUICK_NOTES_ENABLED",
-    "QUICK_NOTES_SAVE_ONLY",
     "START_AT_LOGIN",
     "QUBE_DAEMON_AUTOSTART",
     "AGENT_ENTER_SENDS",
@@ -2220,7 +2253,6 @@ typed_setting_writes! {
         "CODESCRIBE_APPLE_LIVE_ENABLED" => apple_live_enabled,
         "HISTORY_ENABLED" => history_enabled,
         "QUICK_NOTES_ENABLED" => quick_notes_enabled,
-        "QUICK_NOTES_SAVE_ONLY" => quick_notes_save_only,
         "START_AT_LOGIN" => start_at_login,
         "QUBE_DAEMON_AUTOSTART" => qube_daemon_autostart,
         "AGENT_ENTER_SENDS" => agent_enter_sends,
@@ -2281,6 +2313,7 @@ impl UserSettings {
                     start_delay_ms: self.hold_start_delay_ms,
                 }),
                 channel_modifier: self.channel_modifier.clone(),
+                shared_channel_name: self.shared_channel_name.clone(),
                 widget_shortcut: self.widget_shortcut.clone(),
                 fn_tap_toggles_dictation: self.fn_tap_toggles_dictation,
                 middle_mouse_acts_as_fn: self.middle_mouse_acts_as_fn,
@@ -2390,7 +2423,6 @@ impl UserSettings {
             features: Some(FeaturesV2 {
                 history_enabled: self.history_enabled,
                 quick_notes_enabled: self.quick_notes_enabled,
-                quick_notes_save_only: self.quick_notes_save_only,
             }),
             system: Some(SystemV2 {
                 start_at_login: self.start_at_login,
@@ -2496,6 +2528,7 @@ impl UserSettings {
             hold_exclusive: copy!(v2.interaction, hold, exclusive),
             hold_arm_modifier: cloned!(v2.interaction, hold, arm_modifier),
             channel_modifier: cloned!(v2.interaction, channel_modifier),
+            shared_channel_name: cloned!(v2.interaction, shared_channel_name),
             widget_shortcut: cloned!(v2.interaction, widget_shortcut),
             fn_tap_toggles_dictation: copy!(v2.interaction, fn_tap_toggles_dictation),
             middle_mouse_acts_as_fn: copy!(v2.interaction, middle_mouse_acts_as_fn),
@@ -2583,7 +2616,6 @@ impl UserSettings {
             sound_name: cloned!(v2.audio, feedback, sound_name),
             history_enabled: copy!(v2.features, history_enabled),
             quick_notes_enabled: copy!(v2.features, quick_notes_enabled),
-            quick_notes_save_only: copy!(v2.features, quick_notes_save_only),
             start_at_login: copy!(v2.system, start_at_login),
             qube_daemon_autostart: copy!(v2.system, qube_daemon_autostart),
             qube_donor: cloned!(v2.system, qube_donor),
@@ -3665,6 +3697,11 @@ impl UserSettings {
                 }
             }
             "TRANSCRIPT_TAG_TEMPLATE" => self.transcript_tag_template = Some(value.to_owned()),
+            "SHARED_CHANNEL_NAME" => {
+                // One line of text; an empty name clears back to the default.
+                let name = value.split_whitespace().collect::<Vec<_>>().join(" ");
+                self.shared_channel_name = (!name.is_empty()).then_some(name);
+            }
             "LLM_FORMATTING_MODEL" => self.llm_formatting_model = Some(value.to_owned()),
             "LOCAL_MODEL" => self.local_model = Some(value.to_owned()),
             "STT_ENDPOINT" => {
@@ -4830,6 +4867,27 @@ mod tests {
         assert!(!registry.contains("[vars.AUTO_PASTE_ENABLED]"));
     }
 
+    #[test]
+    #[serial]
+    fn stored_notes_save_only_is_dropped_without_changing_paste_mode() {
+        let _tmp = setup_isolated_data_dir();
+        let bytes = br#"{"schema_version":3,"interaction":{"paste_mode":"comfort"},"features":{"quick_notes_enabled":true,"quick_notes_save_only":true}}"#;
+        std::fs::write(UserSettings::settings_path(), bytes).unwrap();
+        let loaded = UserSettings::load();
+        assert_eq!(loaded.paste_mode, Some(PasteMode::Comfort));
+        assert_eq!(loaded.quick_notes_enabled, Some(true));
+        loaded.save().unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(UserSettings::settings_path()).unwrap()).unwrap();
+        assert!(saved.pointer("/features/quick_notes_save_only").is_none());
+        assert_eq!(
+            saved
+                .pointer("/interaction/paste_mode")
+                .and_then(serde_json::Value::as_str),
+            Some("comfort")
+        );
+    }
+
     /// The ghosting regression itself: these keys were settable and promoted,
     /// but the V2 conversion dropped them, so `save` → `load` reverted them to
     /// default. Runs the real on-disk path, since an in-memory check would pass.
@@ -4843,7 +4901,6 @@ mod tests {
         let _tmp = setup_isolated_data_dir();
         let settings = UserSettings {
             transcript_send_mode: Some("paste".to_string()),
-            quick_notes_save_only: Some(true),
             agent_enter_sends: Some(false),
             whisper_model: Some("whisper-large-v3-turbo".to_string()),
             llm_formatting_provider: Some("custom:my-local".to_string()),
@@ -4862,7 +4919,6 @@ mod tests {
 
         let loaded = UserSettings::load();
         assert_eq!(loaded.transcript_send_mode.as_deref(), Some("paste"));
-        assert_eq!(loaded.quick_notes_save_only, Some(true));
         assert_eq!(loaded.agent_enter_sends, Some(false));
         assert_eq!(
             loaded.whisper_model.as_deref(),
@@ -5528,6 +5584,37 @@ mod tests {
         let mut cleared = loaded;
         cleared.set_string("LLM_OPENAI_OAUTH_CLIENT_ID", "   ");
         assert_eq!(UserSettings::load().openai_oauth_client_id, None);
+    }
+
+    /// The shared channel's display name persists under `interaction` as one
+    /// line, survives a reload and reaches the runtime snapshot; an empty or
+    /// whitespace-only write clears it back to the default name.
+    #[test]
+    #[serial]
+    fn test_shared_channel_name_persists_as_one_line_and_empty_clears() {
+        let _tmp = setup_isolated_data_dir();
+        let mut settings = UserSettings::default();
+        settings.set_string("SHARED_CHANNEL_NAME", "  Ekipa\n  Codescribe ");
+
+        let loaded = UserSettings::load();
+        assert_eq!(
+            loaded.shared_channel_name.as_deref(),
+            Some("Ekipa Codescribe")
+        );
+        let persisted: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(UserSettings::settings_path()).expect("read persisted settings"),
+        )
+        .expect("parse persisted settings");
+        assert_eq!(
+            persisted
+                .get("interaction")
+                .and_then(|v| v.get("shared_channel_name"))
+                .and_then(|v| v.as_str()),
+            Some("Ekipa Codescribe")
+        );
+        let mut cleared = loaded;
+        cleared.set_string("SHARED_CHANNEL_NAME", "   ");
+        assert_eq!(UserSettings::load().shared_channel_name, None);
     }
 
     /// "Not yet chosen" is `None`, distinct from any concrete lane — callers

@@ -130,6 +130,16 @@ The Agent page has **AI models, Prompts, Workspace, Diagnostics, Tools** and
 **MCP** tabs. These configure the built-in Agent and related functions; an
 external attached agent also has its own client's configuration.
 
+### Conversation window context
+
+The **Context** button in the separate Agent conversation window opens a
+fixed-width panel beside the conversation. One continuous native glass surface
+contains its heading, conversation facts and tool-settings action below the
+existing window header. The conversation retains a neutral reading canvas;
+that canvas does not extend behind either side panel. Reduce Transparency or
+Increase Contrast replaces the context glass with the opaque reading surface.
+Opening or closing Context keeps the current conversation and draft.
+
 ### AI models
 
 Choose the provider and model separately for Agent and formatting functions.
@@ -283,6 +293,28 @@ Lab is a developer-only surface. Experiments, timing controls and evidence
 views can change the recognition path or its diagnostics. They are not
 prerequisites for using Codescribe and should not be enabled simply to complete
 setup. Preserve a known configuration when comparing recordings.
+
+### Glass tuning
+
+Developer builds expose **Lab → Glass tuning** for the experimental
+**Onboarding**, **Mini and MIDI**, and **Bus header** surfaces. Select a surface,
+then adjust **Glass tint**. Already-open views update immediately; each surface
+retains its own macOS preference. **Reset glass** restores the selected surface
+to the unmodified system material, with zero additional tint.
+
+This control changes the native glass tint, not blur radius, refractive strength
+or an opaque layer over the window. Reading canvases and the accepted Agent and
+Settings chrome keep their own material policy. Reduce Transparency and Increase
+Contrast still take precedence.
+
+The controls require a developer bundle with `CSDeveloperSurface` enabled and do
+not require enabling the Voice Lab recording experiments. Production bundles
+ignore saved developer tint values. The UI-only preferences are
+`codescribe.dev_glass_tint.onboarding.v1`,
+`codescribe.dev_glass_tint.compact.v1`, and
+`codescribe.dev_glass_tint.bus_header.v1`; they do not alter `settings.json` or a
+recording snapshot. Values from the earlier backing-opacity experiment are not
+reused as native tint values.
 
 ## User
 

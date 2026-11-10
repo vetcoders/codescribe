@@ -435,7 +435,7 @@ struct MessageList: View {
   /// Turns that open a new calendar day, keyed to that day. The full date
   /// lives in one separator above such a turn instead of in every bubble;
   /// a turn without a time neither starts nor breaks a day.
-  static func dayBreaks(
+  nonisolated static func dayBreaks(
     in messages: some Collection<ChatMessage>,
     calendar: Calendar = .autoupdatingCurrent
   ) -> [UUID: Date] {
@@ -744,7 +744,7 @@ private struct YouTurn: View {
           MessageTimestampLabel(date: message.timestamp, compact: true)
         }
         .font(CSFont.mono(10, .medium))
-        .foregroundStyle(CSColor.terracottaDeep.opacity(0.85))
+        .foregroundStyle(CSColor.secondaryInk)
         if !message.attachments.isEmpty {
           WrapLayout(spacing: 6) {
             ForEach(message.attachments) { AttachmentChip(attachment: $0) }
@@ -777,8 +777,7 @@ private struct YouTurn: View {
       .padding(.horizontal, 15)
       .padding(.vertical, 12)
       // Calm surface, not an alarm plate (U17): the bubble sits on the
-      // shared raised surface; terracotta stays on ACCENTS only — the
-      // timestamp above and this thin border.
+      // shared raised surface with a neutral separator edge.
       .background(Color.primary.opacity(CSAlpha.fill))
       .overlay(
         UnevenRoundedRectangle(
@@ -786,7 +785,7 @@ private struct YouTurn: View {
           bottomTrailingRadius: 4, topTrailingRadius: CSRadius.card,
           style: .continuous
         )
-        .strokeBorder(CSColor.terracotta.opacity(0.18), lineWidth: 1)
+        .strokeBorder(CSColor.hairline(CSAlpha.line), lineWidth: 1)
       )
       .clipShape(
         UnevenRoundedRectangle(
@@ -973,6 +972,15 @@ struct AttachmentPreviewSheet: View {
   /// radius, so an image's own corners (overlay screenshots carry 22 pt ones)
   /// never meet the card's corner arc and show a wedge of card under them.
   static let imageInset: CGFloat = 14
+  /// Upper bound on inline UTF-8 text preview bytes so huge logs stay responsive.
+  static let maxTextPreviewBytes = 262_144
+
+  private static let textExtensions: Set<String> = [
+    "txt", "md", "markdown", "json", "jsonl", "toml", "yaml", "yml",
+    "log", "swift", "rs", "py", "sh", "zsh", "bash", "js", "ts", "tsx",
+    "jsx", "html", "css", "xml", "csv", "diff", "patch", "sql", "c",
+    "h", "cpp", "hpp", "m", "mm", "go", "rb", "java", "kt", "ini", "conf", "env",
+  ]
 
   let attachment: MessageAttachment
   var onRemove: (() -> Void)? = nil
@@ -983,13 +991,63 @@ struct AttachmentPreviewSheet: View {
   var onAnnotated: ((URL) -> Void)? = nil
   @Environment(\.dismiss) private var dismiss
   @State private var image: NSImage?
-  @State private var zoom: CGFloat = 1.0
+  @State private var textPreview: String?
+  /// Nil follows the window's available image area; a slider move owns zoom.
+  @State private var zoom: CGFloat?
+  @State private var magnifyStartZoom: CGFloat?
+  @State private var imageViewport: CGSize = .zero
+  @State private var showsPath = false
   @State private var markup: AttachmentMarkupSession?
   @State private var markupSaving = false
   @State private var markupError: String?
 
   private var offersMarkup: Bool {
     onAnnotated != nil && image != nil && AttachmentPreviewPresentation.usesWindow()
+  }
+
+  private var isWindow: Bool { onClose != nil }
+
+  /// Fit original image points inside the viewport without enlarging small images.
+  static func fittedZoom(imageSize: CGSize, viewportSize: CGSize) -> CGFloat {
+    guard imageSize.width > 0, imageSize.height > 0,
+      viewportSize.width > 0, viewportSize.height > 0
+    else { return 1 }
+    return min(
+      1,
+      min(
+        max(1, viewportSize.width - 2 * imageInset) / imageSize.width,
+        max(1, viewportSize.height - 2 * imageInset) / imageSize.height))
+  }
+
+  /// Loads up to `maxTextPreviewBytes` of UTF-8 text when the file is a known
+  /// text/code format or decodes cleanly as UTF-8 without NUL bytes.
+  static func loadTextPreview(from url: URL, mediaType: String = "") -> String? {
+    guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+    defer { try? handle.close() }
+    guard let raw = try? handle.read(upToCount: maxTextPreviewBytes + 1) else { return nil }
+    let isTruncated = raw.count > maxTextPreviewBytes
+    let slice = isTruncated ? raw.prefix(maxTextPreviewBytes) : raw[...]
+    guard !slice.contains(0) else { return nil }
+    if slice.isEmpty {
+      let ext = url.pathExtension.lowercased()
+      let lowerType = mediaType.lowercased()
+      return (lowerType.hasPrefix("text/") || textExtensions.contains(ext)) ? "" : nil
+    }
+    for trim in 0...min(3, slice.count) {
+      let candidate = slice.dropLast(trim)
+      if let decoded = String(data: Data(candidate), encoding: .utf8) {
+        return isTruncated ? decoded + "\n…" : decoded
+      }
+    }
+    return nil
+  }
+
+  private func displayedZoom(for image: NSImage, viewport: CGSize) -> CGFloat {
+    zoom ?? (isWindow ? Self.fittedZoom(imageSize: image.size, viewportSize: viewport) : 1)
+  }
+
+  private var displayedTextZoom: CGFloat {
+    zoom ?? 1
   }
 
   private func close() {
@@ -1007,28 +1065,31 @@ struct AttachmentPreviewSheet: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 14) {
-      HStack(alignment: .firstTextBaseline) {
-        VStack(alignment: .leading, spacing: 4) {
-          Text(attachment.name)
-            .font(CSFont.ui(13, .semibold))
-            .foregroundStyle(Color.primary)
-            .textSelection(.enabled)
-            .lineLimit(2)
-            .truncationMode(.middle)
-          Text(attachment.type)
-            .font(CSFont.mono(11, .medium))
-            .foregroundStyle(CSColor.textTertiary)
+    VStack(alignment: .leading, spacing: isWindow ? 10 : 14) {
+      if !isWindow {
+        HStack(alignment: .firstTextBaseline) {
+          VStack(alignment: .leading, spacing: 4) {
+            Text(attachment.name)
+              .font(CSFont.ui(13, .semibold))
+              .foregroundStyle(Color.primary)
+              .textSelection(.enabled)
+              .lineLimit(2)
+              .truncationMode(.middle)
+            Text(attachment.type)
+              .font(CSFont.mono(11, .medium))
+              .foregroundStyle(CSColor.textTertiary)
+          }
+          Spacer(minLength: 8)
+          Button("Close") { close() }
+            .controlSize(.regular)
+            // Escape belongs to Markup while it edits (ending a text box,
+            // dropping a selection); it must not throw the annotation away.
+            .keyboardShortcut(markup == nil ? .cancelAction : nil)
+            .accessibilityIdentifier("attachment-preview-close")
         }
-        Spacer(minLength: 8)
-        Button("Close") { close() }
-          // Escape belongs to Markup while it edits (ending a text box,
-          // dropping a selection); it must not throw the annotation away.
-          .keyboardShortcut(markup == nil ? .cancelAction : nil)
-          .accessibilityIdentifier("attachment-preview-close")
+        .fixedSize(horizontal: false, vertical: true)
+        .layoutPriority(1)
       }
-      .fixedSize(horizontal: false, vertical: true)
-      .layoutPriority(1)
 
       Group {
         if let markup {
@@ -1038,33 +1099,144 @@ struct AttachmentPreviewSheet: View {
             .clipShape(.rect(cornerRadius: CSRadius.card, style: .continuous))
             .accessibilityIdentifier("attachment-preview-markup-editor")
         } else if let image {
-          ScrollView([.horizontal, .vertical]) {
-            Image(nsImage: image)
-              .resizable()
-              .aspectRatio(contentMode: .fit)
-              .frame(
-                width: max(240, image.size.width * zoom),
-                height: max(160, image.size.height * zoom)
-              )
-              .padding(Self.imageInset)
-              .frame(maxWidth: .infinity, maxHeight: .infinity)
-              // A zoomed picture scrolls on both axes; only the style is
-              // pinned (Founder, 2026-10-18).
-              .csAutohidingScrollers(.includesHorizontal)
+          GeometryReader { geometry in
+            let scale = displayedZoom(for: image, viewport: geometry.size)
+            ScrollView([.horizontal, .vertical]) {
+              Image(nsImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(
+                  width: max(isWindow ? 1 : 240, image.size.width * scale),
+                  height: max(isWindow ? 1 : 160, image.size.height * scale)
+                )
+                .padding(Self.imageInset)
+                .frame(minWidth: geometry.size.width, minHeight: geometry.size.height)
+                // A zoomed picture scrolls on both axes; only the style is
+                // pinned (Founder, 2026-10-18).
+                .csAutohidingScrollers(.includesHorizontal)
+            }
+            .simultaneousGesture(
+              MagnifyGesture()
+                .onChanged { value in
+                  let base = magnifyStartZoom ?? scale
+                  if magnifyStartZoom == nil {
+                    magnifyStartZoom = base
+                  }
+                  zoom = min(max(base * value.magnification, 0.25), 3.0)
+                }
+                .onEnded { _ in
+                  magnifyStartZoom = nil
+                }
+            )
+            .onGeometryChange(for: CGSize.self) {
+              $0.size
+            } action: {
+              imageViewport = $0
+            }
           }
           // The image yields before the title, Close and file actions. A
           // 280 pt minimum pushed those controls outside small overlay sheets.
-          .frame(minHeight: 120, idealHeight: 280, maxHeight: onClose != nil ? .infinity : 480)
+          .frame(
+            minHeight: 120, idealHeight: isWindow ? 220 : 280,
+            maxHeight: isWindow ? .infinity : 480
+          )
           .layoutPriority(-1)
           .background(Color.primary.opacity(CSAlpha.subtle))
           .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
 
           HStack(spacing: 10) {
+            if isWindow {
+              Button(
+                String(
+                  localized: "Fit",
+                  comment: "Attachment preview: zoom back to fit the whole image in the window")
+              ) {
+                zoom = nil
+                magnifyStartZoom = nil
+              }
+              .controlSize(.small)
+              .disabled(zoom == nil)
+              .accessibilityIdentifier("attachment-preview-fit")
+            }
             Text("Zoom")
               .font(CSFont.mono(11, .medium))
               .foregroundStyle(CSColor.textTertiary)
-            Slider(value: $zoom, in: 0.5...3.0, step: 0.1)
-            Text(String(format: "%.0f%%", zoom * 100))
+            Slider(
+              value: Binding(
+                get: { displayedZoom(for: image, viewport: imageViewport) },
+                set: { zoom = $0 }),
+              in: (isWindow
+                ? min(
+                  0.05,
+                  min(
+                    Self.fittedZoom(imageSize: image.size, viewportSize: imageViewport),
+                    zoom ?? 1))
+                : 0.5)...3.0,
+              step: isWindow ? 0.01 : 0.1)
+            Text(String(format: "%.0f%%", displayedZoom(for: image, viewport: imageViewport) * 100))
+              .font(CSFont.mono(11, .medium))
+              .foregroundStyle(CSColor.secondaryInk)
+              .frame(width: 44, alignment: .trailing)
+          }
+        } else if let textPreview {
+          let scale = displayedTextZoom
+          ScrollView([.vertical, .horizontal]) {
+            Text(verbatim: textPreview)
+              .font(CSFont.mono(round(12 * scale)))
+              .foregroundStyle(Color.primary)
+              .lineSpacing(3)
+              .textSelection(.enabled)
+              .fixedSize(horizontal: false, vertical: true)
+              .padding(Self.imageInset)
+              .frame(maxWidth: .infinity, alignment: .topLeading)
+              .csAutohidingScrollers(.includesHorizontal)
+          }
+          .simultaneousGesture(
+            MagnifyGesture()
+              .onChanged { value in
+                let base = magnifyStartZoom ?? scale
+                if magnifyStartZoom == nil {
+                  magnifyStartZoom = base
+                }
+                zoom = min(max(base * value.magnification, 0.5), 3.0)
+              }
+              .onEnded { _ in
+                magnifyStartZoom = nil
+              }
+          )
+          .frame(
+            minHeight: 120, idealHeight: isWindow ? 220 : 280,
+            maxHeight: isWindow ? .infinity : 480
+          )
+          .layoutPriority(-1)
+          .background(Color.primary.opacity(CSAlpha.subtle))
+          .clipShape(RoundedRectangle(cornerRadius: CSRadius.card, style: .continuous))
+          .accessibilityIdentifier("attachment-preview-text-content")
+
+          HStack(spacing: 10) {
+            if isWindow {
+              Button(
+                String(
+                  localized: "Fit",
+                  comment: "Attachment preview: zoom back to fit the whole image in the window")
+              ) {
+                zoom = nil
+                magnifyStartZoom = nil
+              }
+              .controlSize(.small)
+              .disabled(zoom == nil)
+              .accessibilityIdentifier("attachment-preview-fit")
+            }
+            Text("Zoom")
+              .font(CSFont.mono(11, .medium))
+              .foregroundStyle(CSColor.textTertiary)
+            Slider(
+              value: Binding(
+                get: { displayedTextZoom },
+                set: { zoom = $0 }),
+              in: 0.5...3.0,
+              step: isWindow ? 0.05 : 0.1)
+            Text(String(format: "%.0f%%", displayedTextZoom * 100))
               .font(CSFont.mono(11, .medium))
               .foregroundStyle(CSColor.secondaryInk)
               .frame(width: 44, alignment: .trailing)
@@ -1101,21 +1273,25 @@ struct AttachmentPreviewSheet: View {
       }
 
       if markup == nil {
-        VStack(alignment: .leading, spacing: 4) {
-          Text("Path")
-            .font(CSFont.mono(10, .medium))
-            .foregroundStyle(CSColor.textTertiary)
-          Text(pathText)
-            .font(CSFont.mono(11))
-            .foregroundStyle(Color.primary)
-            .textSelection(.enabled)
-            .lineLimit(3)
-            .truncationMode(.middle)
+        if isWindow {
+          DisclosureGroup("Path", isExpanded: $showsPath) {
+            pathDetails
+              .padding(.top, 4)
+          }
+          .font(CSFont.mono(10, .medium))
+          .foregroundStyle(CSColor.textTertiary)
+        } else {
+          VStack(alignment: .leading, spacing: 4) {
+            Text("Path")
+              .font(CSFont.mono(10, .medium))
+              .foregroundStyle(CSColor.textTertiary)
+            pathDetails
+          }
+          .padding(10)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .background(Color.primary.opacity(CSAlpha.subtle))
+          .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
         }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.primary.opacity(CSAlpha.subtle))
-        .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
       }
 
       if markup != nil {
@@ -1124,13 +1300,34 @@ struct AttachmentPreviewSheet: View {
         fileActions
       }
     }
-    .padding(18)
-    .frame(minWidth: 520, idealWidth: 640, minHeight: 420, idealHeight: 640)
-    .onAppear {
-      if image == nil, let url = attachment.url, fileExists {
-        image = NSImage(contentsOf: url)
+    .padding(isWindow ? 12 : 18)
+    // AppKit is the only owner of the resizable window's dimensions.
+    .frame(
+      minWidth: isWindow ? nil : 520, idealWidth: isWindow ? nil : 640,
+      minHeight: isWindow ? nil : 420, idealHeight: isWindow ? nil : 640
+    )
+    .onExitCommand {
+      if markup == nil {
+        close()
       }
     }
+    .onAppear {
+      guard image == nil, textPreview == nil, let url = attachment.url, fileExists else { return }
+      if let loadedImage = NSImage(contentsOf: url) {
+        image = loadedImage
+      } else {
+        textPreview = Self.loadTextPreview(from: url, mediaType: attachment.type)
+      }
+    }
+  }
+
+  private var pathDetails: some View {
+    Text(pathText)
+      .font(CSFont.mono(11))
+      .foregroundStyle(Color.primary)
+      .textSelection(.enabled)
+      .lineLimit(3)
+      .truncationMode(.middle)
   }
 
   private var markupActions: some View {
@@ -1181,53 +1378,94 @@ struct AttachmentPreviewSheet: View {
   }
 
   private var fileActions: some View {
-    HStack(spacing: 10) {
-      if let onRemove {
-        Button("Remove", role: .destructive) {
-          onRemove()
-          close()
-        }
-      }
-
-      if offersMarkup, let url = attachment.url {
-        Button("Markup", systemImage: "pencil.tip.crop.circle") {
-          markupError = nil
-          markup = AttachmentMarkupSession(url: url)
-          if markup == nil {
-            markupError = String(localized: "Could not open this image for Markup")
+    Group {
+      if isWindow {
+        ViewThatFits(in: .horizontal) {
+          fileActionsRow
+          VStack(alignment: .leading, spacing: 8) {
+            if onRemove != nil || offersMarkup {
+              HStack(spacing: 8) {
+                fileMutationActions
+                Spacer(minLength: 0)
+              }
+            }
+            HStack(spacing: 8) {
+              fileLocationActions
+              Spacer(minLength: 0)
+            }
           }
         }
-        .help(Text("Annotate this image with Markup"))
-        .accessibilityIdentifier("attachment-preview-markup")
+        .controlSize(.small)
+      } else {
+        fileActionsRow
       }
-
-      Button("Copy path") {
-        // Tool metadata, not user content: preserve the literal path.
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(pathText, forType: .string)
-      }
-      .disabled(attachment.url == nil)
-
-      Button("Reveal in Finder") {
-        if let url = attachment.url {
-          NSWorkspace.shared.activateFileViewerSelecting([url])
-        }
-      }
-      .disabled(!fileExists)
-
-      Button("Open") {
-        if let url = attachment.url {
-          NSWorkspace.shared.open(url)
-        }
-      }
-      .disabled(!fileExists)
-      .keyboardShortcut(.defaultAction)
-      .accessibilityIdentifier("attachment-preview-open")
-
-      Spacer(minLength: 0)
     }
     .fixedSize(horizontal: false, vertical: true)
     .layoutPriority(1)
+  }
+
+  private var fileActionsRow: some View {
+    HStack(spacing: 10) {
+      fileMutationActions
+      fileLocationActions
+      Spacer(minLength: 0)
+    }
+  }
+
+  @ViewBuilder
+  private var fileMutationActions: some View {
+    if let onRemove {
+      Button("Remove", role: .destructive) {
+        onRemove()
+        close()
+      }
+    }
+
+    if offersMarkup, let url = attachment.url {
+      Button("Markup", systemImage: "pencil.tip.crop.circle") {
+        markupError = nil
+        markup = AttachmentMarkupSession(url: url)
+        if markup == nil {
+          markupError = String(localized: "Could not open this image for Markup")
+        }
+      }
+      .help(Text("Annotate this image with Markup"))
+      .accessibilityIdentifier("attachment-preview-markup")
+    }
+  }
+
+  @ViewBuilder
+  private var fileLocationActions: some View {
+    if let textPreview {
+      Button("Copy") {
+        Task { await chatCopy(textPreview) }
+      }
+      .disabled(textPreview.isEmpty)
+      .accessibilityIdentifier("attachment-preview-copy-text")
+    }
+
+    Button("Copy path") {
+      // Tool metadata, not user content: preserve the literal path.
+      NSPasteboard.general.clearContents()
+      NSPasteboard.general.setString(pathText, forType: .string)
+    }
+    .disabled(attachment.url == nil)
+
+    Button("Reveal in Finder") {
+      if let url = attachment.url {
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+      }
+    }
+    .disabled(!fileExists)
+
+    Button("Open") {
+      if let url = attachment.url {
+        NSWorkspace.shared.open(url)
+      }
+    }
+    .disabled(!fileExists)
+    .keyboardShortcut(.defaultAction)
+    .accessibilityIdentifier("attachment-preview-open")
   }
 
   private func missingBanner(title: String, detail: String) -> some View {
@@ -1331,7 +1569,7 @@ private struct ToolLineRow: View {
     case .cancelled, .unknown:
       return CSColor.textTertiary
     case .succeeded:
-      return CSColor.oliveLight
+      return CSColor.secondaryInk
     }
   }
 
@@ -1499,7 +1737,7 @@ private struct ToolTurn: View {
             icon: hasRunning ? .more : hasCancelled ? .stop : .success,
             size: 11,
             color: hasRunning
-              ? CSColor.amberLight : hasCancelled ? CSColor.textTertiary : CSColor.oliveLight
+              ? CSColor.amberLight : hasCancelled ? CSColor.textTertiary : CSColor.secondaryInk
           )
           Text(message.toolTitle)
             .font(CSFont.mono(11, .semibold))
@@ -1897,16 +2135,16 @@ struct CopyMessageButton: View {
         CSIconView(icon: copied ? .check : .copy, size: 9, weight: .semibold)
         Text(
           copied
-            ? String(localized: "copied", comment: "Button state after copying")
-            : String(localized: "copy", comment: "Button: copy this message")
+            ? String(localized: "Copied", comment: "Button state after copying")
+            : String(localized: "Copy", comment: "Button: copy this message")
         )
         .font(labelFont)
       }
     }
     .buttonStyle(.plain)
     .conversationActionHover(
-      restingColor: copied ? CSColor.oliveLight.opacity(0.8) : restingColor,
-      hoverColor: copied ? CSColor.oliveLight : actionPalette.primaryText.color
+      restingColor: copied ? CSColor.secondaryInk : restingColor,
+      hoverColor: copied ? CSColor.secondaryInk : actionPalette.primaryText.color
     )
     .disabled(text.isEmpty)
     .accessibilityLabel(Text(verbatim: copyStateLabel))
@@ -1925,7 +2163,7 @@ struct CopyMessageButton: View {
         comment: "Disabled copy control when the message is empty")
     }
     if copied {
-      return String(localized: "copied", comment: "Button state after copying")
+      return String(localized: "Copied", comment: "Button state after copying")
     }
     return String(localized: "Copy message")
   }
@@ -1940,19 +2178,19 @@ struct CopyMessageButton: View {
   }
 }
 
-/// Amber "reasoned · Xs" pill.
+/// Neutral "worked · Xs" metadata pill.
 private struct ReasonedChip: View {
   let seconds: Double
   var body: some View {
     Text("worked · \(String(format: "%.1f", seconds))s")
       .font(CSFont.mono(10, .medium))
-      .foregroundStyle(CSColor.amberLight)
+      .foregroundStyle(CSColor.secondaryInk)
       .padding(.horizontal, 8)
       .padding(.vertical, 3)
-      .background(CSColor.amber.opacity(0.1))
+      .background(Color.primary.opacity(CSAlpha.subtle))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous)
-          .strokeBorder(CSColor.amber.opacity(0.22), lineWidth: 1)
+          .strokeBorder(CSColor.hairline(CSAlpha.line), lineWidth: 1)
       )
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.chip, style: .continuous))
   }

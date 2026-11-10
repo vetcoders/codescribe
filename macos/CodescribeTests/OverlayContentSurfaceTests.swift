@@ -211,7 +211,11 @@ final class OverlayContentSurfaceTests: XCTestCase {
     }
   }
 
-  func testRealFoldControlKeepsItsScreenPointAcrossAllFormsAndSurfaces() throws {
+  // Monika, 2026-11-07: the 13 pt text / content-sized mini bar is the contract.
+  // Midi and the window share one screen point for the fold control; mini hugs
+  // its controls, so there the control stands `miniInset` from the capsule's
+  // trailing and top edges, and the upper-right pin still holds.
+  func testRealFoldControlStandsAtTheContentEdgeOfEveryFormAndSurface() throws {
     try withDefaults { defaults in
       DictationOverlayWindow.persist(
         size: NSSize(width: 650, height: 560), surface: .agents, defaults: defaults)
@@ -237,9 +241,23 @@ final class OverlayContentSurfaceTests: XCTestCase {
         return NSPoint(x: panel.frame.minX + rect.midX, y: panel.frame.maxY - rect.midY)
       }
       let reference = try foldPoint()
+      let pin = NSPoint(x: panel.frame.maxX, y: panel.frame.maxY)
       for mode in [OverlayPresentationMode.mini, .midi, .expanded] {
         state.setPresentationMode(mode)
         let point = try foldPoint()
+        XCTAssertEqual(panel.frame.maxX, pin.x, accuracy: 0.5, "\(mode): the upper-right pin holds")
+        XCTAssertEqual(panel.frame.maxY, pin.y, accuracy: 0.5, "\(mode): the upper-right pin holds")
+        if mode == .mini {
+          let rect = try XCTUnwrap(recorder.frames.preview)
+          let inset = DictationOverlayWindow.miniInset
+          XCTAssertEqual(
+            panel.frame.width - rect.maxX, inset, accuracy: 0.5,
+            "mini: the fold control ends `miniInset` from the content's trailing edge")
+          XCTAssertEqual(
+            rect.minY, inset, accuracy: 0.5,
+            "mini: the fold control stands `miniInset` below the content's top edge")
+          continue
+        }
         XCTAssertEqual(point.x, reference.x, accuracy: 0.5, "\(mode)")
         XCTAssertEqual(point.y, reference.y, accuracy: 0.5, "\(mode)")
       }

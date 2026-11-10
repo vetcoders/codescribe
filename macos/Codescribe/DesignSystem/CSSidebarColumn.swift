@@ -3,7 +3,7 @@ import SwiftUI
 // One sidebar for every window. Agent and Settings had the same native
 // composition twice, with different widths, a different footer treatment and
 // a toggle only one of them showed; the two columns read as two products
-// (Monika, 2026-10-18: "musimy to ujednolicić"). Side by side she then chose
+// (Founder, 2026-10-18: the two had to be unified). Side by side she then chose
 // the Settings column as the reference, so the Agent rail adopts it rather
 // than the other way round.
 //
@@ -101,9 +101,9 @@ struct CSSidebarColumn<Content: View, Header: View, Footer: View>: View {
       // The system search field stays first under the toolbar, so the header
       // lands between it and the rows.
       .csSidebarSlot(.top) { header }
-      // On the List, not a stack around it: the list runs through the
-      // titlebar, so the material does too.
-      .background { CSSidebarMaterial().ignoresSafeArea() }
+      // NavigationSplitView owns the native full-height sidebar glass.
+      // A second visual-effect background inside it changes the sampled
+      // material and competes with its active/inactive appearance.
       .csSidebarColumnWidth(width)
   }
 }

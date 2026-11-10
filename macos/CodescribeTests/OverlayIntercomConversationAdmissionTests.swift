@@ -9,9 +9,18 @@ import XCTest
 final class OverlayIntercomConversationAdmissionTests: XCTestCase {
   // Founder correction, 2026-10-26 12:26Z and 12:41Z: a grouped card
   // reveals header -> context -> messages -> input as its size permits.
+  // Monika, 2026-11-07: the 13 pt text / content-sized mini bar is the contract.
+  // The card is as tall as the first readable preview needs (context strip,
+  // one body line at `bodyFontSize`, its route line and the preview's padding),
+  // so it stays below the composer gate at every scale; a fixed height tuned
+  // to the old 10 pt body no longer fits one line at 0.8.
   func testGroupedCardBelowComposerGateRendersOnlyLatestPreview() throws {
+    // The title row never shrinks below 30 pt and the context strip sits under
+    // it again (6ca5ea7e3), so at scale 0.8 a 100 pt fixture is an 80 pt card:
+    // 34 pt left of the 36 pt a one-line preview needs. 120 pt admits the
+    // preview at every scale and stays below the composer gate.
     for scale in [CGFloat(0.8), 1, 1.6] {
-      try renderCard(scale: scale, height: 100, expectsComposer: false)
+      try renderCard(scale: scale, height: 120, expectsComposer: false)
     }
   }
 
@@ -53,7 +62,10 @@ final class OverlayIntercomConversationAdmissionTests: XCTestCase {
     ])
     state.applyConversationSnapshot(.init(deliveries: [], conversations: [conversation]))
     state.conversationDrafts[conversation.id] = "Preserve shared draft"
-    state.publishConversationText = { _, _, _, _ in XCTFail("Rendering must not send") }
+    state.publishConversationText = { _, _, _, _ in
+      XCTFail("Rendering must not send")
+      return .empty
+    }
     let generation = state.captureGeneration
     let keyBefore = NSApp.keyWindow
     let suite = "CodescribeTests.compact-conversation.\(UUID().uuidString)"

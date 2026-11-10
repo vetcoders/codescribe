@@ -187,13 +187,13 @@ private func diffSpanText(_ span: CsDiffSpan) -> Text {
     result = Text("\(result)\(context)")
   }
   if !span.raw.isEmpty {
-    let removed = Text(span.raw).strikethrough().foregroundStyle(CSColor.terracottaText)
+    let removed = Text(span.raw).strikethrough().foregroundStyle(CSColor.secondaryInk)
     let space = Text(verbatim: " ")
     result = Text("\(result)\(removed)\(space)")
   }
   if !span.edited.isEmpty {
     if !span.raw.isEmpty {
-      let arrow = Text(verbatim: "→ ").foregroundStyle(CSColor.chromeAccent)
+      let arrow = Text(verbatim: "→ ").foregroundStyle(CSColor.secondaryInk)
       result = Text("\(result)\(arrow)")
     }
     let edited = Text(span.edited).fontWeight(.semibold).foregroundStyle(Color.primary)
@@ -217,7 +217,7 @@ private func diffSpanBeforeText(_ span: CsDiffSpan) -> Text {
     result = Text("\(result)\(context)")
   }
   if !span.raw.isEmpty {
-    let removed = Text(span.raw).strikethrough().foregroundStyle(CSColor.terracottaText)
+    let removed = Text(span.raw).strikethrough().foregroundStyle(CSColor.secondaryInk)
     let space = Text(verbatim: " ")
     result = Text("\(result)\(removed)\(space)")
   }
@@ -490,7 +490,7 @@ struct VoiceLabPanel: View {
         if let teachMsg = model.voiceLabTeachMessage {
           Text(teachMsg)
             .font(CSFont.ui(11, .medium))
-            .foregroundStyle(CSColor.oliveLight)
+            .foregroundStyle(CSColor.secondaryInk)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.top, CSSpace.sm)
             .accessibilityIdentifier("dictionary-learn-result")
@@ -682,12 +682,12 @@ struct VoiceLabPanel: View {
           ForEach(Array(row.telemetryChips.enumerated()), id: \.offset) { _, chip in
             Text(chip)
               .font(CSFont.mono(10, .semibold))
-              .foregroundStyle(row.isLowConfidence ? CSColor.terracottaText : CSColor.oliveLight)
+              .foregroundStyle(row.isLowConfidence ? CSColor.amberLight : CSColor.secondaryInk)
               .padding(.horizontal, 7)
               .padding(.vertical, 3)
               .background(
                 Capsule().fill(
-                  (row.isLowConfidence ? CSColor.terracottaText : CSColor.oliveLight)
+                  (row.isLowConfidence ? CSColor.amberLight : CSColor.secondaryInk)
                     .opacity(0.12)
                 )
               )
@@ -711,7 +711,7 @@ struct VoiceLabPanel: View {
       if let note = model.voiceLabEditNotes[row.id] {
         Text(note)
           .font(CSFont.ui(11))
-          .foregroundStyle(CSColor.oliveLight)
+          .foregroundStyle(CSColor.secondaryInk)
           .accessibilityLabel("Correction saved. \(note)")
       }
     }
@@ -757,10 +757,10 @@ struct VoiceLabPanel: View {
             Text("Low confidence", comment: "Dictionary badge: the engine was unsure here")
               .textCase(.uppercase)
               .font(CSFont.ui(10, .semibold))
-              .foregroundStyle(CSColor.terracottaText)
+              .foregroundStyle(CSColor.amberLight)
               .padding(.horizontal, 7)
               .padding(.vertical, 3)
-              .background(Capsule().fill(CSColor.terracotta.opacity(0.12)))
+              .background(Capsule().fill(CSColor.amber.opacity(0.12)))
           }
           // Deferred-correction desk: sessions closed without an
           // overlay edit land here as UNREVIEWED, awaiting Edit.
@@ -1004,7 +1004,7 @@ struct VoiceLabPanel: View {
       if let helperCompare {
         Text(helperCompare)
           .font(CSFont.ui(11, .medium))
-          .foregroundStyle(CSColor.oliveLight)
+          .foregroundStyle(CSColor.secondaryInk)
           .textSelection(.enabled)
           .fixedSize(horizontal: false, vertical: true)
       }

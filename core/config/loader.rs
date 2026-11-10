@@ -292,7 +292,7 @@ impl Config {
     fn load_runtime_snapshot_with_keychain_population(
         populate_keychain: bool,
     ) -> RuntimeSettingsSnapshot {
-        let input = Self::capture_runtime_inputs(populate_keychain);
+        let input = Self::capture_runtime_inputs(populate_keychain, None);
         let prior_repairs = input.repair_receipt.clone();
         let snapshot = Self::resolve_runtime_snapshot_with_capture(|| input);
         // Recording/logging are host concerns, never part of resolution/sealing.
@@ -330,7 +330,41 @@ impl Config {
     }
 
     /// Production acquisition adapter. The shared resolver below sees values only.
-    fn capture_runtime_inputs(populate_keychain: bool) -> CapturedRuntimeInputs {
+    /// Restore a queued Agent selection through the canonical loader. No file
+    /// or process environment is changed, and credentials stay in their owner.
+    pub fn load_agent_turn_snapshot(
+        selection: &super::settings::AgentTurnSelection,
+    ) -> RuntimeSettingsSnapshot {
+        Self::runtime_snapshot_from_captured(Self::capture_runtime_inputs(false, Some(selection)))
+    }
+
+    fn apply_agent_turn_selection(
+        input: &mut CapturedRuntimeInputs,
+        selection: &super::settings::AgentTurnSelection,
+    ) {
+        // Explicit accepted intent wins over later settings/env changes.
+        input.overrides.remove("LLM_ASSISTIVE_PROVIDER");
+        input.overrides.remove("LLM_ASSISTIVE_MODEL");
+        input.user_settings.llm_assistive_provider = Some(selection.provider.clone());
+        input.user_settings.llm_assistive_model = Some(selection.model.clone());
+        input.user_settings.llm_assistive_reasoning = selection.reasoning.clone();
+        input.user_settings.agent_acp = selection.acp.clone();
+        if let Some(provider) = &selection.custom_provider {
+            input
+                .user_settings
+                .llm_custom_providers
+                .retain(|p| p.id != provider.id);
+            input
+                .user_settings
+                .llm_custom_providers
+                .push(provider.clone());
+        }
+    }
+
+    fn capture_runtime_inputs(
+        populate_keychain: bool,
+        selection: Option<&super::settings::AgentTurnSelection>,
+    ) -> CapturedRuntimeInputs {
         note_startup_acquisition("settings capture");
         let (values, user_settings) = Self::capture_config_and_settings(populate_keychain);
         let settings_path = UserSettings::settings_path();
@@ -395,6 +429,9 @@ impl Config {
             prompts: super::prompts::CapturedRuntimePrompts::default(),
             repair_receipt: super::repair::launch_receipt(),
         };
+        if let Some(selection) = selection {
+            Self::apply_agent_turn_selection(&mut input, selection);
+        }
         Self::warn_legacy_llm_endpoint_env();
         let registry = ProviderRegistry::from_settings(&input.user_settings);
         for lane in [
@@ -1471,7 +1508,6 @@ impl Config {
 
         // Quick Notes (default: off)
         env_flag!("QUICK_NOTES_ENABLED", self.quick_notes_enabled);
-        env_flag!("QUICK_NOTES_SAVE_ONLY", self.quick_notes_save_only);
 
         // Current lane rows override the warned legacy aliases through 2026-10-15.
         if let Ok(raw) = Self::config_runtime_env_var("STT_ENDPOINT") {
@@ -1702,6 +1738,12 @@ impl Config {
         {
             self.channel_modifier = modifier;
         }
+        // A display name only: settings.json alone owns it, no env override.
+        // A hand-edited file gets the same one-line, 24-character name as
+        // Settings writes, so the bar never receives a longer one.
+        if let Some(ref name) = settings.shared_channel_name {
+            self.shared_channel_name = shared_channel_name_line(name);
+        }
         apply_copy!(
             "FN_TAP_TOGGLES_DICTATION",
             self.fn_tap_toggles_dictation,
@@ -1864,11 +1906,6 @@ impl Config {
             self.quick_notes_enabled,
             settings.quick_notes_enabled
         );
-        apply_copy!(
-            "QUICK_NOTES_SAVE_ONLY",
-            self.quick_notes_save_only,
-            settings.quick_notes_save_only
-        );
 
         // System
         apply_copy!(
@@ -1960,6 +1997,10 @@ impl Config {
     /// This is a persistence write only. Process-env seeding is restricted to
     /// bootstrap loads; live readers must reload the config/settings snapshot.
     pub fn save_to_env(&self, key: &str, value: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            key != "QUICK_NOTES_SAVE_ONLY",
+            "retired note setting: {key}; automatic paste is controlled by PASTE_MODE"
+        );
         anyhow::ensure!(
             !matches!(
                 key,
@@ -2055,6 +2096,10 @@ impl Config {
         let mut env_path: Option<PathBuf> = None;
 
         for (key, value) in entries {
+            anyhow::ensure!(
+                *key != "QUICK_NOTES_SAVE_ONLY",
+                "retired note setting: {key}; automatic paste is controlled by PASTE_MODE"
+            );
             anyhow::ensure!(
                 !matches!(
                     *key,
@@ -2414,6 +2459,22 @@ fn canonical_existing_file(path: &Path) -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
+/// The longest channel 0 name, in grapheme clusters (`SHARED_CHANNEL_NAME`):
+/// the same limit `SettingsViewModel.setSharedChannelName` applies.
+pub const SHARED_CHANNEL_NAME_LIMIT: usize = 24;
+
+/// Channel 0's name as stored: one line, runs of whitespace as one space,
+/// at most `SHARED_CHANNEL_NAME_LIMIT` grapheme clusters, no trailing space.
+pub fn shared_channel_name_line(name: &str) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
+    let line = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    let cut: String = line
+        .graphemes(true)
+        .take(SHARED_CHANNEL_NAME_LIMIT)
+        .collect();
+    cut.trim_end().to_string()
+}
+
 /// Guards for the three-tier precedence this module implements: explicit
 /// process env, then `settings.json`, then optional `.env`.
 ///
@@ -2424,6 +2485,35 @@ fn canonical_existing_file(path: &Path) -> anyhow::Result<PathBuf> {
 /// the returned `Config`.
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn accepted_agent_selection_survives_settings_env_changes_and_json_restart() {
+        let root = std::path::PathBuf::from("/tmp/accepted-agent-selection");
+        let mut first = super::CapturedRuntimeInputs::defaults_at(root.clone(), 1);
+        first.user_settings.llm_assistive_provider = Some("openai-responses".into());
+        first.user_settings.llm_assistive_model = Some("accepted-model".into());
+        first.user_settings.llm_assistive_reasoning = Some("high".into());
+        let snapshot = super::Config::runtime_snapshot_from_captured(first);
+        let receipt = serde_json::to_string(&snapshot.agent_turn_selection()).unwrap();
+        assert!(!receipt.contains("api_key"));
+        let accepted = serde_json::from_str(&receipt).unwrap();
+        let mut later = super::CapturedRuntimeInputs::defaults_at(root, 2);
+        later.user_settings.llm_assistive_provider = Some("anthropic-messages".into());
+        later.user_settings.llm_assistive_model = Some("different-model".into());
+        later.user_settings.llm_assistive_reasoning = Some("low".into());
+        later
+            .overrides
+            .insert("LLM_ASSISTIVE_MODEL".into(), Ok("env-model".into()));
+        later
+            .overrides
+            .insert("LLM_ASSISTIVE_PROVIDER".into(), Ok("google".into()));
+        super::Config::apply_agent_turn_selection(&mut later, &accepted);
+        let restored = super::Config::runtime_snapshot_from_captured(later);
+        let lane = restored.llm_lanes().assistive();
+        assert_eq!(lane.provider().as_str(), "openai-responses");
+        assert_eq!(lane.model(), "accepted-model");
+        assert_eq!(lane.reasoning().unwrap().as_str(), "high");
+    }
+
     use super::*;
     use crate::config::UserSettings;
     use serial_test::serial;
@@ -4288,6 +4378,43 @@ mod tests {
         );
     }
 
+    /// The runtime snapshot carries the shared channel's stored display name,
+    /// and an unset name stays empty (the interface shows its default).
+    #[test]
+    fn test_shared_channel_name_reaches_the_snapshot() {
+        let mut config = Config::default();
+        config.apply_user_settings(&super::super::settings::UserSettings::default());
+        assert_eq!(config.shared_channel_name, "");
+
+        let settings = super::super::settings::UserSettings {
+            shared_channel_name: Some("Ekipa".into()),
+            ..Default::default()
+        };
+        config.apply_user_settings(&settings);
+        assert_eq!(config.shared_channel_name, "Ekipa");
+    }
+
+    /// A hand-edited settings.json name reaches the bar as one line of at
+    /// most 24 grapheme clusters, the limit Settings applies.
+    #[test]
+    fn test_shared_channel_name_is_one_line_within_its_limit() {
+        let mut config = Config::default();
+        let settings = super::super::settings::UserSettings {
+            shared_channel_name: Some("  Zespół\n  Codescribe   i przyjaciele z daleka ".into()),
+            ..Default::default()
+        };
+        config.apply_user_settings(&settings);
+        assert_eq!(config.shared_channel_name, "Zespół Codescribe i przy");
+        assert_eq!(super::shared_channel_name_line("Ekipa"), "Ekipa");
+        assert_eq!(
+            super::shared_channel_name_line(&"👩‍👩‍👧".repeat(30))
+                .chars()
+                .filter(|c| *c == '👧')
+                .count(),
+            super::SHARED_CHANNEL_NAME_LIMIT
+        );
+    }
+
     /// apply_user_settings copies hold/double-tap/silence/exclusive timing into Config.
     #[test]
     #[serial]
@@ -4568,6 +4695,24 @@ mod tests {
             !config.stt_initial_prompt_enabled,
             "explicit env must be able to keep Whisper initial_prompt disabled"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn retired_notes_paste_override_cannot_be_written_or_hide_paste_mode() {
+        let _tmp = setup_isolated_data_dir();
+        let _paste_mode = TestEnvGuard::unset("PASTE_MODE");
+        let config = Config::default();
+        config.save_to_env("PASTE_MODE", "comfort").unwrap();
+        assert!(config.save_to_env("QUICK_NOTES_SAVE_ONLY", "1").is_err());
+        assert!(
+            config
+                .save_to_env_many(&[("PASTE_MODE", "off"), ("QUICK_NOTES_SAVE_ONLY", "1")])
+                .is_err()
+        );
+        assert_eq!(UserSettings::load().paste_mode, Some(PasteMode::Comfort));
+        let loaded = Config::load_without_keychain();
+        assert_eq!(loaded.paste_mode, PasteMode::Comfort);
     }
 
     /// settings.json can disable the live transcription overlay.

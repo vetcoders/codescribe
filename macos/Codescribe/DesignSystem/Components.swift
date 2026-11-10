@@ -3,84 +3,13 @@ import SwiftUI
 
 // Reusable glass primitives shared by every screen. Build once, consume everywhere.
 
-/// One continuous native window bar. A line above and below the information
-/// row gives Agent and Settings the same rhythm without individual title pills.
-struct CSWindowHeaderItem<Content: View>: View {
-  @ViewBuilder let content: Content
-
-  var body: some View {
-    content
-      .frame(height: 18)
-      .padding(.vertical, 17)
-      .padding(.horizontal, 12)
-  }
-}
-
-/// One header plane per column: the window toolbar paints no background of its
-/// own, so the sidebar material and the detail canvas each run from the bottom
-/// edge up through the titlebar.
-///
-/// A forced `.bar` background here is honoured only by SwiftUI-managed scenes.
-/// In the Settings `Window` scene it painted a flat strip across the whole
-/// titlebar width, and the sidebar material started beneath it; the Agent window
-/// is an AppKit `NSWindow` hosting the same split view, where the same modifier
-/// is ignored, which is why Agent looked right and Settings did not
-/// (measured 2026-10-14 with a scene/AppKit probe over a gradient backdrop).
+/// One titlebar band without an extra toolbar backing or a second visual
+/// title. The detail header owns its actual glass and content.
 struct CSWindowHeaderChrome: ViewModifier {
   @ViewBuilder
   func body(content: Content) -> some View {
-    if #available(macOS 15.0, *) {
-      content.toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
-    } else {
-      content.toolbarBackground(.hidden, for: .windowToolbar)
-    }
-  }
-}
-
-/// The window header is one glass plane over the detail column only, the glass
-/// of the overlay header: rows that scroll up stop at its hard lower edge, the
-/// way Finder's list stops under its toolbar, instead of running through the
-/// title, and the sidebar material runs up through the titlebar beside it
-/// (Maciej, 2026-10-14: the title bar only above the messages, never over the
-/// sidebar; the same in Settings).
-///
-/// A sheet-toned fade replaced this glass for a day; Maciej preferred the glass
-/// and the Founder kept it in both windows (2026-10-19).
-///
-/// An AppKit-hosted window (Agent) draws no SwiftUI scroll edge effect under a
-/// bridged toolbar, soft or hard, so `scrollEdgeEffectStyle` left the rows
-/// sitting on the title (probe 2026-10-14). The plane is drawn here instead: as
-/// tall as the column's top safe-area inset, which is the toolbar (in Agent,
-/// the toolbar plus the conversation header row inset below it), and lifted
-/// into it. Toolbar items stay in the titlebar above it and keep their clicks.
-struct CSDetailHeaderGlass: ViewModifier {
-  @State private var height: CGFloat = 0
-
-  func body(content: Content) -> some View {
-    content
-      .onGeometryChange(for: CGFloat.self) { proxy in
-        proxy.safeAreaInsets.top
-      } action: { top in
-        height = top
-      }
-      .overlay(alignment: .top) {
-        CSHeaderGlassPlane()
-          .frame(height: height)
-          .frame(maxWidth: .infinity)
-          .offset(y: -height)
-          .allowsHitTesting(false)
-          .accessibilityHidden(true)
-      }
-  }
-}
-
-private struct CSHeaderGlassPlane: View {
-  var body: some View {
-    if #available(macOS 26.0, *) {
-      Color.clear.glassEffect(.regular, in: Rectangle())
-    } else {
-      Rectangle().fill(.regularMaterial)
-    }
+    content.toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+      .toolbar(removing: .title)
   }
 }
 
@@ -315,6 +244,9 @@ extension View {
 }
 
 /// Flat actions share the product's rounded, single-pixel keyboard focus.
+/// Only the prominent action wears the accent; a plain action rests on the
+/// neutral fill and hairline (Founder, 2026-11-05: the accent leaked onto
+/// Back / Skip / Manage in the wizard).
 private struct CSActionButtonStyle: ButtonStyle {
   let prominent: Bool
   @Environment(\.isEnabled) private var isEnabled
@@ -327,13 +259,17 @@ private struct CSActionButtonStyle: ButtonStyle {
       .padding(.horizontal, 14)
       .padding(.vertical, 8)
       .background(
-        CSColor.chromeAccent.opacity(isEnabled ? (prominent ? 0.12 : 0.035) : 0.015),
+        prominent
+          ? CSColor.chromeAccent.opacity(isEnabled ? 0.12 : 0.015)
+          : Color.primary.opacity(isEnabled ? CSAlpha.fill : 0.015),
         in: .rect(cornerRadius: CSRadius.chip)
       )
       .overlay {
         RoundedRectangle(cornerRadius: CSRadius.chip)
           .strokeBorder(
-            CSColor.chromeAccent.opacity(isEnabled ? (prominent ? 0.32 : 0.22) : 0.08),
+            prominent
+              ? CSColor.chromeAccent.opacity(isEnabled ? 0.32 : 0.08)
+              : Color.primary.opacity(isEnabled ? CSAlpha.line : 0.04),
             lineWidth: 1 / max(displayScale, 1))
       }
       .contentShape(.rect(cornerRadius: CSRadius.chip))
@@ -349,17 +285,16 @@ extension View {
 }
 
 /// A link in prose — one that opens a page, a window or another place in
-/// Settings — is underlined brick text, one style in the whole app (Founder,
-/// 2026-10-26), and turns the pointer into the pointing hand like any macOS
-/// link. Unlike an action it does take the brand text rung; unlike a control
-/// it never follows the macOS accent.
+/// Settings — is underlined text in the system link colour, one style in the
+/// whole app (Founder, 2026-11-05; the brick of 2026-10-26 was a custom
+/// colour), and turns the pointer into the pointing hand like any macOS link.
 private struct CSLinkButtonStyle: ButtonStyle {
   @Environment(\.isEnabled) private var isEnabled
 
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
       .underline()
-      .foregroundStyle(CSColor.terracottaText.opacity(isEnabled ? 1 : 0.4))
+      .foregroundStyle(Color(nsColor: .linkColor).opacity(isEnabled ? 1 : 0.4))
       .contentShape(Rectangle())
       .pointerStyle(isEnabled ? .link : nil)
       .opacity(configuration.isPressed && isEnabled ? 0.7 : 1)
@@ -374,9 +309,10 @@ extension View {
 }
 
 /// A selectable choice (a radio-style row or card) shares the flat action's
-/// shape; the selected one wears the brand accent as a wash and a one-point
-/// edge (Founder, 2026-10-26), never the chrome accent of a pressed action.
-/// An unselected choice rests on the same quiet surface as a plain action.
+/// shape; the selected one wears the user's accent as a wash and a one-point
+/// edge (Founder, 2026-11-05: selection is the accent's, as in every native
+/// control). An unselected choice rests on the same quiet surface as a plain
+/// action.
 private struct CSChoiceButtonStyle: ButtonStyle {
   let selected: Bool
   @Environment(\.isEnabled) private var isEnabled
@@ -390,16 +326,16 @@ private struct CSChoiceButtonStyle: ButtonStyle {
       .padding(.vertical, 8)
       .background(
         selected
-          ? CSColor.brandAccent.opacity(isEnabled ? CSAlpha.selectionWash : 0.015)
-          : CSColor.chromeAccent.opacity(isEnabled ? 0.035 : 0.015),
+          ? CSColor.chromeAccent.opacity(isEnabled ? CSAlpha.selectionWash : 0.015)
+          : Color.primary.opacity(isEnabled ? CSAlpha.fill : 0.015),
         in: .rect(cornerRadius: CSRadius.chip)
       )
       .overlay {
         RoundedRectangle(cornerRadius: CSRadius.chip)
           .strokeBorder(
             selected
-              ? CSColor.brandAccent.opacity(isEnabled ? CSAlpha.selectionStroke : 0.08)
-              : CSColor.chromeAccent.opacity(isEnabled ? 0.22 : 0.08),
+              ? CSColor.chromeAccent.opacity(isEnabled ? CSAlpha.selectionStroke : 0.08)
+              : Color.primary.opacity(isEnabled ? CSAlpha.line : 0.04),
             lineWidth: selected ? 1 : 1 / max(displayScale, 1))
       }
       .contentShape(.rect(cornerRadius: CSRadius.chip))
@@ -427,7 +363,7 @@ struct ModeDot: View {
 struct StatusPill: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   let text: String
-  var color: Color = CSColor.oliveLight
+  var color: Color = CSColor.secondaryInk
   var rippling: Bool = false
 
   @State private var pulse = false
@@ -505,7 +441,7 @@ struct StatusPill: View {
 /// down) instead of relying on a fragile in-place cancel.
 struct StaticStatusPill: View {
   let text: String
-  var color: Color = CSColor.oliveLight
+  var color: Color = CSColor.secondaryInk
   var body: some View {
     HStack(spacing: 6) {
       Circle().fill(color).frame(width: 6, height: 6).opacity(0.7)
@@ -525,11 +461,9 @@ struct StaticStatusPill: View {
   }
 }
 
-/// A determinate linear progress bar in the brand accent. The macOS linear
-/// `ProgressView` paints the system accent and ignores `tint`, so progress
-/// that must wear the brand hue (Founder, 2026-10-26) draws its own track:
-/// a faint capsule and the brand capsule over it. Indeterminate progress
-/// keeps the native spinner.
+/// A determinate linear progress bar in the user's accent, drawn as its own
+/// track so it reads the same in the wizard and in Settings. Indeterminate
+/// progress keeps the native spinner.
 struct CSProgressBar: View {
   let value: Double
   var height: CGFloat = 4
@@ -540,7 +474,7 @@ struct CSProgressBar: View {
     GeometryReader { proxy in
       ZStack(alignment: .leading) {
         Capsule().fill(Color.primary.opacity(CSAlpha.line))
-        Capsule().fill(CSColor.brandAccent)
+        Capsule().fill(CSColor.chromeAccent)
           .frame(width: fraction * proxy.size.width)
       }
     }
@@ -552,15 +486,13 @@ struct CSProgressBar: View {
 }
 
 /// A status word in the wizard and in Settings. A verified state ("Granted",
-/// "Ready") is a thin check on an olive capsule (Founder, 2026-10-26; the
-/// 2026-10-10 rule: a thin check, never a filled badge);
-/// stored identity that nothing has tested ("Saved") is an empty circle on
-/// the same capsule, the deliberate exception of 2026-10-26 to the grey
-/// "saved" of 99758557a. A blocked state pairs a warning glyph with
-/// `dangerLight` ink and a matching capsule, because terracotta is the colour
-/// of choice and progress, never of a problem; ordinary pending states and
-/// "Optional" remain plain ink. The dotted `StatusPill` stays the live-activity pill; this badge
-/// never pulses.
+/// "Ready") is a thin check in secondary ink on a neutral capsule (Founder,
+/// 2026-11-05: a correct state wears no colour; the 2026-10-10 rule: a thin
+/// check, never a filled badge); stored identity that nothing has tested
+/// ("Saved") is an empty circle on the same capsule. A blocked state pairs a
+/// warning glyph with the system red and a matching capsule; ordinary
+/// pending states and "Optional" remain plain ink. The dotted `StatusPill`
+/// stays the live-activity pill; this badge never pulses.
 struct CSStatusBadge: View {
   enum Mark {
     case none
@@ -574,8 +506,7 @@ struct CSStatusBadge: View {
 
   private var tint: Color {
     switch mark {
-    case .none: CSColor.secondaryInk
-    case .saved, .verified: CSColor.oliveLight
+    case .none, .saved, .verified: CSColor.secondaryInk
     case .blocked: CSColor.dangerLight
     }
   }
@@ -586,9 +517,9 @@ struct CSStatusBadge: View {
       case .none:
         EmptyView()
       case .saved:
-        CSIconView(icon: .circleEmpty, size: 9, weight: .semibold, color: CSColor.oliveLight)
+        CSIconView(icon: .circleEmpty, size: 9, weight: .semibold, color: CSColor.secondaryInk)
       case .verified:
-        CSIconView(icon: .success, size: 9, weight: .semibold, color: CSColor.oliveLight)
+        CSIconView(icon: .success, size: 9, weight: .semibold, color: CSColor.secondaryInk)
       case .blocked:
         CSIconView(icon: .warning, size: 9, weight: .semibold, color: CSColor.dangerLight)
       }
@@ -599,14 +530,15 @@ struct CSStatusBadge: View {
     .padding(.vertical, mark == .none ? 0 : 3)
     .background {
       if mark != .none {
-        Capsule().fill(tint.opacity(0.14))
+        // A neutral capsule for a correct state; only `blocked` tints its own.
+        Capsule().fill(mark == .blocked ? tint.opacity(0.14) : Color.primary.opacity(CSAlpha.fill))
       }
     }
     .fixedSize(horizontal: mark != .blocked, vertical: true)
   }
 }
 
-/// Wordmark lockup: brand dot + lowercase "codescribe", the product name and
+/// Wordmark lockup: lowercase "codescribe", the product name and
 /// never translated copy. The lockup is a label, so the word itself never
 /// answers the pointer; a surface that needs a control there hands in its own
 /// dot, the way the overlay hands in its close button.
@@ -634,8 +566,11 @@ struct Wordmark<Dot: View>: View {
   }
 }
 
-extension Wordmark where Dot == ModeDot {
-  init(size: CGFloat = 15, dotColor: Color = CSColor.terracotta) {
-    self.init(size: size) { ModeDot(color: dotColor, size: size * 0.6) }
+/// The plain lockup is the word alone (Founder, 2026-11-05, after HIG
+/// Branding: no brand mark in every window). A surface with a control in the
+/// dot's place, such as the overlay's close dot, hands in its own view.
+extension Wordmark where Dot == EmptyView {
+  init(size: CGFloat = 15) {
+    self.init(size: size) { EmptyView() }
   }
 }

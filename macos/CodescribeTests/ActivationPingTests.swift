@@ -24,18 +24,22 @@ final class ActivationPingTests: XCTestCase {
   private var defaults: UserDefaults!
   private var suiteName: String!
 
-  override func setUp() {
-    super.setUp()
-    suiteName = "ActivationPingTests.\(UUID().uuidString)"
-    defaults = UserDefaults(suiteName: suiteName)
-    defaults.removePersistentDomain(forName: suiteName)
+  override func setUp() async throws {
+    try await super.setUp()
+    await MainActor.run {
+      suiteName = "ActivationPingTests.\(UUID().uuidString)"
+      defaults = UserDefaults(suiteName: suiteName)
+      defaults.removePersistentDomain(forName: suiteName)
+    }
   }
 
-  override func tearDown() {
-    defaults.removePersistentDomain(forName: suiteName)
-    defaults = nil
-    suiteName = nil
-    super.tearDown()
+  override func tearDown() async throws {
+    await MainActor.run {
+      defaults.removePersistentDomain(forName: suiteName)
+      defaults = nil
+      suiteName = nil
+    }
+    try await super.tearDown()
   }
 
   func testOptInDefaultsOffAndProducesZeroNetworkRequests() async {

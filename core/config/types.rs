@@ -272,16 +272,12 @@ impl FromStr for ShortcutBinding {
 /// Global command chord used to deliver an armed transcript at the current
 /// caret. This is intentionally separate from the modifier-only work-mode
 /// bindings: it is a one-shot delivery command, not a recording gesture.
-/// Default is Disabled (opt-in): the CGEventTap runs listen-only, so the chord
-/// cannot be swallowed — a host app that also binds it (Finder ⌘⌥V = "Move
-/// Items Here") would see BOTH actions fire. The conflict detector only scans
-/// system symbolic hotkeys, never per-app menus, so a default-on chord ships
-/// silent collisions (review P1-04).
+/// Defaults to ⌘⌥V. A saved explicit chord or Disabled choice takes precedence.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum DeferredInsertShortcut {
-    #[default]
     Disabled,
+    #[default]
     CommandOptionV,
     CommandShiftV,
     CommandControlV,
@@ -298,8 +294,7 @@ impl DeferredInsertShortcut {
         }
     }
 
-    /// Whether a chord is bound at all. `Disabled` is the default, so callers
-    /// must check this before installing the event tap.
+    /// Whether the selected chord is bound at all.
     pub fn is_enabled(self) -> bool {
         !matches!(self, Self::Disabled)
     }
@@ -1006,6 +1001,11 @@ pub struct Config {
     #[serde(default = "default_transcript_tag_template")]
     pub transcript_tag_template: String,
 
+    /// Display name of the shared channel 0 (`SHARED_CHANNEL_NAME` in
+    /// settings.json). Empty shows the interface's default name.
+    #[serde(default)]
+    pub shared_channel_name: String,
+
     /// Maximum tokens for regular AI completions
     #[serde(default = "default_ai_max_tokens")]
     pub ai_max_tokens: i32,
@@ -1088,14 +1088,10 @@ pub struct Config {
     pub history_enabled: bool,
 
     // ===== Quick Notes =====
-    /// When enabled, dictation saves into a daily note file (and does not auto-paste).
+    /// When enabled, dictation also saves into a daily note file.
+    /// Automatic paste follows `paste_mode` independently.
     #[serde(default)]
     pub quick_notes_enabled: bool,
-
-    /// When Quick Notes is enabled: if true, do not auto-paste (save-only).
-    /// If false, we both save the note and paste as usual.
-    #[serde(default)]
-    pub quick_notes_save_only: bool,
 
     // ===== Backends =====
     /// Whether the local pipeline is the authority for the committed transcript.
@@ -1195,6 +1191,7 @@ impl std::fmt::Debug for Config {
             .field("ledger_sensitivity", &self.ledger_sensitivity)
             .field("deferred_insert_shortcut", &self.deferred_insert_shortcut)
             .field("channel_modifier", &self.channel_modifier)
+            .field("shared_channel_name", &self.shared_channel_name)
             .field("widget_shortcut", &self.widget_shortcut)
             .field("fn_tap_toggles_dictation", &self.fn_tap_toggles_dictation)
             .field("middle_mouse_acts_as_fn", &self.middle_mouse_acts_as_fn)
@@ -1233,7 +1230,6 @@ impl std::fmt::Debug for Config {
             .field("audio_retention", &self.audio_retention)
             .field("history_enabled", &self.history_enabled)
             .field("quick_notes_enabled", &self.quick_notes_enabled)
-            .field("quick_notes_save_only", &self.quick_notes_save_only)
             .field("use_local_stt", &self.use_local_stt)
             .field("local_model", &self.local_model)
             .field("stt_file_endpoint", &self.stt_file_endpoint)
@@ -1293,6 +1289,7 @@ impl Default for Config {
             transcript_send_mode: TranscriptSendMode::default(),
             transcript_tagging_enabled: false,
             transcript_tag_template: default_transcript_tag_template(),
+            shared_channel_name: String::new(),
             ai_max_tokens: default_ai_max_tokens(),
             ai_assistive_max_tokens: default_ai_assistive_max_tokens(),
             show_tray_glyph: default_show_tray_glyph(),
@@ -1313,7 +1310,6 @@ impl Default for Config {
             audio_retention: AudioRetention::Forever,
             history_enabled: default_history_enabled(),
             quick_notes_enabled: false,
-            quick_notes_save_only: false,
             use_local_stt: true,
             local_model: default_local_model(),
             stt_file_endpoint: None,
@@ -1455,14 +1451,12 @@ mod tests {
         assert!("double_ralt".parse::<ShortcutBinding>().is_err());
     }
 
-    /// Deferred insert defaults Disabled and round-trips its opt-in chord variants.
+    /// Deferred insert defaults to the product chord and respects explicit variants.
     #[test]
-    fn deferred_insert_shortcut_round_trips_and_defaults_to_disabled() {
-        // Opt-in by design: listen-only tap cannot swallow the chord, so a
-        // default-on binding double-fires in apps that also bind it (P1-04).
+    fn deferred_insert_shortcut_round_trips_and_defaults_to_command_option_v() {
         assert_eq!(
             Config::default().deferred_insert_shortcut,
-            DeferredInsertShortcut::Disabled
+            DeferredInsertShortcut::CommandOptionV
         );
 
         let configured = Config {

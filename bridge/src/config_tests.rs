@@ -1146,6 +1146,29 @@ mod settings_snapshot_tests {
 
     #[test]
     #[serial]
+    fn notes_mode_roundtrip_preserves_each_paste_mode() {
+        let root = scratch("notes_paste_independence");
+        std::fs::create_dir_all(&root).unwrap();
+        let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", &root);
+        let _env_path = EnvGuard::remove("CODESCRIBE_ENV_PATH");
+        let _paste_mode = EnvGuard::remove("PASTE_MODE");
+        let _notes = EnvGuard::remove("QUICK_NOTES_ENABLED");
+        let config = CodescribeConfig::new();
+        for mode in [CsPasteMode::Safe, CsPasteMode::Comfort, CsPasteMode::Off] {
+            config.set_paste_mode(mode).unwrap();
+            for enabled in [true, false] {
+                config.set_notes_mode(enabled).unwrap();
+                let toggles = config.tray_toggles();
+                assert_eq!(toggles.notes_mode_enabled, enabled);
+                assert_eq!(toggles.paste_mode, mode);
+                assert_eq!(config.load_settings().paste_mode, mode);
+            }
+        }
+        let _ = remove_path_without_following_symlinks(&root);
+    }
+
+    #[test]
+    #[serial]
     fn overlay_take_start_defaults_on_and_survives_new_handle() {
         let root = tempfile::tempdir().unwrap();
         let _data_dir = EnvGuard::set("CODESCRIBE_DATA_DIR", root.path());
@@ -1395,9 +1418,9 @@ mod settings_snapshot_tests {
         );
         let env_path = Config::env_path();
         if env_path.exists() {
-            let legacy = Config::parse_env_file(&env_path).expect("parse optional env file");
+            let dotenv = Config::parse_env_file(&env_path).expect("parse optional env file");
             assert!(
-                !legacy.contains_key("AGENT_WORKSPACE_ROOTS"),
+                !dotenv.contains_key("AGENT_WORKSPACE_ROOTS"),
                 "promoted roots must not be rewritten to the reinstall-fragile .env store"
             );
         }
@@ -1648,7 +1671,7 @@ mod runtime_snapshot_cache_tests {
                             // Pin the .env path to a nonexistent file inside the
                             // sandbox. Removing the key instead would let loads
                             // fall back to the real ~/.codescribe/.env, whose
-                            // legacy keys (e.g. AGENT_WORKSPACE_ROOTS) make any
+                            // retired keys (e.g. AGENT_WORKSPACE_ROOTS) make any
                             // concurrent non-serial config load run migration
                             // writes against whatever settings.json
                             // CODESCRIBE_DATA_DIR currently names — ours

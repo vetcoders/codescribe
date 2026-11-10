@@ -1,0 +1,84 @@
+{
+  "denominator": 4,
+  "message_id": "0123456789abcdef00000009",
+  "recipients": [
+    {
+      "at": "2026-11-05T03:14:53Z",
+      "channel": "8",
+      "delivered_at": "2026-11-05T03:14:53Z",
+      "delivery_id": "1910cbc49c1f4cf4394adfdd",
+      "name": "Kaja",
+      "state": "delivered",
+      "wake": "on"
+    },
+    {
+      "at": "2026-11-05T03:14:53Z",
+      "channel": "7",
+      "delivered_at": null,
+      "delivery_id": "be4c9fafbc7a09cb97f4a73c",
+      "name": "Nela",
+      "state": "skipped",
+      "wake": null
+    },
+    {
+      "at": "2026-11-05T03:15:23Z",
+      "channel": "8",
+      "delivered_at": "2026-11-05T03:14:53Z",
+      "delivery_id": "63458b23cdbdd6809f9ec49b",
+      "name": "Kaja",
+      "state": "read",
+      "wake": "on"
+    },
+    {
+      "at": "2026-11-05T03:15:32Z",
+      "channel": "2",
+      "delivered_at": "2026-11-05T03:14:53Z",
+      "delivery_id": "68472e20ad24d78104bc4e98",
+      "name": "Borys",
+      "state": "read",
+      "wake": "on"
+    },
+    {
+      "at": "2026-11-05T03:15:40Z",
+      "channel": "5",
+      "delivered_at": "2026-11-05T03:14:54Z",
+      "delivery_id": "777777777777777777777777",
+      "name": "Łukasz",
+      "state": "read",
+      "wake": "on"
+    },
+    {
+      "at": null,
+      "channel": "9",
+      "delivered_at": null,
+      "delivery_id": null,
+      "name": "Olek",
+      "state": "no_receipt",
+      "wake": null
+    }
+  ],
+  "sent_to": [
+    {
+      "channel": "2",
+      "name": "Borys"
+    },
+    {
+      "channel": "5",
+      "name": "Łukasz"
+    },
+    {
+      "channel": "7",
+      "name": "Nela"
+    },
+    {
+      "channel": "8",
+      "name": "Kaja"
+    },
+    {
+      "channel": "9",
+      "name": "Olek"
+    }
+  ],
+  "spoken": null,
+  "withdrawn": []
+}

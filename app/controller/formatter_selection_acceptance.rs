@@ -426,7 +426,7 @@ async fn formatter_selection_absent_provider_delivers_full_raw_without_waiting()
 }
 
 #[tokio::test(start_paused = true)]
-async fn formatter_selection_sealed_partial_failure_preserves_existing_raw_handoff() {
+async fn formatter_selection_partial_failure_keeps_accepted_live_handoff() {
     for policy in [FormattingPolicy::Correction, FormattingPolicy::Smart] {
         for (failure, refused_reply, pending) in [
             ("provider_error", true, true),
@@ -460,12 +460,16 @@ async fn formatter_selection_sealed_partial_failure_preserves_existing_raw_hando
                 .controller
                 .select_paste_projection(Some(TAKE), &settings, fixture.raw.clone())
                 .await;
-            // Frozen P10 F6 preserves sealed delivery. A partial sealed set
-            // keeps the existing whole-take Raw floor; refused takes below
-            // exercise the separate per-occurrence formatting requirement.
+            // The Founder's 2026-11-08 live/delivered regression replaces
+            // the old all-or-whole-Raw expectation for ordinary Stop too.
+            let expected = format!(
+                "{} {}.",
+                FORMATTED_FRAGMENTS[..4].join(" "),
+                FRAGMENTS[4..].join(" ")
+            );
             assert_eq!(
-                selected, fixture.raw,
-                "{policy:?}/{failure}: refused selection changed sealed delivery"
+                selected, expected,
+                "{policy:?}/{failure}: one missing result discarded accepted live text"
             );
             if failure == "timeout" {
                 assert!(

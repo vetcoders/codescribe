@@ -726,6 +726,32 @@ class ChannelHandoverTests(unittest.TestCase):
         self.assertIn("channel 2 state uncertain", error)
         self.assertEqual(self.bindings()[CHANNEL]["provider_session_id"], NEW[1])
 
+    def test_attach_preserves_display_name_while_casefolding_identity_and_takeover(self):
+        receipt = self.attached(OLD, name="Kaja")
+        self.assertEqual(receipt["audience"], "kaja")
+        self.assertEqual(receipt["display_name"], "Kaja")
+        self.assertEqual(self.bindings()[CHANNEL]["audience"], "kaja")
+        self.assertEqual(self.bindings()[CHANNEL]["display_name"], "Kaja")
+        self.assertEqual(self.lease(OLD)["name"], "kaja")
+        self.assertEqual(self.lease(OLD)["display_name"], "Kaja")
+        status = json.loads(self.helper("--status", *self.owner(OLD)).stdout)
+        self.assertEqual(status["name"], "kaja")
+        self.assertEqual(status["display_name"], "Kaja")
+
+        reattached = self.attached(OLD, name="kAja")
+        self.assertEqual(reattached["audience"], "kaja")
+        self.assertEqual(reattached["display_name"], "kAja")
+        self.assertEqual(self.bindings()[CHANNEL]["display_name"], "kAja")
+        self.assertEqual(self.lease(OLD)["display_name"], "kAja")
+        status_after = json.loads(self.helper("--status", *self.owner(OLD)).stdout)
+        self.assertEqual(status_after["display_name"], "kAja")
+
+        takeover = self.attached(NEW, name="kaja", takeover=True)
+        self.assertIs(takeover["binding_changed"], True)
+        self.assertEqual(takeover["previous"]["audience"], "kaja")
+        self.assertEqual(self.bindings()[CHANNEL]["audience"], "kaja")
+        self.assertEqual(self.bindings()[CHANNEL]["display_name"], "kaja")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,12 +1,4 @@
 import Foundation
-import OSLog
-
-/// Diagnostic breadcrumbs for the attachment staging path. Filter with:
-///   log show --predicate 'subsystem == "com.vetcoders.codescribe"' --info
-private let attachLog = Logger(
-  subsystem: Bundle.main.bundleIdentifier ?? "com.vetcoders.codescribe",
-  category: "attachments"
-)
 
 // Backs the Agent Chat with the REAL codescribe engine via the UniFFI bridge
 // (CodescribeAgent / CsAgentListener). Streaming token deltas are hopped onto the
@@ -17,6 +9,45 @@ final class RealChatEngine: AgentChatEngine {
   /// routing target down to the controller (operator contract 2026-08-13).
   private let assistiveRouting = CodescribeHotkeys()
   private var onToolApprovalRequested: (@MainActor (PendingToolApproval) -> Void)?
+
+  func captureTurnConfiguration() -> AgentTurnConfiguration? {
+    guard let sealed = try? agent.captureTurnConfiguration() else { return nil }
+    return AgentTurnConfiguration(
+      provider: sealed.provider, model: sealed.model,
+      reasoningEffort: sealed.reasoningEffort, receipt: sealed.receipt)
+  }
+
+  func streamReply(
+    _ text: String,
+    threadId: String,
+    attachmentPaths: [String],
+    configuration: AgentTurnConfiguration?,
+    onDelta: @escaping @MainActor (String) -> Void,
+    onReasoning: @escaping @MainActor (String) -> Void,
+    onToolExecuting: @escaping @MainActor (String, String) -> Void,
+    onToolResult: @escaping @MainActor (String, String, Bool, String) -> Void
+  ) async throws -> String {
+    guard let configuration else {
+      throw NSError(
+        domain: "Codescribe.Agent", code: 3,
+        userInfo: [
+          NSLocalizedDescriptionKey: String(
+            localized: "The accepted turn has no model configuration. Send it again.")
+        ])
+    }
+    return try await withListenedTurn(
+      onDelta: onDelta, onReasoning: onReasoning,
+      onToolExecuting: onToolExecuting, onToolResult: onToolResult
+    ) { listener in
+      try await agent.streamConfiguredReply(
+        text: text, threadId: threadId,
+        attachments: attachmentPaths.map { CsAttachment(path: $0) },
+        configuration: CsAgentTurnConfiguration(
+          provider: configuration.provider, model: configuration.model,
+          reasoningEffort: configuration.reasoningEffort, receipt: configuration.receipt),
+        listener: listener)
+    }
+  }
 
   func isAvailable() -> Bool { agent.isAvailable() }
 
@@ -90,36 +121,10 @@ final class RealChatEngine: AgentChatEngine {
     onToolResult:
       @escaping @MainActor (_ name: String, _ id: String, _ isError: Bool, _ reason: String) -> Void
   ) async throws -> String {
-    // A restored Max row must never be opened through a second AgentSession.
-    // Its explicit continuation entry point carries the durable acceptance id.
-    if let thread = try? CodescribeThreads().loadThread(id: threadId),
-      thread.mode == "max" || thread.tags.contains("max-consultation")
-    {
-      throw NSError(
-        domain: "Codescribe.Max", code: 2,
-        userInfo: [NSLocalizedDescriptionKey: "Continue this conversation through its Max owner."])
-    }
-    return try await withListenedTurn(
-      onDelta: onDelta, onReasoning: onReasoning,
-      onToolExecuting: onToolExecuting, onToolResult: onToolResult
-    ) { listener in
-      // Text-only path stays byte-identical to before; only route through the
-      // vision method when the composer actually staged an image.
-      if attachmentPaths.isEmpty {
-        attachLog.info("RealChatEngine.streamReply: text-only path (streamReply, no attachments)")
-        return try await agent.streamReply(text: text, threadId: threadId, listener: listener)
-      }
-      attachLog.info(
-        "RealChatEngine.streamReply: vision path (streamReplyWithAttachments) with \(attachmentPaths.count, privacy: .public) attachment(s)"
-      )
-      let attachments = attachmentPaths.map { CsAttachment(path: $0) }
-      return try await agent.streamReplyWithAttachments(
-        text: text,
-        threadId: threadId,
-        attachments: attachments,
-        listener: listener
-      )
-    }
+    try await streamReply(
+      text, threadId: threadId, attachmentPaths: attachmentPaths,
+      configuration: captureTurnConfiguration(), onDelta: onDelta,
+      onReasoning: onReasoning, onToolExecuting: onToolExecuting, onToolResult: onToolResult)
   }
 
   /// Run one bridge turn with its listener events replayed, in order, on the
@@ -177,7 +182,9 @@ final class RealChatEngine: AgentChatEngine {
   func cancelReply(threadId: String) -> Bool {
     if let thread = try? CodescribeThreads().loadThread(id: threadId),
       thread.mode == "max" || thread.tags.contains("max-consultation")
-    { return false }
+    {
+      return false
+    }
     // Swift Task cancellation never reaches the Rust future through the
     // generated UniFFI bindings (they poll to completion), so this explicit
     // bridge call is what actually aborts the in-flight turn.

@@ -18,17 +18,28 @@ adding parallel state. For deep narrative detail, see `docs/ARCHITECTURE.md`.
 
 ## Runtime Primitives
 
-| Primitive                 | Canonical Path                                                    | Contract                                                                                                                   |
-| ------------------------- | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `AcousticLedger`          | `core/pipeline/acoustic_ledger.rs`                                | Physical occurrence identity and sealing; emits `LedgerMutation` and `LedgerSeal` receipts.                                |
-| `RecordingController`     | `app/controller/mod.rs`                                           | Single microphone owner across dictation, agent, and assistive modes.                                                      |
-| `TranscriptReducer`       | `app/presentation/emitter.rs`                                     | Reduces committed ledger receipts into an immutable transcript projection.                                                 |
-| `TranscriptBus`           | `app/presentation/transcript_bus.rs`, `scripts/bus-demux.py`      | Append-only JSONL event bus and per-channel agent delivery/ACK/reply demux (`docs/TRANSCRIPT_BUS.md`).                     |
-| `DeliveryRoute`           | `app/controller/delivery_route.rs`                                | Routes sealed transcripts to the operator's explicit target (`docs/DELIVERY_ROUTE.md`).                                    |
-| `RuntimeSettingsSnapshot` | `core/config/loader.rs`                                           | Immutable runtime configuration snapshot loaded from `settings.json` and `docs/ENV_REGISTRY.toml`.                         |
-| `OverlayState`            | `macos/Codescribe/Screens/Overlay/OverlayState.swift`             | Swift UI projection consumer (`applyTranscriptProjection`); holds no independent document state.                           |
-| `OverlayIntercomWidget`   | `macos/Codescribe/Screens/Overlay/OverlayIntercomWidget.swift`    | Multi-agent channel roster, broadcast/directed composer, and voice-reply playback chrome.                                  |
-| `ReleaseRollback`         | `docs/RELEASE_ROLLBACK_RUNBOOK.md`, `scripts/generate-appcast.sh` | Sparkle `appcast.xml` withdrawal, GitHub Release draft/pre-release demotion, and forward `CFBundleVersion` patch recovery. |
+| Primitive                 | Canonical Path                                                    | Contract                                                                                                                                                                                                                                 |
+| ------------------------- | ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AcousticLedger`          | `core/pipeline/acoustic_ledger.rs`                                | Physical occurrence identity and sealing; emits `LedgerMutation` and `LedgerSeal` receipts.                                                                                                                                              |
+| `RecordingController`     | `app/controller/mod.rs`                                           | Single microphone owner across dictation, agent, and assistive modes.                                                                                                                                                                    |
+| `TranscriptReducer`       | `app/presentation/emitter.rs`                                     | Reduces committed ledger receipts into an immutable transcript projection.                                                                                                                                                               |
+| `TranscriptBus`           | `app/presentation/transcript_bus.rs`, `scripts/bus-demux.py`      | Append-only JSONL event bus and per-channel agent delivery/ACK/reply demux (`docs/TRANSCRIPT_BUS.md`).                                                                                                                                   |
+| `DeliveryRoute`           | `app/controller/delivery_route.rs`                                | Routes sealed transcripts to the operator's explicit target (`docs/DELIVERY_ROUTE.md`).                                                                                                                                                  |
+| `RuntimeSettingsSnapshot` | `core/config/loader.rs`                                           | Immutable runtime configuration snapshot loaded from `settings.json` and `docs/ENV_REGISTRY.toml`.                                                                                                                                       |
+| `OverlayState`            | `macos/Codescribe/Screens/Overlay/OverlayState.swift`             | Swift UI projection consumer (`applyTranscriptProjection`); holds no independent document state.                                                                                                                                         |
+| `OverlayIntercomWidget`   | `macos/Codescribe/Screens/Overlay/OverlayIntercomWidget.swift`    | Multi-agent channel roster, broadcast/directed composer, and voice-reply playback chrome.                                                                                                                                                |
+| `DockPresence`            | `macos/Codescribe/Core/DockPresence.swift`                        | Owns Dock visibility and minimise-as-hide for adopted windows. The Settings hider restores its style-mask capability and button target after key and update notifications, including titlebar revalidation while the window remains key. |
+| `ReleaseRollback`         | `docs/RELEASE_ROLLBACK_RUNBOOK.md`, `scripts/generate-appcast.sh` | Sparkle `appcast.xml` withdrawal, GitHub Release draft/pre-release demotion, and forward `CFBundleVersion` patch recovery.                                                                                                               |
+
+## Settings Controls
+
+`SettingsSegmentedChoice` projects a binding through a native
+`NSSegmentedControl`. It normally hugs its labels; the General page's
+transcription-language and appearance rows pass each other's localized titles
+to share the wider native fitting width. These paired controls use proportional
+fill, retaining the same overall width without forcing equal-width labels.
+`SettingsChipButton` owns the neutral action shape used by Save changes,
+Open Setup Wizard and the permissions group's System Settings action.
 
 ## Verification Primitives
 

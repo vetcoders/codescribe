@@ -55,12 +55,21 @@ enum OverlayAgentDrawerLayout {
   /// for them clips them from the trailing side, leaving their pills.
   static func contentMinimumWidth(textScale: CGFloat) -> CGFloat { 240 * textScale }
 
-  /// The divider is the list's only fold: released narrower than this, the
+  /// The divider folds the list too: released narrower than this, the
   /// list folds to its rail of pills.
   static func railFoldWidth(textScale: CGFloat) -> CGFloat { 160 * textScale }
 
   /// A rail's divider dragged this far toward the conversation unfolds the list.
   static let railUnfoldDrag: CGFloat = 40
+
+  /// While the divider is dragged both panes keep their old widths and only
+  /// the guide moves; they fade to this so the stale split and the reflow at
+  /// release read as one intended transition (Maciej, 2026-11-07). Set once
+  /// at the gesture's start, cleared once after the committed width lays out.
+  static let dragDimOpacity: Double = 0.55
+  /// The light blur under that fade. A compositor filter runs each frame the
+  /// guide moves, so it stays small; 0 turns it off.
+  static let dragBlurRadius: CGFloat = 1.5
 
   /// A folded conversation keeps a real edge column beside the divider.
   static func conversationEdgeWidth(textScale: CGFloat) -> CGFloat { 38 * textScale }
@@ -101,11 +110,21 @@ enum OverlayAgentDrawerLayout {
     (12 + 7.2 + 12) * textScale + 3
   }
 
-  /// A 2-point inset on each side of the widest pill, plus equal gutters
-  /// matching the panel's native resize band. The pills stay centered in the
-  /// full column while ending before the trailing resize target starts.
+  /// Room from the widest pill's trailing edge to the rail's: the resize
+  /// band, or the unread capsule's reach when that is wider, so a two-digit
+  /// count never leaves the rail. The unfold button ends on the pills'
+  /// trailing edge, this far from the rail's.
+  static func railTrailingInset(textScale: CGFloat) -> CGFloat {
+    max(OverlayResizeHit.band, OverlayChannelPill.railBadgeReach(scale: textScale))
+  }
+
+  /// The folded rail: the resize band's inset before the widest pill and
+  /// `railTrailingInset` after it. Monika, 2026-11-07: narrower rail
+  /// (the pill and two insets, no longer the pill plus a 4 pt margin, the
+  /// capsule's reach and two bands).
   static func railWidth(textScale: CGFloat) -> CGFloat {
-    railPillWidth(textScale: textScale) + 4 + 2 * OverlayResizeHit.band
+    OverlayResizeHit.band + railPillWidth(textScale: textScale)
+      + railTrailingInset(textScale: textScale)
   }
 
   /// The name pill's width: 224 at 1.0.

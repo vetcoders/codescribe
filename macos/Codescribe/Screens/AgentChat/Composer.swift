@@ -32,6 +32,7 @@ struct Composer: View {
   @State private var fieldHeight = ComposerTextLayout.minimumHeight(
     fontSize: ComposerControlMetrics.textSize)
   @State private var previewAttachment: PendingAttachment?
+  @State private var attachmentPicker = ConversationAttachmentPicker()
 
   // ⌘V interception. The native text editor consumes `paste:` before any
   // SwiftUI `.onPasteCommand` gets a look-in, so pasting an image needs a local
@@ -184,7 +185,10 @@ struct Composer: View {
     }
     .background(hostWindowReader)
     .onAppear(perform: installPasteMonitor)
-    .onDisappear(perform: removePasteMonitor)
+    .onDisappear {
+      removePasteMonitor()
+      attachmentPicker.cancel()
+    }
     .task(id: store.composerFocusRequest) {
       guard store.composerFocusRequest > 0 else { return }
       // The first summon can create the window and request focus in the
@@ -280,7 +284,7 @@ struct Composer: View {
       .clipShape(RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: CSRadius.input, style: .continuous)
-          .strokeBorder(CSColor.amber.opacity(0.28), lineWidth: 1)
+          .strokeBorder(CSColor.hairline(CSAlpha.line), lineWidth: 1)
       )
     }
   }
@@ -603,18 +607,17 @@ struct Composer: View {
   // MARK: Image picker
 
   private func pickAttachments() {
-    let panel = NSOpenPanel()
-    panel.allowsMultipleSelection = true
-    panel.canChooseDirectories = false
-    panel.canChooseFiles = true
-    panel.prompt = String(localized: "Attach", comment: "Open panel confirm button")
-    panel.message = String(localized: "Attach images to send to the Agent")
-    // Restrict to the vision-supported image types the bridge actually loads.
-    panel.allowedContentTypes = [.png, .jpeg, .gif, .webP, .bmp, .tiff]
-    attachLog.info("pickAttachments: presenting NSOpenPanel (modeless begin)")
-    panel.begin { response in
+    attachmentPicker.present { panel in
+      panel.allowsMultipleSelection = true
+      panel.canChooseDirectories = false
+      panel.canChooseFiles = true
+      panel.prompt = String(localized: "Attach", comment: "Open panel confirm button")
+      panel.message = String(localized: "Attach images to send to the Agent")
+      // Restrict to the vision-supported image types the bridge actually loads.
+      panel.allowedContentTypes = [.png, .jpeg, .gif, .webP, .bmp, .tiff]
+      attachLog.info("pickAttachments: presenting NSOpenPanel (modeless begin)")
+    } completion: { response, urls in
       let ok = response == .OK
-      let urls = ok ? panel.urls : []
       let names = urls.map { $0.lastPathComponent }.joined(separator: ", ")
       attachLog.info(
         "pickAttachments completion: response=\(ok ? "OK" : "cancel", privacy: .public) urls=\(urls.count, privacy: .public) files=[\(names, privacy: .public)]"

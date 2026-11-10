@@ -1209,6 +1209,8 @@ events[-1] = dict(schema='codescribe.transcript-evidence.v1', sequence=256,
 bus.write_text(''.join(json.dumps(row)+'\n' for row in events))
 continuous = base.copy()
 continuous[continuous.index('--session')+1] = 'continuous'
+# A 4 s TTL gives a 1 s persist interval for the liveness check below.
+continuous += ['--lease-ttl', '4']
 import hashlib
 identifier = hashlib.sha256(b'test\0continuous').hexdigest()[:32]
 continuous_state = root/'leases'/f'{identifier}.json'
@@ -1223,10 +1225,17 @@ with (root/'continuous.jsonl').open('w') as output:
                 break
             assert follower.poll() is None and time.monotonic() < deadline
             time.sleep(.02)
+        # Blocked at capacity, the follower still keeps its lease alive: an
+        # unchanged lease is rewritten every min(30 s, max(1 s, ttl/4)).
         heartbeat = state['heartbeat_unix']
-        time.sleep(1.2)
-        state = json.loads(continuous_state.read_text())
-        assert follower.poll() is None and state['heartbeat_unix'] > heartbeat
+        beat_deadline = time.monotonic()+3
+        while True:
+            state = json.loads(continuous_state.read_text())
+            if state['heartbeat_unix'] > heartbeat:
+                break
+            assert follower.poll() is None and time.monotonic() < beat_deadline
+            time.sleep(.05)
+        assert follower.poll() is None
         assert state['cursor'] < bus.stat().st_size
         ack = continuous[:continuous.index('--name')]
         subprocess.run(ack+['--ack', state['pending'][0]['delivery_id']],
@@ -1790,9 +1799,13 @@ try:
     assert store["profiles"]["filip"] == {"voice": "rex", "speed": 1.25}, store
     assert store["profiles"]["james"] == {"voice": "sal", "speed": 1.3, "provider": "openai"}, store
 
-    reused = attach(home, "5", "james", "voice-session")
+    # Same identity and spelling: the running follower is reused. A new
+    # spelling of the same name respawns it to carry the display name.
+    reused = attach(home, "5", "James", "voice-session")
     assert reused.returncode == 0, reused.stderr
     receipt = json.loads(reused.stdout)
+    if receipt["follower_spawned"]:
+        followers.append(receipt["follower_pid"])
     assert receipt["follower_spawned"] is False, receipt
     assert receipt["voice_source"] == "profile", receipt
     assert receipt["voice"]["voice"] == "sal", receipt

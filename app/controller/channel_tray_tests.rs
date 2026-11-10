@@ -170,13 +170,12 @@ async fn a_foreign_idle_cannot_blacken_a_live_channel() {
     );
 }
 
-/// The mirror-image bug: an ordinary take admitted over a channel closes that
-/// channel (dictation handoff), so once the take ends its `Idle` must go
-/// through. A violet that outlives the channel would be as wrong as the black
-/// dot this file started from.
+/// Ordinary dictation joins the shared capture without hanging up the agent.
+/// Its terminal Idle cannot hide a channel that remains open; only the last
+/// channel's own close releases the tray's listening state.
 #[tokio::test]
 #[serial_test::serial]
-async fn a_dictation_handoff_lets_the_takes_idle_through() {
+async fn a_dictation_join_keeps_the_channel_tray_until_its_own_close() {
     let _restore = TrayRestore::capture();
     settle_idle_hold();
     let controller = Arc::new(RecordingController::new_without_keychain());
@@ -208,14 +207,21 @@ async fn a_dictation_handoff_lets_the_takes_idle_through() {
     .await
     .expect("bounded fake recorder admission");
     assert!(
-        controller.agent_channel_snapshot(3).await.is_none(),
-        "the handoff hung up the channel before the take was admitted"
+        controller.agent_channel_snapshot(3).await.is_some(),
+        "ordinary dictation must preserve the agent participation"
     );
 
     controller.reset().await;
     assert_eq!(controller.current_state().await, State::Idle);
     // The take's end, as the bridge forwarder publishes it.
     tray_status::update_tray_status(TrayStatus::Idle);
+    assert_eq!(tray_status::current_tray_status(), TrayStatus::Listening);
+    assert!(controller.agent_channel_snapshot(3).await.is_some());
+    controller
+        .dispatch_agent_channel(3, &binding, &bus, ChannelOpenMode::Live)
+        .await
+        .expect("close the remaining agent participation");
+    assert!(controller.agent_channel_snapshot(3).await.is_none());
     assert_eq!(
         tray_status::current_tray_status(),
         TrayStatus::Idle,

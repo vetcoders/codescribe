@@ -21,15 +21,20 @@ zainstalowana nowa wersja… Zautomatyzujmy to").
 The waiter retries every 30 seconds for up to six hours
 (`RESTART_IDLE_WAIT`, `RESTART_IDLE_INTERVAL`), only while the refusal can
 end on its own: a take is active or settling, the Founder is writing to an
-agent (a focused composer, keys within the last 15 seconds or an unsent draft
-refuse with `founder_composing`; Maciej, 2026-10-23: talking to an agent
-includes typing to one), an agent turn holds the runtime
+agent (a focused non-empty composer, keys within the last 15 seconds or an
+unsent draft refuse with `founder_composing`; a resting caret in an empty
+field after the typing horizon does not block restart), an agent turn holds the runtime
 lease, a request expired or the application never answered it. Any other
 refusal ends it at once. A refusal after the application accepted shutdown is
 never retried. Only one waiter runs at a time; a second one, for example
 after another install, exits with `deferred_to_active_waiter`, because every
 attempt compares against the bundle installed at that moment. The waiter
 appends its JSON lines to `waiter.log` in the handshake directory.
+
+`make install-app` is the only installer, and this waiter is the only owner
+of the generation swap: nothing else sends the application a Quit. A
+Founder composing in the overlay keeps the running generation until the
+waiter's `founder_composing` refusal ends.
 
 `make restart` still stops and starts the application without asking it.
 Use it only when the application does not answer.

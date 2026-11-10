@@ -90,6 +90,53 @@ enum MessageTimestamp {
     return "\(day) \(time)"
   }
 
+  /// How long ago `date` was, for when an agent was last there (the chip's
+  /// hover card, Monika 2026-11-07): "now" under a minute, whole minutes
+  /// under an hour, whole hours under a day, then yesterday's word with the
+  /// clock and, older, `label`'s date and clock. The interface language
+  /// (`language`) owns the words and the system locale the clock, as in
+  /// `label`. A future instant (a clock ahead of this Mac's) reads as now.
+  static func ago(
+    _ date: Date, now: Date, calendar: Calendar = .autoupdatingCurrent,
+    locale: Locale = .autoupdatingCurrent,
+    language: Locale = InterfaceLanguage.preferred(from: Bundle.main.preferredLocalizations).locale
+  ) -> String {
+    let elapsed = now.timeIntervalSince(date)
+    if elapsed < 60 {
+      return String(
+        localized: LocalizedStringResource(
+          "now", locale: language,
+          comment: "Timestamp of a thread or message created just now"))
+    }
+    if elapsed < 3_600 {
+      let minutes = Int(elapsed / 60)
+      return String(
+        localized: LocalizedStringResource(
+          "\(minutes) min ago", locale: language,
+          comment:
+            "Agent hover card: whole minutes since a gone agent's last heartbeat, under an hour"))
+    }
+    if elapsed < 86_400 {
+      let hours = Int(elapsed / 3_600)
+      return String(
+        localized: LocalizedStringResource(
+          "\(hours) h ago", locale: language,
+          comment:
+            "Agent hover card: whole hours since a gone agent's last heartbeat, under a day"))
+    }
+    if let previousDay = calendar.date(byAdding: .day, value: -1, to: now),
+      calendar.isDate(date, inSameDayAs: previousDay)
+    {
+      let time = clock(locale: locale, timeZone: calendar.timeZone).string(from: date)
+      return String(
+        localized: LocalizedStringResource(
+          "yesterday \(time)", locale: language,
+          comment:
+            "Agent hover card: a gone agent's last heartbeat yesterday; the placeholder is a time"))
+    }
+    return label(for: date, now: now, calendar: calendar, locale: locale)
+  }
+
   /// Short form for tight places (the sidebar roster): the clock for today,
   /// the word alone for yesterday, a short numeric date for anything older.
   static func compactLabel(

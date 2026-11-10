@@ -201,10 +201,11 @@ final class OverlayBroadcastSentToTests: XCTestCase {
       at: Self.modelDirectories, includingPropertiesForKeys: [.isDirectoryKey]
     ).filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
       .sorted { $0.lastPathComponent < $1.lastPathComponent }
-    XCTAssertGreaterThanOrEqual(cases.count, 8)
+    XCTAssertGreaterThanOrEqual(cases.count, 9)
     XCTAssertTrue(
       Set(cases.map(\.lastPathComponent)).isSuperset(of: [
-        "skipped-on-sent-to", "delivered-unread-unknown-wake", "withdrawn-after-delivered",
+        "display-name-casefold", "skipped-on-sent-to", "delivered-unread-unknown-wake",
+        "withdrawn-after-delivered",
       ]))
     for directory in cases {
       let expected = try XCTUnwrap(
@@ -583,5 +584,69 @@ final class OverlayBroadcastSentToTests: XCTestCase {
       ])
     XCTAssertEqual(
       message.readReceipt, OverlayReadReceipt(read: 0, denominator: 2, unreceipted: []))
+  }
+
+  /// Founder, 2026-11-05: `sent.json` carries the sender's display spelling
+  /// (`"Lena"`, `"Igor"`, `"Kuba"`) while the followers' receipt files carry
+  /// the lease's casefolded name (`"lena"`, `"igor"`, `"kuba"`). They name the
+  /// same agents and never double the denominator (`2/2`, not `2/4` or `3/6`).
+  func testDisplayCasedSentToAndCasefoldedReceiptFilesCountEachAgentOnce() throws {
+    let messageID = "0123456789abcdef00000205"
+    let d1 = String(repeating: "1", count: 24)
+    let d2 = String(repeating: "2", count: 24)
+    let d3 = String(repeating: "3", count: 24)
+    let sentTo: [[String: String]] = [
+      ["name": "Lena", "channel": "3"],
+      ["name": "Igor", "channel": "7"],
+      ["name": "Kuba", "channel": "5"],
+    ]
+    let composed = OverlayReceiptState.compose(
+      files: [
+        (
+          name: "sent.json",
+          row: [
+            "schema": Self.schema, "kind": "sent", "message_id": messageID,
+            "sent_to": sentTo, "at": "2026-11-05T03:14:53Z",
+          ]
+        ),
+        (
+          name: "\(d1).delivered.json",
+          row: [
+            "schema": Self.schema, "kind": "delivered", "message_id": messageID,
+            "delivery_id": d1, "name": "lena", "channel": "3", "wake": "on",
+            "at": "2026-11-05T03:14:54Z", "sent_to": sentTo,
+          ]
+        ),
+        (
+          name: "\(d1).read.json",
+          row: [
+            "schema": Self.schema, "kind": "read", "message_id": messageID,
+            "delivery_id": d1, "name": "lena", "channel": "3",
+            "read_at": "2026-11-05T03:15:10Z", "sent_to": sentTo,
+          ]
+        ),
+        (
+          name: "\(d2).delivered.json",
+          row: [
+            "schema": Self.schema, "kind": "delivered", "message_id": messageID,
+            "delivery_id": d2, "name": "igor", "display_name": "Igor", "channel": "7",
+            "wake": "on", "at": "2026-11-05T03:14:55Z", "sent_to": sentTo,
+          ]
+        ),
+        (
+          name: "\(d3).skipped.json",
+          row: [
+            "schema": Self.schema, "kind": "skipped", "message_id": messageID,
+            "delivery_id": d3, "name": "kuba", "channel": "5", "policy": "off",
+            "at": "2026-11-05T03:14:56Z", "sent_to": sentTo,
+          ]
+        ),
+      ], messageID: messageID)
+    let summary = composed.summary(listed: [])
+    XCTAssertEqual(summary.read, 1)
+    XCTAssertEqual(summary.denominator, 2)
+    XCTAssertEqual(
+      summary.recipients.map { "\($0.name ?? ""):\($0.state.rawValue)" },
+      ["Igor:delivered", "Kuba:skipped", "Lena:read"])
   }
 }

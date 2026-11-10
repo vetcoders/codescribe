@@ -5,10 +5,13 @@ import SwiftUI
 /// its tooltip and its VoiceOver text all read this table, so no colour can
 /// appear on screen without a name the user can hover for.
 ///
-/// Red, pulsing red, orange and violet are the hues of the cursor hold badge
-/// (`app/os/hold_badge.rs`) and the menu-bar dot (`TrayStatusStore`), so the
-/// overlay is where those colours get their names. Yellow is the overlay's own
-/// silence state: capture is live, but nothing reaches speaking level.
+/// On the bar the active control wears its mode's colour (decision D6,
+/// 2026-11-06): the brand terracotta, steady or pulsing, while a dictation
+/// records, the agent violet while the words go to an agent, orange while the
+/// take transcribes; red is for errors only. Yellow is the overlay's own
+/// silence state: capture is live, but nothing reaches speaking level. The
+/// cursor hold badge (`app/os/hold_badge.rs`) and the menu-bar dot keep their
+/// own red until their own cut.
 enum OverlayRecordingLight: CaseIterable, Equatable, Sendable {
   case holdToTalk
   case handsFree
@@ -59,8 +62,9 @@ enum OverlayRecordingLight: CaseIterable, Equatable, Sendable {
 
   var colorName: String {
     switch self {
-    case .holdToTalk: String(localized: "Red", comment: "Recording light colour")
-    case .handsFree: String(localized: "Pulsing red", comment: "Recording light colour")
+    case .holdToTalk: String(localized: "Terracotta", comment: "Recording light colour")
+    case .handsFree:
+      String(localized: "Pulsing terracotta", comment: "Recording light colour")
     case .silence: String(localized: "Yellow", comment: "Recording light colour")
     case .processing: String(localized: "Orange", comment: "Recording light colour")
     case .agent: String(localized: "Violet", comment: "Recording light colour")
@@ -88,8 +92,8 @@ enum OverlayRecordingLight: CaseIterable, Equatable, Sendable {
       comment: "Recording light tooltip: colour name, state name, then one sentence of meaning")
   }
 
-  /// Hold and hands-free share the recording red; the pulse tells them apart,
-  /// exactly as the cursor badge does.
+  /// Hold and hands-free share the dictation terracotta; the pulse tells them
+  /// apart, exactly as the cursor badge does.
   var pulses: Bool {
     switch self {
     case .handsFree: true
@@ -98,13 +102,13 @@ enum OverlayRecordingLight: CaseIterable, Equatable, Sendable {
   }
 
   /// Transcribing draws a spinning arc instead of a pulse: its orange sits too
-  /// close to the recording red (1.15:1 light, 1.45:1 dark) to be told apart by
-  /// colour alone, so the two states differ by shape.
+  /// close to the recording terracotta to be told apart by colour alone, so
+  /// the two states differ by shape.
   var spins: Bool { self == .processing }
 
   var nsColor: NSColor {
     switch self {
-    case .holdToTalk, .handsFree: CSPalette.indicatorRecording
+    case .holdToTalk, .handsFree: CSPalette.terracotta
     case .silence: CSPalette.indicatorSilence
     case .processing: CSPalette.modeProcessing
     case .agent: CSPalette.assistive

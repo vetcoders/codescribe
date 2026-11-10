@@ -92,6 +92,75 @@ final class DockPresenceTests: XCTestCase {
     XCTAssertFalse(window.isMiniaturized)
   }
 
+  /// Founder, 2026-11-05: while Settings is already key in `.accessory` mode,
+  /// a scene or appearance update can strip `.miniaturizable` or disable the
+  /// yellow button without firing `didBecomeKeyNotification` again. `didUpdate`
+  /// restores both idempotently and stops observing once the window closes.
+  func testWindowUpdateWhileAlreadyKeyRestoresStyleMaskAndHideControlInAccessoryMode() throws {
+    let priorPolicy = NSApp.activationPolicy()
+    defer { NSApp.setActivationPolicy(priorPolicy) }
+    DockPresence.apply(showDockIcon: false)
+
+    let window = plainWindow()
+    DockPresence.adopt(window)
+    BackgroundTestWindow.present(window)
+    let expectedTarget = try XCTUnwrap(window.standardWindowButton(.miniaturizeButton)?.target)
+
+    window.styleMask.remove(.miniaturizable)
+    if let button = window.standardWindowButton(.miniaturizeButton) {
+      button.isEnabled = false
+      button.target = nil
+      button.action = #selector(NSWindow.performMiniaturize(_:))
+    }
+
+    window.update()
+
+    XCTAssertTrue(window.styleMask.contains(.miniaturizable))
+    let restoredButton = try XCTUnwrap(window.standardWindowButton(.miniaturizeButton))
+    XCTAssertTrue(restoredButton.isEnabled)
+    XCTAssertTrue(restoredButton.target === expectedTarget)
+
+    // Second update must be a no-op with identical target/action/mask on the live button.
+    window.update()
+    XCTAssertTrue(window.styleMask.contains(.miniaturizable))
+    let secondRestoredButton = try XCTUnwrap(window.standardWindowButton(.miniaturizeButton))
+    XCTAssertTrue(secondRestoredButton.isEnabled)
+    XCTAssertTrue(secondRestoredButton.target === expectedTarget)
+
+    XCTAssertTrue(
+      NSApp.sendAction(
+        try XCTUnwrap(secondRestoredButton.action),
+        to: secondRestoredButton.target,
+        from: secondRestoredButton))
+    XCTAssertFalse(window.isVisible)
+    XCTAssertFalse(window.isMiniaturized)
+
+    window.close()
+    XCTAssertFalse(DockPresence.hidesOnMinimise(window))
+
+    // Also cover the pre-locked pulse branch: `.miniaturizable` inserted while
+    // `target == nil` and `action == performMiniaturize:` before `adopt` runs.
+    let preLocked = plainWindow()
+    BackgroundTestWindow.present(preLocked)
+    if let rawButton = preLocked.standardWindowButton(.miniaturizeButton) {
+      rawButton.isEnabled = false
+      rawButton.target = nil
+      rawButton.action = #selector(NSWindow.performMiniaturize(_:))
+    }
+    preLocked.styleMask.insert(.miniaturizable)
+    XCTAssertEqual(preLocked.standardWindowButton(.miniaturizeButton)?.isEnabled, false)
+
+    DockPresence.adopt(preLocked)
+    let unlocked = try XCTUnwrap(preLocked.standardWindowButton(.miniaturizeButton))
+    XCTAssertTrue(unlocked.isEnabled)
+    XCTAssertNotNil(unlocked.target)
+    XCTAssertTrue(
+      NSApp.sendAction(try XCTUnwrap(unlocked.action), to: unlocked.target, from: unlocked))
+    XCTAssertFalse(preLocked.isVisible)
+    XCTAssertFalse(preLocked.isMiniaturized)
+    preLocked.close()
+  }
+
   /// Minimize All and the title-bar double-click preference reach AppKit's own
   /// miniaturise; the hider undoes it into a hide at once.
   func testAdoptedPlainWindowMiniaturiseEndsHidden() {

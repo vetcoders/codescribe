@@ -27,7 +27,10 @@ final class OverlayIntercomInteractionTests: XCTestCase {
       controller = OverlayIntercomWidgetController(
         state: state, textScale: TextScaleController(key: suite),
         desktopStore: store, diagnosticLog: log)
-      state.publishConversationText = { _, _, _, _ in XCTFail("Window actions must not send") }
+      state.publishConversationText = { _, _, _, _ in
+        XCTFail("Window actions must not send")
+        return .empty
+      }
     }
 
     func cleanup() {
@@ -57,7 +60,7 @@ final class OverlayIntercomInteractionTests: XCTestCase {
     let owner = try XCTUnwrap(
       OverlayConversationOwner(row: [
         "provider": "codex", "provider_session_id": session,
-        "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session),
+        "lease_id": AgentPlaybackIdentity.leaseIdentifier(provider: "codex", session: session)!,
         "channel": channel, "name": "private-agent-name",
       ]))
     return .init(id: owner.id, channel: channel, name: owner.name, owner: owner, messages: [])

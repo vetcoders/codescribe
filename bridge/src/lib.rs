@@ -379,9 +379,13 @@ pub fn shutdown_application_runtime() -> Result<CsApplicationRuntimeSnapshot, Cs
 
 impl From<anyhow::Error> for CsError {
     /// Map `anyhow` failures onto the Agent error variant by default.
+    ///
+    /// The message carries the whole cause chain (`stage: cause: …`). Plain
+    /// `to_string()` keeps only the outermost context, which is the stage
+    /// that failed, never why it failed or what to do about it.
     fn from(error: anyhow::Error) -> Self {
         CsError::Agent {
-            msg: error.to_string(),
+            msg: format!("{error:#}"),
         }
     }
 }

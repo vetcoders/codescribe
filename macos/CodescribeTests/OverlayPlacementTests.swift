@@ -79,6 +79,81 @@ final class OverlayPlacementTests: XCTestCase {
     XCTAssertEqual(clamped, inside)
   }
 
+  /// The header menu's placement state (Monika, 2026-11-07): Free motion
+  /// and the six places are one choice with exactly one checkmark. Choosing
+  /// Free motion unchecks the place but keeps it remembered; turning Free
+  /// motion off returns to the last chosen place and places the panel;
+  /// choosing a place turns Free motion off.
+  @MainActor
+  func testFreeMotionSwitchReturnsToTheLastChosenAnchor() {
+    let oldAnchor = OverlayPlacement.anchor
+    let oldFreeMotion = OverlayPlacement.freeMotion
+    defer {
+      OverlayPlacement.anchor = oldAnchor
+      OverlayPlacement.freeMotion = oldFreeMotion
+    }
+    let state = OverlayState.previewListening()
+    var placements = 0
+    state.onPlacementChanged = { placements += 1 }
+    state.selectPlacementAnchor(.bottomRight)
+    XCTAssertEqual(OverlayAnchor.allCases.filter(state.placementChecked), [.bottomRight])
+
+    state.setFreeMotion(true)
+    XCTAssertTrue(state.freeMotion)
+    XCTAssertTrue(OverlayPlacement.freeMotion)
+    XCTAssertEqual(
+      OverlayAnchor.allCases.filter(state.placementChecked), [],
+      "Free motion unchecks the place")
+    XCTAssertEqual(state.placementAnchor, .bottomRight, "the place stays remembered")
+
+    let before = placements
+    state.setFreeMotion(false)
+    XCTAssertFalse(state.freeMotion)
+    XCTAssertFalse(OverlayPlacement.freeMotion)
+    XCTAssertEqual(state.placementAnchor, .bottomRight)
+    XCTAssertEqual(OverlayAnchor.allCases.filter(state.placementChecked), [.bottomRight])
+    XCTAssertEqual(placements, before + 1, "off places the panel on the anchor")
+
+    state.setFreeMotion(true)
+    state.selectPlacementAnchor(.topCenter)
+    XCTAssertFalse(state.freeMotion, "choosing an anchor still leaves Free motion")
+    XCTAssertEqual(OverlayAnchor.allCases.filter(state.placementChecked), [.topCenter])
+  }
+
+  /// Exactly one of the seven position items is checked in every state the
+  /// two persisted keys can hold, including the pair the previous menu
+  /// stored (Free motion on with a remembered place). The keys and their
+  /// values are unchanged, so a state written by the previous menu loads as
+  /// Free motion checked, and leaving it returns to that remembered place.
+  @MainActor
+  func testEveryPersistedPlacementLoadsWithExactlyOneCheck() {
+    let oldAnchor = OverlayPlacement.anchor
+    let oldFreeMotion = OverlayPlacement.freeMotion
+    defer {
+      OverlayPlacement.anchor = oldAnchor
+      OverlayPlacement.freeMotion = oldFreeMotion
+    }
+    let defaults = UserDefaults.standard
+    for anchor in OverlayAnchor.allCases {
+      for freeMotion in [false, true] {
+        // The raw keys and values the previous menu wrote.
+        defaults.set(anchor.rawValue, forKey: "DictationOverlayPanel.anchor.v1")
+        defaults.set(freeMotion, forKey: "DictationOverlayPanel.freeMotion.v1")
+        let state = OverlayState.previewListening()
+        let checkedPlaces = OverlayAnchor.allCases.filter(state.placementChecked)
+        let checks = checkedPlaces.count + (state.freeMotion ? 1 : 0)
+        XCTAssertEqual(checks, 1, "\(anchor.rawValue), free motion \(freeMotion)")
+        XCTAssertEqual(checkedPlaces, freeMotion ? [] : [anchor])
+        XCTAssertEqual(state.placementAnchor, anchor)
+
+        state.setFreeMotion(false)
+        XCTAssertEqual(OverlayAnchor.allCases.filter(state.placementChecked), [anchor])
+        XCTAssertEqual(defaults.string(forKey: "DictationOverlayPanel.anchor.v1"), anchor.rawValue)
+        XCTAssertFalse(defaults.bool(forKey: "DictationOverlayPanel.freeMotion.v1"))
+      }
+    }
+  }
+
   @MainActor
   func testAnchorSelectionMovesTheRealPanelAndFreeMotionPersistsADrag() throws {
     let oldAnchor = OverlayPlacement.anchor
@@ -101,7 +176,7 @@ final class OverlayPlacementTests: XCTestCase {
         textScale: TextScaleController(key: "OverlayPlacementTests.textScale")
       ) as? FloatingOverlayPanel
     )
-    defer { panel.invalidatePresence() }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     let controller = OverlayController(
       state: state,
       engine: nil,
@@ -255,7 +330,7 @@ final class OverlayPlacementTests: XCTestCase {
       let parked = panel.originForPersistence
       state.setPresentationMode(.midi)
       panel.settleFrameTransition()
-      XCTAssertEqual(panel.frame.width, DictationOverlayWindow.midiSize.width)
+      XCTAssertEqual(panel.frame.width, panel.midiPresentationWidth)
       if drag != .zero {
         for event in try dragEvents(in: panel, delta: drag) { panel.sendEvent(event) }
       }
@@ -297,10 +372,7 @@ final class OverlayPlacementTests: XCTestCase {
       DictationOverlayWindow.make(
         state: state, textScale: TextScaleController(key: "OverlayPlacementTests.dragScale")
       ) as? FloatingOverlayPanel)
-    defer {
-      panel.orderOut(nil)
-      panel.invalidatePresence()
-    }
+    defer { BackgroundTestWindow.tearDown(panel, state: state) }
     // The panel size is part of every anchor's origin. Pin it instead of
     // inheriting whatever size an earlier run or the app persisted; the odd
     // width keeps the center anchors on the half-point case AppKit rounds.

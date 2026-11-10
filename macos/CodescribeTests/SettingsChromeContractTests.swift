@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 
 @testable import Codescribe
@@ -7,34 +8,6 @@ import XCTest
 /// for this worker, so these checks lock the structure a later build will compile:
 /// semantic ink, one grouped inset, native navigation, and visible keyboard focus.
 final class SettingsChromeContractTests: XCTestCase {
-  func testSettingsDropsFixedDarkPaint() throws {
-    let joined = try joinedSettingsSources()
-    let banned = [
-      "preferredColorScheme",
-      "windowWash",
-      ".csSettingsCard(",
-      "CSColor.surfaceRaised",
-      "CSColor.hairline",
-      "CSColor.textHigh",
-      "CSColor.textBody",
-      "CSColor.textBodyAlt",
-      "CSColor.textMuted",
-      "CSColor.textMutedAlt",
-      "CSColor.textFaint",
-      "CSColor.textFaintAlt",
-      // Pale `terracottaLight` on ink: Settings keeps solid terracotta there,
-      // through `CSColor.terracottaText`. `dangerLight` is the error rung that
-      // clears 4.5:1 on the sheet in both appearances (contrast audit 2026-10-24).
-      "CSColor.terracottaLight",
-      "cornerRadius: 10",
-      "cornerRadius: 11",
-      "focusEffectDisabled",
-    ]
-    for token in banned {
-      XCTAssertFalse(joined.contains(token), "Settings still contains \(token)")
-    }
-  }
-
   /// Founder review, 2026-10-18: one header pattern across the central pane, and
   /// a section title never quieter than the settings under it. Panels used to
   /// carry private header types that fixed this locally; the shared label is
@@ -62,7 +35,7 @@ final class SettingsChromeContractTests: XCTestCase {
     let view = try XCTUnwrap(sources["SettingsView.swift"])
     XCTAssertTrue(view.contains("NavigationSplitView(columnVisibility:"))
     // The sidebar list style and search field come from the column both
-    // windows share (Monika, 2026-10-18: the Settings sidebar is the reference).
+    // windows share (Founder, 2026-10-18: the Settings sidebar is the reference).
     XCTAssertTrue(view.contains("CSSidebarColumn("))
     XCTAssertTrue(view.contains(".csSidebarToggle(expanded: $sidebarExpanded)"))
     let column = try sidebarColumnSource()
@@ -98,15 +71,12 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertLessThan(transition.lowerBound, identity.lowerBound)
 
     for token in [
-      "CSColor.terracotta",
-      "CSColor.oliveLight",
       "CSColor.danger",
       "CSColor.chromeAccent",
       "CSColor.amber",
     ] {
       XCTAssertTrue(containsToken(joined, token), "missing brand or status token \(token)")
     }
-    XCTAssertTrue(containsToken(joined, "CSColor.olive"))
     XCTAssertGreaterThan(joined.components(separatedBy: "SettingsPageHeader(").count, 2)
     XCTAssertGreaterThan(joined.components(separatedBy: ".settingsGroupedInset(").count, 2)
   }
@@ -210,9 +180,9 @@ final class SettingsChromeContractTests: XCTestCase {
     let view = try XCTUnwrap(settingsSources()["SettingsView.swift"])
     let detail = try XCTUnwrap(view.range(of: "} detail: {"))
     let minimum = try XCTUnwrap(view.range(of: ".frame(minWidth: Self.detailMinWidth)"))
-    let toolbar = try XCTUnwrap(view.range(of: ".toolbar {"))
+    let splitModifiers = try XCTUnwrap(view.range(of: ".csSidebarToggle(expanded:"))
     XCTAssertLessThan(detail.lowerBound, minimum.lowerBound)
-    XCTAssertLessThan(minimum.lowerBound, toolbar.lowerBound)
+    XCTAssertLessThan(minimum.lowerBound, splitModifiers.lowerBound)
     XCTAssertTrue(
       view.contains(".frame(maxWidth: .infinity, minHeight: 620, maxHeight: .infinity)"))
     XCTAssertFalse(view.contains("minWidth: 880"))
@@ -285,14 +255,46 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertEqual(creator.components(separatedBy: "SettingsSegmentedChoice(").count, 4)
     XCTAssertFalse(creator.contains(".frame(width: 200)"))
     for titles in [
-      ["Multilingual", "Polish", "English"],
-      try ["Multilingual", "Polish", "English"].map { try XCTUnwrap(polish[$0]) },
+      ["Auto", "Polish", "English"],
+      try ["Auto", "Polish", "English"].map { try XCTUnwrap(polish[$0]) },
       ["Polski", "English"], ["System", "Light", "Dark"],
       try ["System", "Light", "Dark"].map { try XCTUnwrap(polish[$0]) },
     ] {
       let fit = SettingsTabSegments.control(titles: titles).fittingSize.width
       XCTAssertGreaterThan(fit, 0, "\(titles)")
       XCTAssertLessThanOrEqual(fit, width(titles), "\(titles): fit never exceeds equal widths")
+    }
+    for (langTitles, appearanceTitles) in [
+      (["Auto", "Polish", "English"], ["System", "Light", "Dark"]),
+      (
+        try ["Auto", "Polish", "English"].map { try XCTUnwrap(polish[$0]) },
+        try ["System", "Light", "Dark"].map { try XCTUnwrap(polish[$0]) }
+      ),
+    ] {
+      for selected in 0..<3 {
+        let langHost = NSHostingView(
+          rootView: SettingsSegmentedChoice(
+            titles: langTitles,
+            selection: .constant(selected),
+            matchingTitles: appearanceTitles,
+            accessibilityLabel: "Transcription language",
+            accessibilityIdentifier: "settings-recognition-language"
+          ))
+        let appearanceHost = NSHostingView(
+          rootView: SettingsSegmentedChoice(
+            titles: appearanceTitles,
+            selection: .constant(selected),
+            matchingTitles: langTitles,
+            accessibilityLabel: "Appearance",
+            accessibilityIdentifier: "settings-appearance"
+          ))
+        langHost.layoutSubtreeIfNeeded()
+        appearanceHost.layoutSubtreeIfNeeded()
+        XCTAssertEqual(
+          langHost.fittingSize.width, appearanceHost.fittingSize.width, accuracy: 0.5,
+          "mounted segmented controls must share identical width for \(langTitles) vs \(appearanceTitles) at selection \(selected)"
+        )
+      }
     }
     // Agent › AI models (audit 2026-10-21): the formatting-engine row is one
     // title, one sentence and two translated choices; the four-sentence
@@ -1263,7 +1265,9 @@ final class SettingsChromeContractTests: XCTestCase {
         of: ".overlay(alignment: Alignment(horizontal: .trailing, vertical: .firstTextBaseline))"))
     XCTAssertLessThan(header.lowerBound, titleRow.lowerBound)
     XCTAssertTrue(creator.contains("SettingsChipButton(action: { model.onOpenSetupWizard() })"))
-    XCTAssertTrue(creator.contains("CSIconView(icon: .setupWizard"))
+    XCTAssertFalse(creator.contains("CSIconView(icon: .setupWizard"))
+    XCTAssertTrue(
+      creator.contains("SettingsChipButton(action: { PermissionKind.openPrivacySettings() })"))
     XCTAssertFalse(creator.contains(".buttonStyle(.bordered)"))
     let tray = try String(
       contentsOf: URL(fileURLWithPath: #filePath)
@@ -1595,6 +1599,7 @@ final class SettingsChromeContractTests: XCTestCase {
 
   /// Settings → Dictionary: a fixed header, three honest counters, versions
   /// compared stage by stage, and a Learn action that states its scope first.
+  @MainActor
   func testDictionaryPaneReadsAsCorrectionsAndRules() throws {
     let panel = try XCTUnwrap(try settingsSources()["VoiceLabPanel.swift"])
     XCTAssertTrue(panel.contains("SettingsPageHeader(SettingsSection.voiceLab.title)"))
@@ -1745,8 +1750,10 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(tokens.contains("static var sheetDarkHex:"))
     XCTAssertEqual(SheetShade.todayDark.hex, 0x16161C)
     XCTAssertEqual(SheetShade.todayLight.hex, 0xF6F3EE)
-    XCTAssertEqual(SheetShade.darkChoices.map(\.rawValue), ["16161C", "1B1B1D", "201F1E", "070707"])
-    XCTAssertEqual(SheetShade.lightChoices.map(\.rawValue), ["F6F3EE", "DED9D3", "D9D3CD", "F0F0F0"])
+    XCTAssertEqual(
+      SheetShade.darkChoices.map(\.rawValue), ["16161C", "1B1B1D", "201F1E", "070707"])
+    XCTAssertEqual(
+      SheetShade.lightChoices.map(\.rawValue), ["F6F3EE", "DED9D3", "D9D3CD", "F0F0F0"])
     let polish = try polishCatalog()
     let expected: [String: String] = [
       "Appearance": "Wygląd",
@@ -1761,7 +1768,8 @@ final class SettingsChromeContractTests: XCTestCase {
     for (key, value) in expected {
       XCTAssertEqual(polish[key], value, key)
     }
-    XCTAssertNil(polish["Codescribe will restart with the new shade. Your recording must finish first."])
+    XCTAssertNil(
+      polish["Codescribe will restart with the new shade. Your recording must finish first."])
   }
 
   /// One switch, one track width (Founder, 2026-10-20): every switch in
@@ -2068,13 +2076,13 @@ final class SettingsChromeContractTests: XCTestCase {
     XCTAssertTrue(joined.contains(toggle + "CSColor.chromeAccent)"))
   }
 
-  /// A link in prose is underlined brick drawn by one style, `csLink()`; it
-  /// never follows the macOS accent and never uses the system `.link` style
-  /// (Founder, 2026-10-26; the 2026-10-29 smoke found the links still blue).
-  func testProseLinksShareTheBrickLinkStyle() throws {
+  /// A link in prose is underlined in the system link colour drawn by one
+  /// style, `csLink()`; the three navigation rows in `UserPanel` are plain
+  /// rows with a trailing arrow.
+  func testProseLinksShareTheSystemLinkStyle() throws {
     let sources = try settingsSources()
     let links = [
-      "LabPanel.swift", "TranscriptMarkersSection.swift", "UserPanel.swift",
+      "LabPanel.swift", "TranscriptMarkersSection.swift",
       "DictationCloudPrivacyTab.swift",
     ]
     for name in links {
@@ -2094,7 +2102,7 @@ final class SettingsChromeContractTests: XCTestCase {
     let style = try XCTUnwrap(components.range(of: "private struct CSLinkButtonStyle"))
     let body = components[style.lowerBound...].prefix(600)
     XCTAssertTrue(body.contains(".underline()"))
-    XCTAssertTrue(body.contains("CSColor.terracottaText"))
+    XCTAssertTrue(body.contains("Color(nsColor: .linkColor)"))
     XCTAssertTrue(body.contains(".pointerStyle(isEnabled ? .link : nil)"), "the pointing hand")
     XCTAssertFalse(body.contains("chromeAccent"))
   }

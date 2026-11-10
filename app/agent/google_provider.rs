@@ -5,6 +5,7 @@
 //! metadata. Signatures are never reconstructed from text or moved to a part.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -18,8 +19,9 @@ use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
 use codescribe_core::agent::{
-    AgentEvent, AgentProvider, AgentProviderHost, AgentUiEvent, ContentBlock, MCP_SEARCH_TOOL_NAME,
-    Message, ProviderResponseMetadata, Role, StreamOptions, ToolDefinition,
+    AgentAssetStore, AgentEvent, AgentProvider, AgentProviderHost, AgentUiEvent, ContentBlock,
+    ImageAsset, MCP_SEARCH_TOOL_NAME, Message, ProviderResponseMetadata, Role, StreamOptions,
+    ToolDefinition,
 };
 use codescribe_core::config::{RuntimeAiRequestTiming, RuntimeLlmLane};
 use codescribe_core::llm::account_auth::{
@@ -101,6 +103,9 @@ struct GoogleTurnPayload {
     parts: Vec<Value>,
     /// In original functionCall part order; these are canonical native call IDs.
     call_ids: Vec<String>,
+    /// Absent on responses whose context used the original Message serialization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    context_digest_version: Option<u8>,
 }
 
 impl GoogleProvider {
@@ -195,7 +200,8 @@ impl AgentProvider for GoogleProvider {
             )
             .as_bytes(),
         ));
-        let retained = restore_turns(messages, model, &provider_id)?;
+        let mut images = GoogleImageSnapshot::default();
+        let (retained, context_digest) = restore_turns(messages, model, &provider_id, &mut images)?;
         ensure!(
             retained.len() < MAX_RETAINED_TURNS,
             "Google signed history reached its retention limit; start a new conversation"
@@ -205,8 +211,14 @@ impl AgentProvider for GoogleProvider {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        let (body, skipped_tools) =
-            build_request_with_host(messages, tools, options, &retained, host.as_ref())?;
+        let (body, skipped_tools) = build_request_with_host(
+            messages,
+            tools,
+            options,
+            &retained,
+            host.as_ref(),
+            &mut images,
+        )?;
         let credential = if let Some(key) = &self.fixture_key {
             GoogleCredential::ApiKey(key.clone())
         } else if google::is_cloud_code_assist(&self.endpoint) {
@@ -230,7 +242,7 @@ impl AgentProvider for GoogleProvider {
         let (tx, rx) = mpsc::channel(256);
         let transport = self.clone();
         let pending = PendingTurn {
-            context_digest: history_digest(messages)?,
+            context_digest,
             provider_id,
             model: model.clone(),
             history_bytes: retained.iter().map(|turn| turn.metadata_bytes).sum(),
@@ -325,6 +337,19 @@ impl AgentProvider for GoogleProvider {
     fn stream_timeouts(&self) -> Option<(Duration, Duration)> {
         Some((self.initial_timeout, self.chunk_timeout))
     }
+    /// The window of the model this request would go to: `options.model`, or
+    /// this provider's default when the session leaves it empty.
+    fn context_window(&self, options: &StreamOptions) -> Option<u64> {
+        let model = if options.model.trim().is_empty() {
+            &self.default_model
+        } else {
+            &options.model
+        };
+        Some(codescribe_core::agent::compaction::default_context_window(
+            model,
+        ))
+    }
+
     fn name(&self) -> &str {
         "google-generate-content"
     }
@@ -337,12 +362,185 @@ fn hash_message(digest: &mut Sha256, message: &Message) -> Result<()> {
     Ok(())
 }
 
-fn history_digest(messages: &[Message]) -> Result<String> {
-    let mut digest = Sha256::new();
-    for message in messages {
-        hash_message(&mut digest, message)?;
+/// One request's immutable image bytes, shared by history validation and wire
+/// encoding. Resolving through the asset owner also keeps stored paths from
+/// becoming arbitrary filesystem reads.
+#[derive(Default)]
+struct GoogleImageSnapshot {
+    assets: HashMap<PathBuf, Arc<[u8]>>,
+}
+
+impl GoogleImageSnapshot {
+    fn read_asset(&mut self, asset: &ImageAsset) -> Result<Arc<[u8]>> {
+        ensure!(
+            asset.path.file_stem().and_then(|stem| stem.to_str()) == Some(asset.asset_id.as_str()),
+            "Google image asset identity does not match its file"
+        );
+        let file_name = asset
+            .path
+            .file_name()
+            .context("Google image asset has no file name")?;
+        let data = match self.assets.entry(PathBuf::from(file_name)) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.get().clone(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let data: Arc<[u8]> = AgentAssetStore::read_image(&asset.path)?.into();
+                entry.insert(data.clone());
+                data
+            }
+        };
+        ensure!(
+            asset.size_bytes == data.len() as u64,
+            "Google image asset size does not match its bytes"
+        );
+        if let Some(expected) = asset.asset_id.strip_prefix("inline_") {
+            ensure!(
+                expected == hex::encode(Sha256::digest(&data)),
+                "Google inline image asset does not match its content identity"
+            );
+        }
+        Ok(data)
     }
-    Ok(hex::encode(digest.finalize()))
+
+    fn canonical_block(&mut self, block: &ContentBlock, depth: usize) -> Result<Value> {
+        ensure!(depth < 32, "Google image history nesting exceeds its limit");
+        let image_identity = |data: &[u8], media_type: &str| {
+            json!({
+                "type": "image",
+                "payload": {
+                    "media_type": google_image_media_type(media_type),
+                    "size_bytes": data.len(),
+                    "sha256": hex::encode(Sha256::digest(data)),
+                },
+            })
+        };
+        match block {
+            ContentBlock::Image { data, media_type } => Ok(image_identity(data, media_type)),
+            ContentBlock::ImageAsset(asset) => {
+                let data = self.read_asset(asset)?;
+                Ok(image_identity(&data, &asset.media_type))
+            }
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => Ok(json!({
+                "type": "tool_result",
+                "payload": {
+                    "tool_use_id": tool_use_id,
+                    "content": content.iter()
+                        .map(|child| self.canonical_block(child, depth + 1))
+                        .collect::<Result<Vec<_>>>()?,
+                    "is_error": is_error,
+                },
+            })),
+            _ => Ok(serde_json::to_value(block)?),
+        }
+    }
+
+    /// Undo only the known inline-image spill performed by ThreadStore. A
+    /// captured screenshot asset was already an asset when its response was
+    /// signed and must retain that original representation for v1 validation.
+    fn restore_inline_blocks(&mut self, blocks: &mut [ContentBlock], depth: usize) -> Result<()> {
+        ensure!(depth < 32, "Google image history nesting exceeds its limit");
+        for block in blocks {
+            match block {
+                ContentBlock::ImageAsset(asset) if asset.asset_id.starts_with("inline_") => {
+                    let data = self.read_asset(asset)?;
+                    *block = ContentBlock::Image {
+                        data: data.to_vec(),
+                        media_type: asset.media_type.clone(),
+                    };
+                }
+                ContentBlock::ToolResult { content, .. } => {
+                    self.restore_inline_blocks(content, depth + 1)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+fn google_image_media_type(media_type: &str) -> &str {
+    match media_type.trim() {
+        "" => "image/png",
+        media_type => media_type,
+    }
+}
+
+/// v1 readers reconstruct only three known runtime/storage representations.
+/// Each must reproduce the saved digest exactly; no mismatch drops signatures
+/// or silently replays a modified history. v2 is independent of image storage
+/// and of display timestamps, which ThreadStore may populate on restoration.
+struct GoogleHistoryDigests {
+    canonical: Sha256,
+    serialized: Sha256,
+    inline: Sha256,
+    current_user_turn: Sha256,
+    reconstruct_v1: bool,
+}
+
+impl GoogleHistoryDigests {
+    fn new(reconstruct_v1: bool) -> Self {
+        let mut canonical = Sha256::new();
+        canonical.update(b"codescribe.google.history\0v2\0");
+        Self {
+            canonical,
+            serialized: Sha256::new(),
+            inline: Sha256::new(),
+            current_user_turn: Sha256::new(),
+            reconstruct_v1,
+        }
+    }
+
+    fn push(&mut self, message: &Message, images: &mut GoogleImageSnapshot) -> Result<()> {
+        if self.reconstruct_v1 {
+            if message.role == Role::User
+                && message
+                    .content
+                    .iter()
+                    .any(|block| !matches!(block, ContentBlock::ToolResult { .. }))
+            {
+                // The bridge restores older turns from disk before accepting
+                // each new user turn. Only this turn's composer images were
+                // still inline during its provider/tool rounds.
+                self.current_user_turn = self.serialized.clone();
+            }
+            hash_message(&mut self.serialized, message)?;
+            let mut inline = message.clone();
+            images.restore_inline_blocks(&mut inline.content, 0)?;
+            hash_message(&mut self.inline, &inline)?;
+            hash_message(&mut self.current_user_turn, &inline)?;
+        }
+
+        let content = message
+            .content
+            .iter()
+            .map(|block| images.canonical_block(block, 0))
+            .collect::<Result<Vec<_>>>()?;
+        let bytes = serde_json::to_vec(&json!({
+            "role": message.role,
+            "content": content,
+            "metadata": message.metadata.as_ref(),
+        }))?;
+        self.canonical.update((bytes.len() as u64).to_be_bytes());
+        self.canonical.update(bytes);
+        Ok(())
+    }
+
+    fn matches(&self, expected: &str, version: Option<u8>) -> Result<bool> {
+        match version {
+            Some(2) => Ok(expected == self.canonical_digest()),
+            None => Ok([&self.serialized, &self.inline, &self.current_user_turn]
+                .into_iter()
+                .any(|digest| expected == hex::encode((*digest).clone().finalize()))),
+            Some(_) => bail!("Unsupported Google context digest version"),
+        }
+    }
+
+    fn canonical_digest(&self) -> String {
+        hex::encode(self.canonical.clone().finalize())
+    }
 }
 
 fn assistant_segments(text: &str, calls: &[Call]) -> Vec<Vec<ContentBlock>> {
@@ -458,11 +656,31 @@ fn restore_turns(
     messages: &[Message],
     model: &str,
     provider_id: &str,
-) -> Result<Vec<RetainedTurn>> {
+    images: &mut GoogleImageSnapshot,
+) -> Result<(Vec<RetainedTurn>, String)> {
     let mut turns = Vec::new();
     let mut groups = HashSet::new();
     let mut native_calls = HashSet::new();
-    let mut digest = Sha256::new();
+    // This only skips byte-heavy v1 projections on entirely v2 histories;
+    // the ordinary metadata parsing and validation below remain authoritative.
+    let reconstruct_v1 = messages.iter().any(|message| {
+        let Some(response) = message
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.as_stored().get("provider_wire"))
+            .and_then(|wire| wire.get("response"))
+        else {
+            return false;
+        };
+        response.get("wire").and_then(Value::as_str) == Some("google-generate-content")
+            && response.get("model").and_then(Value::as_str) == Some(model)
+            && response.get("provider_id").and_then(Value::as_str) == Some(provider_id)
+            && response
+                .get("payload")
+                .and_then(|payload| payload.get("context_digest_version"))
+                .is_none_or(Value::is_null)
+    });
+    let mut digests = GoogleHistoryDigests::new(reconstruct_v1);
     let mut total_bytes = 0usize;
     let mut index = 0usize;
     while index < messages.len() {
@@ -473,11 +691,11 @@ fn restore_turns(
             .transpose()?
             .flatten();
         let Some(first) = metadata else {
-            ensure!(
-                messages[index].role != Role::Assistant,
-                "Google history has no original signed parts; start a new conversation"
-            );
-            hash_message(&mut digest, &messages[index])?;
+            // Unsigned history, such as the turns of a thread begun on another
+            // provider, is replayed as ordinary content. Gemini validates
+            // signatures only on the current turn's calls, and this history
+            // always precedes the user message that opens the current turn.
+            digests.push(&messages[index], images)?;
             index += 1;
             continue;
         };
@@ -488,16 +706,45 @@ fn restore_turns(
             "Orphan or duplicate Google response occurrence"
         );
         let count = usize::from(first.segment_count);
+        ensure!(
+            count > 0 && index + count <= messages.len(),
+            "Invalid Google response segment count"
+        );
         let response = first
             .response
             .as_ref()
             .ok_or_else(|| anyhow!("Missing Google wire response"))?;
+        if response.wire != "google-generate-content"
+            || response.model != model
+            || response.provider_id != provider_id
+        {
+            // Signed for another model or account: those signatures do not
+            // belong to this request, so its visible content replays unsigned.
+            for (offset, message) in messages[index..index + count].iter().enumerate() {
+                let segment = message
+                    .metadata
+                    .as_ref()
+                    .map(|metadata| metadata.provider_wire())
+                    .transpose()?
+                    .flatten()
+                    .ok_or_else(|| anyhow!("Missing Google response segment"))?;
+                ensure!(
+                    message.role == Role::Assistant
+                        && segment.occurrence_id == first.occurrence_id
+                        && segment.segment_count == first.segment_count
+                        && usize::from(segment.segment_index) == offset,
+                    "Google response occurrence does not match canonical content"
+                );
+                digests.push(message, images)?;
+            }
+            index += count;
+            continue;
+        }
+        let payload: GoogleTurnPayload = serde_json::from_value(response.payload.clone())
+            .map_err(|_| anyhow!("Malformed Google signed payload"))?;
         ensure!(
-            response.wire == "google-generate-content"
-                && response.model == model
-                && response.provider_id == provider_id
-                && response.context_digest == hex::encode(digest.clone().finalize()),
-            "Google history provider, model or context does not match its signed response"
+            digests.matches(&response.context_digest, payload.context_digest_version)?,
+            "Google history context does not match its signed response"
         );
         let metadata_bytes = serde_json::to_vec(response)?.len();
         total_bytes = total_bytes.saturating_add(metadata_bytes);
@@ -505,8 +752,6 @@ fn restore_turns(
             turns.len() < MAX_RETAINED_TURNS && total_bytes <= MAX_RETAINED_HISTORY_BYTES,
             "Google signed history exceeds its bounds"
         );
-        let payload: GoogleTurnPayload = serde_json::from_value(response.payload.clone())
-            .map_err(|_| anyhow!("Malformed Google signed payload"))?;
         let (visible, calls) = decode_payload(&payload)?;
         let expected = assistant_segments(&visible, &calls);
         ensure!(
@@ -530,7 +775,7 @@ fn restore_turns(
                     && message.content == expected[offset],
                 "Google response occurrence does not match canonical content"
             );
-            hash_message(&mut digest, message)?;
+            digests.push(message, images)?;
         }
         for call in &calls {
             ensure!(
@@ -547,7 +792,7 @@ fn restore_turns(
         });
         index += count;
     }
-    Ok(turns)
+    Ok((turns, digests.canonical_digest()))
 }
 
 fn parse_tool_origin(name: &str, host: Option<&AgentProviderHost>) -> (String, String) {
@@ -585,7 +830,15 @@ fn build_request(
     options: &StreamOptions,
     retained: &[RetainedTurn],
 ) -> Result<Value> {
-    build_request_with_host(messages, tools, options, retained, None).map(|(body, _)| body)
+    build_request_with_host(
+        messages,
+        tools,
+        options,
+        retained,
+        None,
+        &mut GoogleImageSnapshot::default(),
+    )
+    .map(|(body, _)| body)
 }
 
 fn build_request_with_host(
@@ -594,6 +847,7 @@ fn build_request_with_host(
     options: &StreamOptions,
     retained: &[RetainedTurn],
     host: Option<&AgentProviderHost>,
+    images: &mut GoogleImageSnapshot,
 ) -> Result<(Value, Vec<SkippedGoogleTool>)> {
     let mut contents: Vec<Value> = Vec::new();
     let mut system = Vec::new();
@@ -604,7 +858,9 @@ fn build_request_with_host(
     {
         system.push(json!({"text": prompt}));
     }
-    let mut pending_calls: HashMap<&str, &Call> = HashMap::new();
+    // Outstanding calls by id: the function name and Gemini's own wire id.
+    let mut pending_calls: HashMap<&str, (&str, Option<&str>)> = HashMap::new();
+    let mut last_retained = false;
     let mut answered = HashSet::new();
     let mut index = 0;
     while index < messages.len() {
@@ -615,16 +871,19 @@ fn build_request_with_host(
             );
             contents.push(json!({"role":"model","parts":turn.parts}));
             for call in &turn.calls {
-                pending_calls.insert(call.id.as_str(), call);
+                pending_calls.insert(
+                    call.id.as_str(),
+                    (call.name.as_str(), call.wire_id.as_deref()),
+                );
             }
+            last_retained = true;
             index += turn.message_count;
             continue;
         }
+        // An Assistant message here has no signed parts for this model:
+        // another provider wrote it, or another Gemini model or account. It
+        // replays unsigned, which Gemini accepts outside the current turn.
         let message = &messages[index];
-        ensure!(
-            message.role != Role::Assistant,
-            "Google cannot resume this history without its original signed parts (provider/model changed, history restored or compacted); start a new conversation"
-        );
         let mut parts = Vec::new();
         for block in &message.content {
             match block {
@@ -637,19 +896,33 @@ fn build_request_with_host(
                 }
                 ContentBlock::Image { data, media_type } => {
                     if !data.is_empty() {
-                        parts.push(json!({"inlineData":{"mimeType":media_type,"data":BASE64.encode(data)}}));
+                        parts.push(json!({"inlineData":{"mimeType":google_image_media_type(media_type),"data":BASE64.encode(data)}}));
                     }
                 }
                 ContentBlock::ImageAsset(asset) => {
-                    let data = std::fs::read(&asset.path)
-                        .context("Unable to read Google image attachment")?;
+                    let data = images.read_asset(asset)?;
                     if !data.is_empty() {
-                        parts.push(json!({"inlineData":{"mimeType":asset.media_type,"data":BASE64.encode(data)}}));
+                        parts.push(json!({"inlineData":{"mimeType":google_image_media_type(&asset.media_type),"data":BASE64.encode(&data)}}));
                     }
                 }
-                ContentBlock::ToolUse { .. } => bail!(
-                    "Google tool history has no retained signed model parts; start a new turn or restore its original provider session"
-                ),
+                ContentBlock::ToolUse { id, name, input } => {
+                    ensure!(
+                        message.role == Role::Assistant,
+                        "Google tool call outside an assistant message"
+                    );
+                    ensure!(
+                        pending_calls
+                            .insert(id.as_str(), (name.as_str(), None))
+                            .is_none(),
+                        "Duplicate Google tool call identity"
+                    );
+                    let args = if input.is_object() {
+                        input.clone()
+                    } else {
+                        json!({ "arguments": input })
+                    };
+                    parts.push(json!({"functionCall":{"name":name,"args":args}}));
+                }
                 ContentBlock::ToolResult {
                     tool_use_id,
                     content,
@@ -659,11 +932,12 @@ fn build_request_with_host(
                         message.role == Role::User && answered.insert(tool_use_id.as_str()),
                         "Duplicate or non-user Google tool result"
                     );
-                    let call = pending_calls.remove(tool_use_id.as_str()).ok_or_else(|| {
-                        anyhow!("Google tool result has no preceding outstanding model call")
-                    })?;
-                    let mut response = json!({"name":call.name,"response":{"result":tool_result_text(content),"is_error":is_error}});
-                    if let Some(id) = &call.wire_id {
+                    let (name, wire_id) =
+                        pending_calls.remove(tool_use_id.as_str()).ok_or_else(|| {
+                            anyhow!("Google tool result has no preceding outstanding model call")
+                        })?;
+                    let mut response = json!({"name":name,"response":{"result":tool_result_text(content),"is_error":is_error}});
+                    if let Some(id) = wire_id {
                         response["id"] = json!(id);
                     }
                     parts.push(json!({"functionResponse":response}));
@@ -695,9 +969,19 @@ fn build_request_with_host(
                     .as_array_mut()
                     .unwrap()
                     .extend(parts);
+            } else if role == "model"
+                && !last_retained
+                && contents.last().is_some_and(|last| last["role"] == "model")
+            {
+                // One unsigned model turn, never appended to a signed one.
+                contents.last_mut().unwrap()["parts"]
+                    .as_array_mut()
+                    .unwrap()
+                    .extend(parts);
             } else {
                 contents.push(json!({"role":role,"parts":parts}));
             }
+            last_retained = false;
         }
         index += 1;
     }
@@ -901,6 +1185,7 @@ impl GoogleProvider {
         let payload = GoogleTurnPayload {
             parts: state.parts,
             call_ids: state.calls.iter().map(|call| call.id.clone()).collect(),
+            context_digest_version: Some(2),
         };
         let (visible, calls) = decode_payload(&payload)?;
         ensure!(
@@ -1357,6 +1642,7 @@ mod tests {
             &StreamOptions::default(),
             &[],
             Some(&host),
+            &mut GoogleImageSnapshot::default(),
         )
         .expect("valid gateways do not submit the upstream numeric enum to Gemini");
         assert!(skipped.is_empty());
@@ -1390,6 +1676,7 @@ mod tests {
             &StreamOptions::default(),
             &[],
             None,
+            &mut GoogleImageSnapshot::default(),
         )
         .unwrap();
         assert_eq!(
@@ -1414,6 +1701,7 @@ mod tests {
                 &StreamOptions::default(),
                 &[],
                 None,
+                &mut GoogleImageSnapshot::default(),
             )
             .is_err()
         );
@@ -1668,6 +1956,183 @@ mod tests {
                 "mutation={mutation}"
             );
         }
+    }
+
+    /// 2026-11-08 08:16Z: a thread that had run eight turns on OpenAI was
+    /// switched to Gemini, and every send was refused before any request
+    /// left. Those turns carry no Google wire state. They replay unsigned,
+    /// and the first Gemini answer then signs its own occurrence over that
+    /// history, so the turn after it still restores.
+    #[tokio::test]
+    async fn a_thread_begun_on_another_provider_continues_on_gemini() {
+        use codescribe_core::agent::AgentSession;
+        let mut server = mockito::Server::new_async().await;
+        let path = "/v1beta/models/gemini-test:streamGenerateContent?alt=sse";
+        let foreign = vec![
+            Message::new(Role::User, vec![ContentBlock::Text("read the plan".into())]),
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::Text("Reading it.".into())],
+            ),
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::ToolUse {
+                    id: "call_openai_1".into(),
+                    name: "read_file".into(),
+                    input: json!({"path":"TASK.md"}),
+                }],
+            ),
+            Message::new(
+                Role::User,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_openai_1".into(),
+                    content: vec![ContentBlock::Text("# Plan".into())],
+                    is_error: false,
+                }],
+            ),
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::Text("The plan has one heading.".into())],
+            ),
+        ];
+        let history = json!([
+            {"role":"user","parts":[{"text":"read the plan"}]},
+            {"role":"model","parts":[
+                {"text":"Reading it."},
+                {"functionCall":{"name":"read_file","args":{"path":"TASK.md"}}}
+            ]},
+            {"role":"user","parts":[
+                {"functionResponse":{"name":"read_file","response":{"result":"# Plan","is_error":false}}}
+            ]},
+            {"role":"model","parts":[{"text":"The plan has one heading."}]}
+        ]);
+        let signed = json!([{"text":"Continuing on Gemini.","thoughtSignature":"gemini-first"}]);
+        let mut first_contents = history.as_array().unwrap().clone();
+        first_contents.push(json!({"role":"user","parts":[{"text":"continue on gemini"}]}));
+        let first_contents = Value::Array(first_contents);
+        let first = server
+            .mock("POST", path)
+            .match_request(move |request| {
+                serde_json::from_slice::<Value>(request.body().unwrap()).unwrap()["contents"]
+                    == first_contents
+            })
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse(
+                json!({"candidates":[{"content":{"parts":signed},"finishReason":"STOP"}]}),
+            ))
+            .create_async()
+            .await;
+        let mut second_contents = history.as_array().unwrap().clone();
+        second_contents.push(json!({"role":"user","parts":[{"text":"continue on gemini"}]}));
+        second_contents.push(json!({"role":"model","parts":signed}));
+        second_contents.push(json!({"role":"user","parts":[{"text":"again"}]}));
+        let second_contents = Value::Array(second_contents);
+        let second = server
+            .mock("POST", path)
+            .match_request(move |request| {
+                serde_json::from_slice::<Value>(request.body().unwrap()).unwrap()["contents"]
+                    == second_contents
+            })
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse(
+                json!({"candidates":[{"content":{"parts":[{"text":"done"}]},"finishReason":"STOP"}]}),
+            ))
+            .create_async()
+            .await;
+        let provider = GoogleProvider::from_configuration(
+            format!("{}/v1beta", server.url()),
+            "gemini-test".into(),
+            "fixture-key".into(),
+            &timing(),
+        )
+        .unwrap();
+        let (tx, _rx) = mpsc::channel(128);
+        let mut session = AgentSession::new(Box::new(provider), Arc::new(ToolRegistry::new()), tx);
+        session.restore_messages(foreign);
+        session
+            .send(
+                "continue on gemini".into(),
+                Vec::new(),
+                &StreamOptions::default(),
+            )
+            .await
+            .unwrap();
+        session
+            .send("again".into(), Vec::new(), &StreamOptions::default())
+            .await
+            .unwrap();
+        first.assert_async().await;
+        second.assert_async().await;
+    }
+
+    /// A Gemini occurrence signed for another model replays as its visible
+    /// content, without the other model's signatures.
+    #[tokio::test]
+    async fn an_occurrence_signed_for_another_gemini_model_replays_unsigned() {
+        use codescribe_core::agent::AgentSession;
+        let mut server = mockito::Server::new_async().await;
+        let old = server
+            .mock(
+                "POST",
+                "/v1beta/models/gemini-old:streamGenerateContent?alt=sse",
+            )
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse(json!({"candidates":[{"content":{"parts":[
+                {"thought":true,"text":"planning","thoughtSignature":"old-thought"},
+                {"text":"Old answer.","thoughtSignature":"old-text"}
+            ]},"finishReason":"STOP"}]})))
+            .create_async()
+            .await;
+        let expected = json!([
+            {"role":"user","parts":[{"text":"hello"}]},
+            {"role":"model","parts":[{"text":"Old answer."}]},
+            {"role":"user","parts":[{"text":"next"}]}
+        ]);
+        let new = server
+            .mock("POST", "/v1beta/models/gemini-test:streamGenerateContent?alt=sse")
+            .match_request(move |request| {
+                serde_json::from_slice::<Value>(request.body().unwrap()).unwrap()["contents"]
+                    == expected
+            })
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse(
+                json!({"candidates":[{"content":{"parts":[{"text":"New answer."}]},"finishReason":"STOP"}]}),
+            ))
+            .create_async()
+            .await;
+        let endpoint = format!("{}/v1beta", server.url());
+        let provider = |model: &str| {
+            GoogleProvider::from_configuration(
+                endpoint.clone(),
+                model.into(),
+                "fixture-key".into(),
+                &timing(),
+            )
+            .unwrap()
+        };
+        let (tx, _rx) = mpsc::channel(128);
+        let mut earlier = AgentSession::new(
+            Box::new(provider("gemini-old")),
+            Arc::new(ToolRegistry::new()),
+            tx,
+        );
+        earlier
+            .send("hello".into(), Vec::new(), &StreamOptions::default())
+            .await
+            .unwrap();
+        let (tx, _rx) = mpsc::channel(128);
+        let mut later = AgentSession::new(
+            Box::new(provider("gemini-test")),
+            Arc::new(ToolRegistry::new()),
+            tx,
+        );
+        later.restore_messages(earlier.messages().to_vec());
+        later
+            .send("next".into(), Vec::new(), &StreamOptions::default())
+            .await
+            .unwrap();
+        old.assert_async().await;
+        new.assert_async().await;
     }
 
     #[tokio::test]
@@ -2157,6 +2622,7 @@ mod tests {
             &StreamOptions::default(),
             &[],
             None,
+            &mut GoogleImageSnapshot::default(),
         )
         .unwrap();
         assert!(skipped.is_empty());
@@ -2168,6 +2634,7 @@ mod tests {
             &StreamOptions::default(),
             &[],
             None,
+            &mut GoogleImageSnapshot::default(),
         )
         .unwrap_err()
         .to_string();
@@ -2176,5 +2643,238 @@ mod tests {
             "{error}"
         );
         assert!(error.contains("mcp__wire__numeric"), "{error}");
+    }
+    fn screenshot_history_roundtrip(messages: &[Message]) -> Vec<Message> {
+        use codescribe_core::agent::thread_store::{Thread, ThreadMessage, ThreadStore};
+        let root = tempfile::tempdir().unwrap();
+        let store = ThreadStore::new_in(root.path().join("threads")).unwrap();
+        let now = chrono::Utc::now();
+        let thread = Thread {
+            id: ThreadStore::generate_id(),
+            created_at: now,
+            updated_at: now,
+            title: "screenshot continuation".into(),
+            title_is_custom: false,
+            title_is_generated: false,
+            mode: "assistive".into(),
+            tags: vec![],
+            notes: vec![],
+            messages: messages.iter().map(ThreadMessage::from).collect(),
+            summary: None,
+            total_tokens: None,
+            provider: "google-gemini".into(),
+            model: "gemini-test".into(),
+        };
+        store.save_thread(&thread).unwrap();
+        store
+            .load_thread(&thread.id)
+            .unwrap()
+            .messages
+            .iter()
+            .map(ThreadMessage::try_to_message)
+            .collect::<Result<Vec<_>>>()
+            .unwrap()
+    }
+
+    /// Reproduce exactly the historical serialization at the moment the last
+    /// response was created, before ThreadStore spills this turn's screenshot.
+    fn mark_last_response_as_v1(messages: &mut [Message]) {
+        let last = messages
+            .iter()
+            .rposition(|m| m.role == Role::Assistant)
+            .unwrap();
+        let mut digest = Sha256::new();
+        for message in &messages[..last] {
+            hash_message(&mut digest, message).unwrap();
+        }
+        let message = &mut messages[last];
+        let mut metadata = message.metadata.as_ref().unwrap().as_stored().clone();
+        metadata["provider_wire"]["response"]["context_digest"] =
+            json!(hex::encode(digest.finalize()));
+        metadata["provider_wire"]["response"]["payload"]
+            .as_object_mut()
+            .unwrap()
+            .remove("context_digest_version");
+        message.metadata = Some(codescribe_core::agent::MessageMetadata::from_stored(
+            metadata,
+        ));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn google_screenshot_continuation_survives_real_storage_and_fresh_providers_v2_and_v1() {
+        use codescribe_core::agent::{AgentSession, ImageAttachment};
+        let _env_serial = crate::test_env::data_dir_env_serial();
+        let data_root = tempfile::tempdir().unwrap();
+        let _data =
+            codescribe_core::test_isolation::EnvGuard::set("CODESCRIBE_DATA_DIR", data_root.path());
+        // The synchronous fixture owns the process environment lease. Only the
+        // provider work enters the runtime; no mutex guard crosses an await.
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+        for v1_history in [false, true] {
+            let mut server = mockito::Server::new_async().await;
+            let path = "/v1beta/models/gemini-test:streamGenerateContent?alt=sse";
+            let endpoint = format!("{}/v1beta", server.url());
+            let provider = || {
+                GoogleProvider::from_configuration(
+                    endpoint.clone(),
+                    "gemini-test".into(),
+                    "fixture-key".into(),
+                    &timing(),
+                )
+                .unwrap()
+            };
+            let first = server.mock("POST", path)
+                .match_request(|request| {
+                    let body: Value = serde_json::from_slice(request.body().unwrap()).unwrap();
+                    body["contents"][0]["parts"].as_array().unwrap().iter()
+                        .any(|p| p.get("inlineData").is_some())
+                })
+                .with_header("content-type", "text/event-stream")
+                .with_body(sse(json!({"candidates":[{"content":{"parts":[{"text":"seen one","thoughtSignature":"signature-one"}]},"finishReason":"STOP"}]})))
+                .create_async().await;
+            let image = format!(
+                "screenshot-{}-{v1_history}",
+                chrono::Utc::now().timestamp_nanos_opt().unwrap()
+            )
+            .into_bytes();
+            let (tx, _rx) = mpsc::channel(128);
+            let mut session =
+                AgentSession::new(Box::new(provider()), Arc::new(ToolRegistry::new()), tx);
+            session
+                .send(
+                    "inspect screenshot".into(),
+                    vec![ImageAttachment {
+                        data: image,
+                        media_type: " image/png ".into(),
+                    }],
+                    &StreamOptions::default(),
+                )
+                .await
+                .unwrap();
+            first.assert_async().await;
+            let mut messages = session.messages().to_vec();
+            // Historical composer image loading used canonical MIME types.
+            if v1_history {
+                if let ContentBlock::Image { media_type, .. } = &mut messages[0].content[1] {
+                    *media_type = "image/png".into();
+                }
+                mark_last_response_as_v1(&mut messages);
+            }
+            let restored = screenshot_history_roundtrip(&messages);
+            assert!(
+                restored[0]
+                    .content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::ImageAsset(_)))
+            );
+            let second = server.mock("POST", path)
+                .match_request(|request| {
+                    let body: Value = serde_json::from_slice(request.body().unwrap()).unwrap();
+                    body["contents"][1]["parts"][0]["thoughtSignature"] == "signature-one"
+                        && body["contents"].as_array().unwrap().len() == 3
+                })
+                .with_header("content-type", "text/event-stream")
+                .with_body(sse(json!({"candidates":[{"content":{"parts":[{"text":"seen two","thoughtSignature":"signature-two"}]},"finishReason":"STOP"}]})))
+                .create_async().await;
+            let (tx, _rx) = mpsc::channel(128);
+            let mut resumed =
+                AgentSession::new(Box::new(provider()), Arc::new(ToolRegistry::new()), tx);
+            resumed.restore_messages(restored);
+            resumed
+                .send(
+                    "another screenshot".into(),
+                    vec![ImageAttachment {
+                        data: format!("another-screenshot-{v1_history}").into_bytes(),
+                        media_type: "image/png".into(),
+                    }],
+                    &StreamOptions::default(),
+                )
+                .await
+                .unwrap();
+            second.assert_async().await;
+            let mut messages = resumed.messages().to_vec();
+            if v1_history {
+                mark_last_response_as_v1(&mut messages);
+            }
+            let restored = screenshot_history_roundtrip(&messages);
+            let third = server.mock("POST", path)
+                .match_request(|request| {
+                    let body: Value = serde_json::from_slice(request.body().unwrap()).unwrap();
+                    body["contents"][1]["parts"][0]["thoughtSignature"] == "signature-one"
+                        && body["contents"][3]["parts"][0]["thoughtSignature"] == "signature-two"
+                        && body["contents"].as_array().unwrap().len() == 5
+                })
+                .with_header("content-type", "text/event-stream")
+                .with_body(sse(json!({"candidates":[{"content":{"parts":[{"text":"continued"}]},"finishReason":"STOP"}]})))
+                .create_async().await;
+            let (tx, _rx) = mpsc::channel(128);
+            let mut again =
+                AgentSession::new(Box::new(provider()), Arc::new(ToolRegistry::new()), tx);
+            again.restore_messages(restored.clone());
+            again
+                .send("continue".into(), vec![], &StreamOptions::default())
+                .await
+                .unwrap();
+            assert!(
+                again
+                    .messages()
+                    .last()
+                    .unwrap()
+                    .content
+                    .contains(&ContentBlock::Text("continued".into()))
+            );
+            third.assert_async().await;
+            // Mutation remains refused before any further network request.
+            let mut changed = restored.clone();
+            changed[0].content[0] = ContentBlock::Text("different instruction".into());
+            assert!(
+                provider()
+                    .stream(&changed, &[], &StreamOptions::default())
+                    .await
+                    .is_err()
+            );
+            let mut changed = restored.clone();
+            let asset = changed[0]
+                .content
+                .iter_mut()
+                .find_map(|b| match b {
+                    ContentBlock::ImageAsset(asset) => Some(asset),
+                    _ => None,
+                })
+                .unwrap();
+            asset.size_bytes += 1;
+            assert!(
+                provider()
+                    .stream(&changed, &[], &StreamOptions::default())
+                    .await
+                    .is_err()
+            );
+            let asset = restored[0]
+                .content
+                .iter()
+                .find_map(|b| match b {
+                    ContentBlock::ImageAsset(asset) => Some(asset),
+                    _ => None,
+                })
+                .unwrap();
+            let mut changed_bytes = std::fs::read(&asset.path).unwrap();
+            changed_bytes[0] ^= 1;
+            std::fs::write(&asset.path, changed_bytes).unwrap();
+            assert!(
+                provider()
+                    .stream(&restored, &[], &StreamOptions::default())
+                    .await
+                    .is_err()
+            );
+            std::fs::remove_file(&asset.path).unwrap();
+            assert!(
+                provider()
+                    .stream(&restored, &[], &StreamOptions::default())
+                    .await
+                    .is_err()
+            );
+        }
+        });
     }
 }

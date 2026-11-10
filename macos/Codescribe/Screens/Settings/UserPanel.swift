@@ -327,13 +327,18 @@ struct UserPanel: View {
       HStack(alignment: .center, spacing: CSSpace.sm) {
         Text(title)
           .font(SettingsScale.controlLabel)
+          .foregroundStyle(Color.primary)
           .frame(maxWidth: .infinity, alignment: .leading)
         Image(systemName: "arrow.up.forward.square")
           .font(CSFont.ui(11, .semibold))
+          .foregroundStyle(CSColor.secondaryInk)
       }
       .padding(.vertical, CSSpace.xs)
+      .contentShape(Rectangle())
     }
-    .csLink()
+    .buttonStyle(.plain)
+    .pointerStyle(.link)
+    .csFocusOutline()
     .accessibilityLabel(accessibility)
   }
 

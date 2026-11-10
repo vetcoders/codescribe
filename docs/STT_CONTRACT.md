@@ -25,6 +25,25 @@ previously measured Whisper word, including through resegmentation or
 retokenization. Independent DictationTranscriber evidence retains its existing
 authority. A phrase-grain Whisper result cannot replace existing word slots.
 
+Complete original words outside a frame's publication band may corroborate an
+already owned, uniquely addressed word through its existing lexical component.
+They do not publish, retime, replace or discharge coverage debt. Distinct complete
+decoder windows agreeing with a retained word prevent a lone contradictory DT
+label from replacing that word; replaying one window supplies no additional
+witness. The lexical decision records this refusal before document commit as a
+resolved selection of the retained word, with the replacement unaccepted. It
+does not leave that word in dispute or require a new trial to close it.
+
+Nonpublication context is marked on each hypothesis. That provenance survives
+group assembly and projection: any context-only member makes the assembled
+witness context-only. It cannot corroborate a replacement, confirm a trial,
+supply publication-band rights or count as a dictionary witness. Complete
+context agreeing with a DT candidate still prevents treating that candidate as
+uncorroborated against the retained consensus; the DT's ordinary independent
+word authority must decide its admission. Published evidence of the same PCM
+frame retains its rights when later context arrives. Ordinary publication may
+promote context metadata but never creates a second independent witness.
+
 A provisional single-token Apple utterance label has no independently measured
 word identity. Authentic complete words in the owning band may refine it without requiring speech
 between those words to be silent. Its unpublished remainder remains explicit
@@ -54,8 +73,12 @@ synthetic geometry checks do not constitute native recognition-quality acceptanc
 
 - `RecordingController` owns capture; `StreamingRecorder` fans one physical
   stream out to registered subscribers. Dictation and Agent channels do not
-  allocate independent microphones. Their transcription sessions, ledgers and
-  lifecycle are nevertheless distinct.
+  allocate independent microphones. A dictation take has its own transcription
+  session, ledger and lifecycle. All open Agent channels share one channel
+  subscriber, one transcription session, one ledger and one archive; each
+  channel message receives only the occurrences inside its own sample-clock
+  interval (`core/audio/channel_demux.rs`, see TRANSCRIPT_BUS.md "Shared channel
+  recognition and participation intervals").
 - Apple supplies fast observations. Rust retains the open phrase; Swift partial
   revisions do not manufacture finals. Timed Apple phrase ends may qualify an
   existing owner at a measured, calibrated Silero valley. Neither string
@@ -83,8 +106,14 @@ synthetic geometry checks do not constitute native recognition-quality acceptanc
   before EOF. Recognizer-final waiting and useful-refinement drain have separate
   budgets. This is not a fixed 1.5-second bound on complete delivery, nor proof
   that the last word will be admitted.
-- `AgentChannel` has no LLM formatter. `HandsFree` may format sealed fragments
-  live; `SingleTurn` composer capture formats once at terminal processing.
+- `AgentChannel` disarms per-occurrence LLM formatting. Its optional message
+  formatter is bounded by `agent_channel.format_wait_sec`; missing authority,
+  timeout or refusal delivers Light+ from the committed message. Each seat
+  finishes independently. Intermediate Raw still projects to the HUD and
+  in-process consumers, while channel buses retain their quiet start/terminal,
+  manual-edit and coverage publication contract, including shared captures.
+  `HandsFree` may format sealed fragments live; `SingleTurn` composer capture
+  formats once at terminal processing.
   Smart/Correction use the text formatter; Max uses grouped Agent consultation.
 - Formatter lexical and structural choices are governed by the selected sealed
   prompt. There is no word-count/order veto or pre-provider repetition cleanup.
